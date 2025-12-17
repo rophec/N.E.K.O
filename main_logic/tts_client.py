@@ -9,6 +9,7 @@ import json
 import base64
 import logging
 import websockets
+import requests
 import io
 import wave
 import aiohttp
@@ -974,6 +975,9 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
     Returns:
         对应的 TTS worker 函数
     """
+    # 如果指定本地的 cosyvoice
+    if core_api_type == 'local_cosyvoice':
+        return local_cosyvoice_worker
     # 如果有自定义音色，使用 CosyVoice（仅阿里云支持）
     if has_custom_voice:
         return cosyvoice_vc_tts_worker
@@ -990,3 +994,121 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
     else:
         logger.error(f"{core_api_type}不支持原生TTS，请使用自定义语音")
         return dummy_tts_worker
+
+
+def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_id):
+    """
+    本地 CosyVoice WebSocket Worker
+    适配 model_server.py 定义的 /api/v1/ws/cosyvoice 接口
+    """
+    import asyncio
+    import uuid
+
+    # 你的 model_server.py 中配置的端口是 8000
+    WS_URL = "ws://127.0.0.1:8000/api/v1/ws/cosyvoice" #是不是要更改成对应的接口
+
+    async def async_worker():
+        ws = None
+        receive_task = None
+        current_speech_id = None
+
+        # CosyVoice2 默认采样率通常为 24000Hz (如果是 CosyVoice1 则为 22050Hz)
+        # 你的 server 代码加载的是 CosyVoice2-0.5B，所以这里设定为 24000
+        SRC_RATE = 24000
+        resampler = soxr.ResampleStream(SRC_RATE, 48000, 1, dtype='float32')
+
+        while True:
+            # 1. 获取请求 (非阻塞获取以便处理连接状态)
+            try:
+                # 在 loop 中运行 request_queue.get 以便支持打断
+                loop = asyncio.get_running_loop()
+                sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+            except Exception:
+                break  # 进程退出
+
+            # 2. 检查连接
+            if ws is None or ws.closed:
+                try:
+                    logger.info(f"正在连接本地 CosyVoice: {WS_URL}")
+                    ws = await websockets.connect(WS_URL, ping_interval=None)
+                    logger.info("本地 CosyVoice 连接成功")
+
+                    # 首次连接成功，发送就绪信号
+                    response_queue.put(("__ready__", True))
+
+                    # 启动接收任务
+                    if receive_task is None or receive_task.done():
+                        receive_task = asyncio.create_task(receive_loop(ws, resampler, response_queue))
+
+                except Exception as e:
+                    logger.error(f"连接本地服务失败: {e} (请检查 model_server.py 是否运行)")
+                    response_queue.put(("__ready__", False))
+                    await asyncio.sleep(2)
+                    # 把请求放回去或者丢弃？这里简单处理：丢弃并继续，避免死循环阻塞
+                    continue
+
+            # 3. 处理请求
+            if sid is None:
+                # 收到 None 表示停止/打断
+                # 在 WebSocket 模式下，通常不需要断开连接，只需要不再发送后续文本
+                # 但如果需要立即停止正在播放的声音，前端会处理 response_queue 的清空
+                continue
+
+            if sid != current_speech_id:
+                current_speech_id = sid
+                resampler.clear()  # 新的一句，重置重采样状态
+
+            if not tts_text or not tts_text.strip():
+                continue
+
+            # 4. 发送生成请求 (匹配 model_server.py 的协议)
+            try:
+                payload = {
+                    "header": {
+                        "action": "run-task",
+                        "task_id": str(uuid.uuid4())
+                    },
+                    "payload": {
+                        "input": {
+                            "text": tts_text
+                        }
+                    }
+                }
+                await ws.send(json.dumps(payload))
+
+            except Exception as e:
+                logger.error(f"发送数据失败: {e}")
+                ws = None  # 标记连接断开，下次循环重连
+
+    async def receive_loop(ws, resampler, response_queue):
+        """独立接收任务，处理音频流和状态信息"""
+        try:
+            async for message in ws:
+                # 如果是 bytes，说明是音频数据
+                if isinstance(message, bytes):
+                    # model_server.py 发送的是 int16 bytes
+                    audio_array = np.frombuffer(message, dtype=np.int16)
+
+                    # 重采样 24k -> 48k 并发送
+                    resampled_bytes = _resample_audio(audio_array, 24000, 48000, resampler)
+                    response_queue.put(resampled_bytes)
+
+                # 如果是 str，说明是 JSON 状态信息 (task-started, task-finished)
+                elif isinstance(message, str):
+                    try:
+                        msg_json = json.loads(message)
+                        action = msg_json.get("header", {}).get("action")
+                        if action == "task-failed":
+                            logger.error(f"本地合成报错: {msg_json}")
+                    except:
+                        pass
+        except websockets.exceptions.ConnectionClosed:
+            logger.info("本地 WebSocket 连接断开")
+        except Exception as e:
+            logger.error(f"接收循环异常: {e}")
+
+    # 运行 Asyncio 循环
+    try:
+        asyncio.run(async_worker())
+    except Exception as e:
+        logger.error(f"Local CosyVoice Worker 崩溃: {e}")
