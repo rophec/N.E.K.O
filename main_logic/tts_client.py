@@ -1007,7 +1007,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
 
     # 这里的user_url是用户自己填写的还是分配的
     if user_url :
-        ws_base = user_url.replace('https://', 'wss://').replace('http://', 'ws://').rstrip('/'),
+        ws_base = user_url.replace('https://', 'wss://').replace('http://', 'ws://').rstrip('/')
         WS_URL = f'{ws_base}/api/v1/ws/cosyvoice'
     else:
         logger.error('本地cosyvoice未配置url, 请在设置中填写正确的端口')
@@ -1039,11 +1039,18 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     ws = await websockets.connect(WS_URL, ping_interval=None)
                     logger.info("本地 CosyVoice 连接成功")
                     # 首次连接成功，发送就绪信号
-                    response_queue.put(("__ready__", True))
+                    if not ready_sent:
+                        response_queue.put(("__ready__", True))
+                        ready_sent = True
 
-                    # 启动接收任务
-                    if receive_task is None or receive_task.done():
-                        receive_task = asyncio.create_task(receive_loop(ws, resampler, response_queue))
+                    # 确保旧任务结束 如果接收的不是空而且没有表示接收已经结束 暂时停止接收？
+                    if receive_task is not None and not receive_task.done():
+                        receive_task.cancel()
+                        try:
+                            await receive_task
+                        except  asyncio.CancelledError:
+                            pass
+                    receive_task = asyncio.create_task(receive_loop(ws, resampler, response_queue))
 
                 except Exception as e:
                     logger.error(f"连接本地服务失败: {e} (请检查 model_server.py 是否运行)")

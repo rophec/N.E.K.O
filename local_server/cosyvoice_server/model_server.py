@@ -16,7 +16,6 @@ logger = logging.getLogger("CosyVoice-Server")
 app = FastAPI()
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 COSYVOICE_PROJECT_ROOT = os.path.join(CURRENT_DIR, "CosyVoice")
-MODEL_DIR = os.path.join(CURRENT_DIR, "pretrained_models", "CosyVoice2-0.5B")
 
 # 2. 将该路径加入 Python 搜索路径
 if COSYVOICE_PROJECT_ROOT not in sys.path:
@@ -63,8 +62,8 @@ try:
         # 加载音频并重采样到 16000Hz
         default_prompt_speech_16k = load_wav(PROMPT_WAV_PATH, 16000)
     else:
-        logger.critcal(f'找不到必须的参考音频: {PROMPT_WAV_PATH}')
-        raise FileNotFoundError('参考音频文件不存在：{PROMPT_WAV_PATH}')
+        logger.critcial(f'找不到必须的参考音频: {PROMPT_WAV_PATH}')
+        raise FileNotFoundError(f'参考音频文件不存在：{PROMPT_WAV_PATH}')
 except Exception as e:
     logger.critical(f"加载参考音频失败: {e}")
     raise
