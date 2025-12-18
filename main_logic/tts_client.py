@@ -9,11 +9,13 @@ import json
 import base64
 import logging
 import websockets
-import requests
 import io
 import wave
 import aiohttp
+import asyncio
+import uuid
 from functools import partial
+from utils.config_manager import get_config_manager
 logger = logging.getLogger(__name__)
 
 
@@ -975,9 +977,6 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
     Returns:
         对应的 TTS worker 函数
     """
-    # 如果指定本地的 cosyvoice
-    if core_api_type == 'local_cosyvoice':
-        return local_cosyvoice_worker
     # 如果有自定义音色，使用 CosyVoice（仅阿里云支持）
     if has_custom_voice:
         return cosyvoice_vc_tts_worker
@@ -1001,11 +1000,18 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     本地 CosyVoice WebSocket Worker
     适配 model_server.py 定义的 /api/v1/ws/cosyvoice 接口
     """
-    import asyncio
-    import uuid
+    # 获取config_manager中的配置 config_manager中有tts_custom_URL
+    cm = get_config_manager()
+    tts_config = cm.get_model_api_config('tts_custom')
+    user_url = tts_config.get('base_url')
 
-    # 你的 model_server.py 中配置的端口是 8000
-    WS_URL = "ws://127.0.0.1:8000/api/v1/ws/cosyvoice" #是不是要更改成对应的接口
+    # 这里的user_url是用户自己填写的还是分配的
+    if user_url :
+        ws_base = user_url.replace('https://', 'wss://').replace('http://', 'ws://').rstrip('/'),
+        WS_URL = f'{ws_base}/api/v1/ws/cosyvoice'
+    else:
+        logger.error('本地cosyvoice未配置url, 请在设置中填写正确的端口')
+        return
 
     async def async_worker():
         ws = None
@@ -1032,7 +1038,6 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     logger.info(f"正在连接本地 CosyVoice: {WS_URL}")
                     ws = await websockets.connect(WS_URL, ping_interval=None)
                     logger.info("本地 CosyVoice 连接成功")
-
                     # 首次连接成功，发送就绪信号
                     response_queue.put(("__ready__", True))
 
@@ -1100,8 +1105,9 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                         action = msg_json.get("header", {}).get("action")
                         if action == "task-failed":
                             logger.error(f"本地合成报错: {msg_json}")
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.debug(f'解析状态消息失败：{e}')
+
         except websockets.exceptions.ConnectionClosed:
             logger.info("本地 WebSocket 连接断开")
         except Exception as e:

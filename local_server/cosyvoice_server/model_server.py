@@ -14,10 +14,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("CosyVoice-Server")
 
 app = FastAPI()
-
-# ==========================================
-# 1. 模型加载区 (修改版)
-# ==========================================
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 COSYVOICE_PROJECT_ROOT = os.path.join(CURRENT_DIR, "CosyVoice")
 MODEL_DIR = os.path.join(CURRENT_DIR, "pretrained_models", "CosyVoice2-0.5B")
@@ -47,13 +43,12 @@ except ImportError as e:
     print("---------------------------------------------------------")
     sys.exit(1)
 
-# 模型路径 (这里填写具体的模型权重路径，相对于当前 model_server.py 或者是绝对路径)
-# 建议写绝对路径以防万一
+
 MODEL_DIR = os.path.join(COSYVOICE_PROJECT_ROOT, "pretrained_models/CosyVoice2-0.5B")
 # 或者如果你把模型拷到了 Lanlan 下面：
 # MODEL_DIR = "pretrained_models/CosyVoice2-0.5B"
 
-logger = logging.getLogger("CosyVoice-Server")
+
 logger.info("正在加载 CosyVoice2 模型，请稍候...")
 # 【关键修改】开启 use_flow_cache
 cosyvoice_model = CosyVoice2(MODEL_DIR, load_jit=False, load_trt=False, fp16=False, use_flow_cache=True)
@@ -68,15 +63,11 @@ try:
         # 加载音频并重采样到 16000Hz
         default_prompt_speech_16k = load_wav(PROMPT_WAV_PATH, 16000)
     else:
-        logger.error(f"找不到参考音频: {PROMPT_WAV_PATH}")
-        # 如果找不到，生成一个静音作为兜底 (可能会导致生成效果差，但能防崩)
-        default_prompt_speech_16k = torch.zeros(1, 16000)
+        logger.critcal(f'找不到必须的参考音频: {PROMPT_WAV_PATH}')
+        raise FileNotFoundError('参考音频文件不存在：{PROMPT_WAV_PATH}')
 except Exception as e:
-    logger.error(f"加载参考音频失败: {e}")
-    default_prompt_speech_16k = torch.zeros(1, 16000)
-# # 选一个默认音色 (为了防错，如果列表不为空取第一个，否则默认 '中文女')
-# default_spk_id = available_spks[0] if available_spks else "中文女"
-# logger.info(f"将使用默认音色: {default_spk_id}")
+    logger.critical(f"加载参考音频失败: {e}")
+    raise
 
 # ==========================================
 # 2. 辅助函数
@@ -164,4 +155,4 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     # 启动服务，端口 8000
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000) # 8000需要更改
