@@ -5585,7 +5585,7 @@ async function translateMessageBubble(text, messageElement) {
     }
     
     try {
-        const response = await fetch('/api/config/translate', {
+        const response = await fetch('/api/translate', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -5681,7 +5681,7 @@ async function translateAndShowSubtitle(text) {
         }
         
         // 调用翻译API
-        const response = await fetch('/api/config/translate', {
+        const response = await fetch('/api/translate', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -5844,7 +5844,20 @@ function showSubtitlePrompt() {
     }
     
     const textInputArea = document.getElementById('text-input-area');
-    if (!textInputArea) {
+    const chatContainer = document.getElementById('chat-container');
+    
+    // 检测是否处于语音模式（text-input-area 被隐藏）
+    const isVoiceMode = textInputArea && textInputArea.classList.contains('hidden');
+    
+    // 确定父容器：语音模式下使用 chat-container，否则使用 text-input-area
+    let parentContainer;
+    if (isVoiceMode) {
+        parentContainer = chatContainer;
+    } else {
+        parentContainer = textInputArea;
+    }
+    
+    if (!parentContainer) {
         return;
     }
     
@@ -5852,6 +5865,11 @@ function showSubtitlePrompt() {
     const promptDiv = document.createElement('div');
     promptDiv.id = 'subtitle-prompt-message';
     promptDiv.classList.add('subtitle-prompt-message');
+    
+    // 如果是语音模式，添加特殊样式类
+    if (isVoiceMode) {
+        promptDiv.classList.add('voice-mode');
+    }
     
     // 创建提示内容
     const promptContent = document.createElement('div');
@@ -5894,13 +5912,24 @@ function showSubtitlePrompt() {
     promptContent.appendChild(toggleWrapper);
     promptDiv.appendChild(promptContent);
     
-    // 插入到输入框区域的最后（在text-input-row之后）
-    const textInputRow = textInputArea.querySelector('#text-input-row');
-    if (textInputRow && textInputRow.nextSibling) {
-        textInputArea.insertBefore(promptDiv, textInputRow.nextSibling);
+    // 根据模式插入到不同位置
+    if (isVoiceMode) {
+        // 语音模式：插入到 chat-container 底部（在 text-input-area 之前）
+        if (textInputArea) {
+            chatContainer.insertBefore(promptDiv, textInputArea);
+        } else {
+            chatContainer.appendChild(promptDiv);
+        }
     } else {
-        textInputArea.appendChild(promptDiv);
+        // 文本模式：插入到输入框区域的最后（在text-input-row之后）
+        const textInputRow = textInputArea.querySelector('#text-input-row');
+        if (textInputRow && textInputRow.nextSibling) {
+            textInputArea.insertBefore(promptDiv, textInputRow.nextSibling);
+        } else {
+            textInputArea.appendChild(promptDiv);
+        }
     }
+
     
     // 如果i18next已加载，监听语言变化事件
     if (window.i18next) {

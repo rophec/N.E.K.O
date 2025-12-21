@@ -202,7 +202,6 @@ class OmniRealtimeClient:
     def _on_silence_reset(self):
         """当音频处理器检测到2秒静音并重置缓存时调用。标记待发送clear事件。"""
         self._silence_reset_pending = True
-        logger.info("🔇 RNNoise检测到2秒静音，待发送 input_audio_buffer.clear")
     
     async def clear_audio_buffer(self):
         """发送 input_audio_buffer.clear 事件清空服务端缓存。"""
@@ -210,7 +209,7 @@ class OmniRealtimeClient:
             "type": "input_audio_buffer.clear"
         }
         await self.send_event(clear_event)
-        logger.info("📤 已发送 input_audio_buffer.clear 事件")
+        logger.debug("📤 已发送 input_audio_buffer.clear 事件")
 
     async def connect(self, instructions: str, native_audio=True) -> None:
         """Establish WebSocket connection with the Realtime API."""
@@ -557,7 +556,6 @@ class OmniRealtimeClient:
                     ]
                 }
             }
-            logger.info(f"Adding conversation item: {item_event}")
             await self.send_event(item_event)
             
             # 然后调用 response.create，不带 instructions（避免替换 session instructions）
@@ -679,11 +677,12 @@ class OmniRealtimeClient:
                     self._skip_until_next_response = False
                     # 响应完成，检测重复度
                     if self._current_response_transcript:
-                        logger.info(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...'")
+                        # 不使用logger.info，避免日志文件泄露实际对话内容
+                        print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...'")
                         await self._check_repetition(self._current_response_transcript)
                         self._current_response_transcript = ""
                     else:
-                        logger.info("OmniRealtimeClient: response.done - 没有转录文本")
+                        print("OmniRealtimeClient: response.done - 没有转录文本")
                     # 确保 buffer 被清空
                     self._output_transcript_buffer = ""
                     self._image_recognized_this_turn = False

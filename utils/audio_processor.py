@@ -314,7 +314,6 @@ class AudioProcessor:
         调用此方法后会清空 debug 缓冲区。
         """
         if not DEBUG_SAVE_AUDIO:
-            logger.warning("⚠️ DEBUG_SAVE_AUDIO 未启用，无法保存音频")
             return
         
         if not self._debug_audio_before and not self._debug_audio_after:

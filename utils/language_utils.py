@@ -253,6 +253,38 @@ def reset_global_language() -> None:
         logger.info("全局语言变量已重置")
 
 
+def normalize_language_code(lang: str, format: str = 'short') -> str:
+    """
+    归一化语言代码（统一处理 'zh' 和 'zh-CN' 等格式）
+    
+    此函数是公共 API，供其他模块复用。
+    
+    Args:
+        lang: 输入的语言代码（如 'zh', 'zh-CN', 'zh-TW', 'en', 'en-US', 'ja' 等）
+        format: 输出格式
+            - 'short': 返回短格式 ('zh', 'en', 'ja')
+            - 'full': 返回完整格式 ('zh-CN', 'en', 'ja')
+        
+    Returns:
+        归一化后的语言代码，如果无法识别则返回默认值 ('zh' 或 'zh-CN')
+    """
+    if not lang:
+        return 'zh' if format == 'short' else 'zh-CN'
+    
+    lang_lower = lang.lower().strip()
+    
+    if lang_lower.startswith('zh'):
+        return 'zh' if format == 'short' else 'zh-CN'
+    elif lang_lower.startswith('ja'):
+        return 'ja'
+    elif lang_lower.startswith('en'):
+        return 'en'
+    else:
+        # 无法识别的语言代码，返回默认值
+        logger.debug(f"无法识别的语言代码: {lang}，返回默认值")
+        return 'zh' if format == 'short' else 'zh-CN'
+
+
 # ============================================================================
 # 语言检测和翻译部分（原 language_utils.py）
 # ============================================================================
@@ -484,14 +516,12 @@ def detect_language(text: str) -> str:
     
     # 如果包含日文假名，优先判断为日语
     if japanese_count > 0:
-        # 检查是否主要是日语（假名数量较多）
-        hiragana_katakana = len(re.findall(r'[\u3040-\u309f\u30a0-\u30ff]', text))
-        if hiragana_katakana > 0 and hiragana_katakana >= chinese_count * 0.3:
+        if japanese_count >= chinese_count * 0.2:
             return 'ja'
     
     # 判断主要语言
     # 注意：如果包含假名已经在上面返回 'ja' 了，这里只需要判断中文和英文
-    if chinese_count > english_count and chinese_count > 0:
+    if chinese_count >= english_count and chinese_count > 0:
         return 'zh'
     elif english_count > 0:
         return 'en'

@@ -8,13 +8,15 @@
 
 import asyncio
 import logging
-import re
 import hashlib
 import threading
 from collections import OrderedDict
 from typing import Optional, Dict, Any
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
+
+# 复用 language_utils 的公共函数，避免重复实现
+from utils.language_utils import detect_language as _detect_language_impl, normalize_language_code
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +118,7 @@ class TranslationService:
     
     def _normalize_language_code(self, lang: str) -> str:
         """
-        归一化语言代码（统一处理 'zh' 和 'zh-CN' 等格式）
+        归一化语言代码（复用 language_utils.normalize_language_code）
         
         Args:
             lang: 语言代码
@@ -126,16 +128,7 @@ class TranslationService:
         """
         if not lang:
             return DEFAULT_LANGUAGE  # 默认中文
-        
-        lang_lower = lang.lower()
-        if lang_lower.startswith('zh'):
-            return 'zh-CN'
-        elif lang_lower.startswith('ja'):
-            return 'ja'
-        elif lang_lower.startswith('en'):
-            return 'en'
-        else:
-            return lang  # 保持原样（如果不在支持列表中，后续会检查）
+        return normalize_language_code(lang, format='full')
     
     def _get_cache_key(self, text: str, target_lang: str) -> str:
         """生成缓存键（使用归一化后的语言代码）"""
@@ -144,20 +137,22 @@ class TranslationService:
         # 使用稳定哈希以支持未来的缓存持久化
         text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
         return f"{normalized_lang}:{text_hash}"
+
     def _detect_language(self, text: str) -> str:
         """
-        简单检测文本语言（中文/日文/英文）
+        检测文本语言（复用 language_utils.detect_language）
         
         Returns:
             'zh-CN'、'ja' 或 'en'
         """
-        # 检测日文假名（优先判断，因为日文也包含汉字）
-        if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text):
-            return 'ja'
-        # 检测中文字符
-        if re.search(r'[\u4e00-\u9fff]', text):
+        # 使用 language_utils 的实现，并转换格式
+        lang = _detect_language_impl(text)
+        # 将 'zh' 转换为 'zh-CN'，'unknown' 转换为 'en'
+        if lang == 'zh':
             return 'zh-CN'
-        return 'en'
+        elif lang == 'unknown':
+            return 'en'
+        return lang
     
     async def translate_text(
         self, 

@@ -26,6 +26,7 @@ from dashscope.audio.tts_v2 import VoiceEnrollmentService
 
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
 from utils.frontend_utils import find_models, find_model_directory
+from utils.language_utils import normalize_language_code
 from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
@@ -77,13 +78,8 @@ async def get_characters(request: Request):
         accept_lang = request.headers.get('Accept-Language', 'zh-CN')
         # Accept-Language 可能包含多个语言，取第一个
         user_language = accept_lang.split(',')[0].split(';')[0].strip()
-    # 标准化语言代码
-    if user_language.startswith('zh'):
-        user_language = 'zh-CN'
-    elif user_language.startswith('en'):
-        user_language = 'en'
-    else:
-        user_language = 'zh-CN'  # 默认中文
+    # 使用公共函数归一化语言代码
+    user_language = normalize_language_code(user_language, format='full')
     
     # 如果语言是中文，不需要翻译
     if user_language == 'zh-CN':

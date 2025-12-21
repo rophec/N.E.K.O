@@ -79,7 +79,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 await websocket.close()
                 break
             if session_id[lanlan_name] != this_session_id:
-                await session_manager[lanlan_name].send_status(f"切换至另一个终端...")
+                await session_manager[lanlan_name].send_status("切换至另一个终端...")
                 await websocket.close()
                 break
             message = json.loads(data)
@@ -132,7 +132,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         try:
             if lanlan_name in session_manager:
                 await session_manager[lanlan_name].send_status(f"Server error: {e}")
-        except:
+        except: # noqa
             pass
     finally:
         logger.info(f"Cleaning up WebSocket resources: {websocket.client}")
