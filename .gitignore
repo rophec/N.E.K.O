@@ -4,6 +4,7 @@ test.py
 
 # 忽略日志文件
 *.log
+debug_audio/*
 # Binaries (but keep our committed Windows tools listed explicitly if needed)
 *.exe
 *.dll

@@ -127,6 +127,20 @@ logger, log_config = setup_logging(service_name="Main", log_level=logging.INFO, 
 
 _config_manager = get_config_manager()
 
+def _log_session_state(name: str, mgr: core.LLMSessionManager, context: str = ""):
+    """输出session/TTS关键状态，用于排查打断后TTS异常."""
+    try:
+        logger.debug(
+            f"[SessionState][{name}] {context} "
+            f"use_tts={getattr(mgr, 'use_tts', None)}, "
+            f"tts_ready={getattr(mgr, 'tts_ready', None)}, "
+            f"tts_thread_alive={getattr(mgr, 'tts_thread', None) and getattr(mgr.tts_thread, 'is_alive', lambda: False)()}, "
+            f"current_speech_id={getattr(mgr, 'current_speech_id', None)}, "
+            f"input_mode={getattr(mgr, 'input_mode', None)}"
+        )
+    except Exception as e:  # 安全兜底，避免日志本身影响主流程
+        logger.warning(f"[SessionState][{name}] 状态日志失败: {e}")
+
 def cleanup():
     logger.info("Starting cleanup process")
     for k in sync_message_queue:
@@ -233,6 +247,7 @@ async def initialize_character_data():
                     # 更新voice_id（这是切换音色时需要的）
                     old_mgr.voice_id = lanlan_basic_config_updated[k].get('voice_id', '')
                     logger.info(f"{k} 有活跃session，只更新配置，不重新创建session_manager")
+                    _log_session_state(k, old_mgr, context="active-session-reload")
                 except Exception as e:
                     logger.error(f"更新 {k} 的活跃session配置失败: {e}", exc_info=True)
                     # 配置更新失败，但为了不影响正在运行的session，继续使用旧配置
@@ -247,6 +262,7 @@ async def initialize_character_data():
                 
                 # 将websocket锁存储到session manager中，供cleanup()使用
                 session_manager[k].websocket_lock = websocket_locks[k]
+                _log_session_state(k, session_manager[k], context="new-session-manager-created")
                 
                 # 恢复websocket引用（如果存在）
                 if old_websocket:
@@ -468,37 +484,112 @@ def _sync_preload_modules():
     真正需要预加载的延迟导入模块：
     - pyrnnoise/audiolab: audio_processor.py 中通过 _get_rnnoise() 延迟加载
     - dashscope: tts_client.py 中仅在 cosyvoice_vc_tts_worker 函数内部导入
+    - googletrans/translatepy: language_utils.py 中延迟导入的翻译库
+    - translation_service: main_logic/core.py 中延迟初始化的翻译服务
     """
     import time
     start = time.time()
     
-    # 1. pyrnnoise/audiolab (音频降噪 - 延迟加载，可能较慢)
+    # 1. 翻译服务相关模块（避免首轮对话延迟）
+    try:
+        # 预加载翻译库（googletrans, translatepy 等）
+        from utils import language_utils
+        # 触发翻译库的导入（如果可用）
+        _ = language_utils.GOOGLETRANS_AVAILABLE
+        _ = language_utils.TRANSLATEPY_AVAILABLE
+        logger.debug("✅ 翻译库预加载完成")
+    except Exception as e:
+        logger.debug(f"⚠️ 翻译库预加载失败（不影响使用）: {e}")
+    
+    # 2. 翻译服务实例（需要 config_manager）
+    try:
+        from utils.translation_service import get_translation_service
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        # 预初始化翻译服务实例（触发 LLM 客户端创建等）
+        _ = get_translation_service(config_manager)
+        logger.debug("✅ 翻译服务预加载完成")
+    except Exception as e:
+        logger.debug(f"⚠️ 翻译服务预加载失败（不影响使用）: {e}")
+    
+    # 3. pyrnnoise/audiolab (音频降噪 - 延迟加载，可能较慢)
     try:
         from utils.audio_processor import _get_rnnoise
-        _get_rnnoise()
-        logger.debug("  ✓ pyrnnoise loaded")
+        RNNoise = _get_rnnoise()
+        if RNNoise:
+            # 创建临时实例以预热神经网络权重加载
+            _warmup_instance = RNNoise(sample_rate=48000)
+            del _warmup_instance
+            logger.debug("  ✓ pyrnnoise loaded and warmed up")
+        else:
+            logger.debug("  ✗ pyrnnoise not available")
     except Exception as e:
         logger.debug(f"  ✗ pyrnnoise: {e}")
     
-    # 2. dashscope (阿里云 CosyVoice TTS SDK - 仅在使用自定义音色时需要)
+    # 4. dashscope (阿里云 CosyVoice TTS SDK - 仅在使用自定义音色时需要)
     try:
         import dashscope  # noqa: F401
         logger.debug("  ✓ dashscope loaded")
     except Exception as e:
         logger.debug(f"  ✗ dashscope: {e}")
     
+    # 5. AudioProcessor 预热（numpy buffer + soxr resampler 初始化）
+    try:
+        from utils.audio_processor import AudioProcessor
+        import numpy as np
+        # 创建临时实例预热 numpy/soxr
+        _warmup_processor = AudioProcessor(
+            input_sample_rate=48000,
+            output_sample_rate=16000,
+            noise_reduce_enabled=False  # 不需要 RNNoise，前面已预热
+        )
+        # 模拟处理一小块音频，预热 numpy 和 soxr 的 JIT
+        _dummy_audio = np.zeros(480, dtype=np.int16).tobytes()
+        _ = _warmup_processor.process_chunk(_dummy_audio)
+        del _warmup_processor, _dummy_audio
+        logger.debug("  ✓ AudioProcessor warmed up")
+    except Exception as e:
+        logger.debug(f"  ✗ AudioProcessor warmup: {e}")
+    
+    # 6. httpx SSL 上下文预热（首次创建 AsyncClient 会初始化 SSL）
+    try:
+        import httpx
+        import asyncio
+        
+        async def _warmup_httpx():
+            async with httpx.AsyncClient(timeout=1.0) as client:
+                # 发送一个简单请求预热 SSL 上下文
+                try:
+                    await client.get("http://127.0.0.1:1", timeout=0.01)
+                except:  # noqa: E722
+                    pass  # 预期会失败，只是为了初始化 SSL
+        
+        # 在当前线程的事件循环中运行（如果没有则创建临时循环）
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # 如果已有运行中的循环，使用线程池
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    pool.submit(lambda: asyncio.run(_warmup_httpx())).result(timeout=2.0)
+            else:
+                loop.run_until_complete(_warmup_httpx())
+        except RuntimeError:
+            asyncio.run(_warmup_httpx())
+        logger.debug("  ✓ httpx SSL context warmed up")
+    except Exception as e:
+        logger.debug(f"  ✗ httpx warmup: {e}")
+    
     elapsed = time.time() - start
     logger.info(f"📦 模块预加载完成，耗时 {elapsed:.2f}s")
 
 
-# Startup 事件：延迟初始化 Steamworks
+# Startup 事件：延迟初始化 Steamworks 和全局语言
 @app.on_event("startup")
 async def on_startup():
     """服务器启动时执行的初始化操作"""
-    global steamworks, _preload_task
-    
-    # 只在主进程中初始化 Steamworks
     if _IS_MAIN_PROCESS:
+        global steamworks, _preload_task
         logger.info("正在初始化 Steamworks...")
         steamworks = initialize_steamworks()
         
@@ -514,6 +605,14 @@ async def on_startup():
         _preload_task = asyncio.create_task(_background_preload())
         await _init_and_mount_workshop()
         logger.info("Startup 初始化完成，后台正在预加载音频模块...")
+
+        # 初始化全局语言变量（优先级：Steam设置 > 系统设置）
+        try:
+            from utils.language_utils import initialize_global_language
+            global_lang = initialize_global_language()
+            logger.info(f"全局语言初始化完成: {global_lang}")
+        except Exception as e:
+            logger.warning(f"全局语言初始化失败: {e}，将使用默认值")
 
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
