@@ -986,7 +986,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
         if user_url and ('http://' in user_url or 'https://' in user_url or 'ws://' in user_url or 'wss://' in user_url):
             return local_cosyvoice_worker
     except Exception as e:
-        logger.warning(f'TTS调度器检查报告：{e}')
+        logger.warning(f'TTS调度器检查报告:{e}')
 
     # 如果有自定义音色，使用 CosyVoice（仅阿里云支持）
     if has_custom_voice:
@@ -1015,6 +1015,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     cm = get_config_manager()
     tts_config = cm.get_model_api_config('tts_custom')
 
+    #如果你调用了user
     user_url = tts_config.get('base_url','')
     if user_url :
         ws_base = user_url.replace('https://', 'wss://').replace('http://', 'ws://').rstrip('/')
@@ -1028,7 +1029,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         ws = None
         receive_task = None
         current_speech_id = None
-        ready_sent = False #初始化就绪信号标志
+        # ready_sent = False #初始化就绪信号标志
         # CosyVoice3 默认采样率通常为 24000Hz (如果是 CosyVoice1 则为 22050Hz)
         # 你的 server 代码加载的是 Fun-CosyVoice3-0.5B，所以这里设定为 24000
         SRC_RATE = 24000
@@ -1040,8 +1041,10 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             nonlocal ws, receive_task
             # 如果已有连接，先尝试关闭
             if ws:
-                try: await ws.closed()
-                except Exception: pass
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
 
             logger.info(f"🔄 [LocalTTS] 正在连接: {WS_URL}")
             ws = await websockets.connect(WS_URL, ping_interval=None)
@@ -1075,7 +1078,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 break
 
             if sid is None:
-                # 受到终止信号, 可以在这里进行清理
+                # 收到终止信号,可以在这里进行清理
                 # 例如 发送特殊的完成信息到服务器 或者重置状态
                 current_speech_id = None
                 continue
