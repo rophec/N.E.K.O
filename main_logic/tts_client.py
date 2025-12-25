@@ -1096,7 +1096,12 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     "parameters": {"voice_id": voice_id if voice_id else "zero_shot_default"}
                 }
             }
-
+            if ws is None or ws.closed:
+                try:
+                    await ensure_connection()
+                except Exception as e:
+                    logger.error(f'发送信息失败：{e}')
+                    ws = None
             try:
                 await ws.send(json.dumps(payload))
             except Exception as e:
