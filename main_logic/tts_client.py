@@ -978,6 +978,9 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
         对应的 TTS worker 函数
     """
     #指定本地模型的判断方式
+    # 强制暴力测试
+    return local_cosyvoice_worker
+    #
     try:
         cm = get_config_manager()
         tts_config = cm.get_model_api_config('tts_custom')
@@ -991,7 +994,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
     # 如果有自定义音色，使用 CosyVoice（仅阿里云支持）
     if has_custom_voice:
         return cosyvoice_vc_tts_worker
-    
+
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
     if core_api_type == 'qwen':
         return qwen_realtime_tts_worker
@@ -1011,21 +1014,34 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     本地 CosyVoice WebSocket Worker
     适配 model_server.py 定义的 /api/v1/ws/cosyvoice 接口
     """
-    # 获取config_manager中的配置 config_manager中有tts_custom_URL
-    cm = get_config_manager()
-    tts_config = cm.get_model_api_config('tts_custom')
 
-    #如果你调用了user
-    user_url = tts_config.get('base_url','')
-    if user_url :
-        ws_base = user_url.replace('https://', 'wss://').replace('http://', 'ws://').rstrip('/')
-        WS_URL = f'{ws_base}/api/v1/ws/cosyvoice'
-    else:
-        logger.error('本地cosyvoice未配置url, 请在设置中填写正确的端口')
-        response_queue.put(("__ready__", False)) # 发送失败失败信号,
-        return
+    # 获取config_manager中的配置 config_manager中有tts_custom_URL
+    # 暴力测试 ------------------------- 测试完成后记得删掉
+    WS_URL = 'ws://127.0.0.1:9541/api/v1/ws/cosyvoice'
+    # cm = get_config_manager()
+    # tts_config = cm.get_model_api_config('tts_custom')
+    #
+    # #如果你调用了user
+    # user_url = tts_config.get('base_url','')
+    # if user_url :
+    #     ws_base = user_url.replace('https://', 'wss://').replace('http://', 'ws://').rstrip('/')
+    #     WS_URL = f'{ws_base}/api/v1/ws/cosyvoice'
+    # else:
+    #     logger.error('本地cosyvoice未配置url, 请在设置中填写正确的端口')
+    #     response_queue.put(("__ready__", False)) # 发送失败失败信号,
+    #     return
+    # === 新增：定义断句标点 ===
+    PUNCTUATIONS = {"。", "！", "？", "…", "\n", ".", "!", "?", "；", ";"}
 
     async def async_worker():
+        # 检查问题使用的代码 --------------
+        logger.info("✅ [LocalTTS] 连接成功")
+        response_queue.put(("__ready__", True))
+        text_buffer = "" # 文本缓冲
+
+        # === 调试点1 确认进入主循环
+        print(">>> [DEBUG] 进入 Worker 主循环，等待文本...")
+        #------------------
         ws = None
         receive_task = None
         current_speech_id = None
@@ -1073,49 +1089,129 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             try:
                 # 在 loop 中运行 request_queue.get 以便支持打断
                 loop = asyncio.get_running_loop()
+                # ==== 调试点 2 正在等待队列 ===
+                'TODO:清理测试的代码'
+                print(">>> [DEBUG] 正在等待 request_queue.get ...")
+                #
                 sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                # === 调试点 3：获取到了数据 ===
+                print(f">>> [DEBUG] 队列收到数据! sid={sid}, text={tts_text}")
             except Exception:
+                # === 调试点 3
+                print(f">>> [DEBUG] 队列获取异常: {e}")
+                # ===
                 break
-
-            if sid is None:
-                # 收到终止信号,可以在这里进行清理
-                # 例如 发送特殊的完成信息到服务器 或者重置状态
-                current_speech_id = None
-                continue
 
             if sid != current_speech_id:
                 current_speech_id = sid
                 resampler.clear()  # 新的一句，重置重采样状态
+                text_buffer = "" # 清空缓冲区域
+
+            if sid is None:
+                # 收到终止信号,可以在这里进行清理
+                # 例如 发送特殊的完成信息到服务器 或者重置状态
+                if text_buffer.strip():
+                    await send_text_to_server(ws, text_buffer)  # 封装发送逻辑
+                text_buffer = ""
+                current_speech_id = None
+                continue
+
 
             if not tts_text or not tts_text.strip():
                 continue
 
-            # 构造 payload
-            # 注意：Zero-Shot 模式下 voice_id 可能为空，这里给一个默认值防止报错
-            payload = {
-                "header": {
-                    "action": "run-task",
-                    "task_id": str(uuid.uuid4()),
-                    'streaming': 'duplex'
-                },
-                "payload": {
-                    "input": {"text": tts_text},
-                    "parameters": {"voice_id": voice_id if voice_id else "zero_shot_default"}
-                }
-            }
-            if ws is None or ws.closed:
-                try:
-                    await ensure_connection()
-                except Exception as e:
-                    logger.error(f'发送信息失败：{e}')
-                    ws = None
-                    continue
-            try:
-                await ws.send(json.dumps(payload))
-            except Exception as e:
-                logger.error(f"发送数据失败: {e}")
-                ws = None  # 标记连接断开，下次循环重连
+            text_buffer += tts_text
 
+            async def send_text_to_server(ws_conn, text):
+                payload = {
+                    "header": {"action": "run-task", "task_id": str(uuid.uuid4())},
+                    "payload": {"input": {"text": text}}
+                }
+                try:
+                    if ws_conn is None:
+                        await ensure_connection()
+                    await ws_conn.send(json.dumps(payload))
+                    logger.info(f"发送合成片段: {text}")
+                except Exception as e:
+                    # ... (这里放你刚才写的重连逻辑) ...
+                    pass
+
+            # 3. 检查是否包含标点符号（断句）
+            # 只要缓冲区里有标点，就切分出来发送
+            # 例如 buffer="你好啊。我是" -> 发送"你好啊。", buffer剩"我是"
+
+            while True:
+                # 寻找最早出现的标点位置
+                min_idx = -1
+                for p in PUNCTUATIONS:
+                    idx = text_buffer.find(p)
+                    if idx != -1:
+                        if min_idx == -1 or idx < min_idx:
+                            min_idx = idx
+
+                if min_idx != -1:
+                    # 切分句子
+                    sentence = text_buffer[:min_idx + 1]
+                    text_buffer = text_buffer[min_idx + 1:]
+
+                    if sentence.strip():
+                        await send_text_to_server(ws, sentence)
+                else:
+                    # 没有标点，跳出循环继续等待更多字
+                    break
+            #'TODO: 这里可能是单个字的发送'
+
+            #
+            # # 构造 payload
+            # # 注意：Zero-Shot 模式下 voice_id 可能为空，这里给一个默认值防止报错
+            # payload = {
+            #     "header": {
+            #         "action": "run-task",
+            #         "task_id": str(uuid.uuid4()),
+            #         'streaming': 'duplex'
+            #     },
+            #     "payload": {
+            #         "input": {"text": tts_text},
+            #         "parameters": {"voice_id": voice_id if voice_id else "zero_shot_default"}
+            #     }
+            # }
+            #
+
+            # === 旧代码 'TODO: 这里是旧的 ws问题 需要解决'
+            # if ws is None or ws.closed:
+            #     try:
+            #         await ensure_connection()
+            #     except Exception as e:
+            #         logger.error(f'发送信息失败：{e}')
+            #         ws = None
+            #         continue
+            # try:
+            #     await ws.send(json.dumps(payload))
+            # except Exception as e:
+            #     logger.error(f"发送数据失败: {e}")
+            #     ws = None  # 标记连接断开，下次循环重连
+            #
+            # try:
+            #     # 1. 如果连接为空，先连接
+            #     if ws is None:
+            #         await ensure_connection()
+            #
+            #     # 2. 尝试发送
+            #     await ws.send(json.dumps(payload))
+            #
+            # except Exception as first_error:
+            #     # 3. 如果发送失败（可能是连接断了但 ws 不是 None），尝试重连并重发
+            #     logger.warning(f"发送失败，尝试重连: {first_error}")
+            #     try:
+            #         await ensure_connection()
+            #         await ws.send(json.dumps(payload))
+            #         logger.info("重连并重发成功")
+            #     except Exception as final_error:
+            #         # 4. 彻底失败
+            #         logger.error(f"重连后发送依然失败: {final_error}")
+            #         ws = None
+
+            # =====
     async def receive_loop(ws, resampler, response_queue):
         """独立接收任务，处理音频流和状态信息"""
         try:
