@@ -1085,6 +1085,21 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             receive_task = asyncio.create_task(receive_loop(ws, resampler, response_queue))
             return ws
 
+        async def send_text_to_server(ws_conn, text):
+            payload = {
+                "header": {"action": "run-task", "task_id": str(uuid.uuid4())},
+                "payload": {"input": {"text": text}}
+            }
+            try:
+                if ws_conn is None:
+                    await ensure_connection()
+                await ws_conn.send(json.dumps(payload))
+                logger.info(f"发送合成片段: {text}")
+            except Exception as e:
+                logger.error(f"发送文本到服务器失败{e}")
+                nonlocal ws
+                ws = None
+
         # 1. 初始连接 (先连上再发 ready 信号，防止死锁)
         try:
             await ensure_connection()
@@ -1127,20 +1142,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
 
             text_buffer += tts_text
 
-            async def send_text_to_server(ws_conn, text):
-                payload = {
-                    "header": {"action": "run-task", "task_id": str(uuid.uuid4())},
-                    "payload": {"input": {"text": text}}
-                }
-                try:
-                    if ws_conn is None:
-                        await ensure_connection()
-                    await ws_conn.send(json.dumps(payload))
-                    logger.info(f"发送合成片段: {text}")
-                except Exception as e:
-                    logger.error(f"发送文本到服务器失败{e}")
-                    nonlocal ws
-                    ws = None
+
 
             # 3. 检查是否包含标点符号（断句）
             # 只要缓冲区里有标点，就切分出来发送
