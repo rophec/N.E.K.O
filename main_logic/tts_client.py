@@ -1051,6 +1051,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     本地 CosyVoice WebSocket Worker
     适配 model_server.py 定义的 /api/v1/ws/cosyvoice 接口
     """
+    import uuid # 确保导入uuid
 
     cm = get_config_manager()
     tts_config = cm.get_model_api_config('tts_custom')
@@ -1064,8 +1065,6 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         logger.error('本地cosyvoice未配置url, 请在设置中填写正确的端口')
         response_queue.put(("__ready__", False)) # 发送失败失败信号,
         return
-    # === 新增：定义断句标点 ===
-    PUNCTUATIONS = {"。", "！", "？", "…", "\n", ".", "!", "?", "；", ";"}
 
     async def receive_loop(ws, resampler, response_queue):
         """独立接收任务，处理音频流和状态信息"""
@@ -1074,7 +1073,6 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 if isinstance(message, bytes):
                     # 接收 PCM -> 重采样 -> 输出
                     audio_array = np.frombuffer(message, dtype=np.int16)
-
                     # 重采样 24k -> 48k 并发送
                     resampled_bytes = _resample_audio(audio_array, 24000, 48000, resampler)
                     response_queue.put(resampled_bytes)
@@ -1084,7 +1082,6 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     try:
                         msg_json = json.loads(message)
                         action = msg_json.get("header", {}).get("action")
-
                         if action == "task-failed":
                             logger.error(f"本地合成报错: {msg_json}")
                     except Exception as e:
@@ -1096,52 +1093,59 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             logger.error(f"接收循环异常: {e}")
 
     async def async_worker():
-        text_buffer = "" # 文本缓冲
         ws = None
         receive_task = None
         current_speech_id = None
-        # CosyVoice3 默认采样率通常为 24000Hz (如果是 CosyVoice1 则为 22050Hz)
-        # 你的 server 代码加载的是 Fun-CosyVoice3-0.5B，所以这里设定为 24000
-        SRC_RATE = 24000
-        # 重采样？ 调用soxr.ResampleStream 参数分别为 原采样率 ,重采样后的采样率 num_channels是声道数？
-        resampler = soxr.ResampleStream(SRC_RATE, 48000, 1, dtype='float32')
-        # === 内部辅助函数：连接/重连 ===
+        # 使用流式重采样器
+        resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
+
+        # 任务ID，用于服务端区分不同的句子流
+        current_task_id = str(uuid.uuid4())
+
+        # --- 1. 补全缺失的 send_json 函数 ---
+        async def send_json(ws_conn, payload):
+            try:
+                await ws_conn.send(json.dumps(payload))
+            except Exception:
+                pass
+
         async def ensure_connection():
             nonlocal ws, receive_task
-            # 如果已有连接，先尝试关闭
-            if ws:
-                try:
-                    await ws.close()
-                except Exception:
-                    pass
+            if ws and not ws.closed:
+                return ws
 
             logger.info(f"🔄 [LocalTTS] 正在连接: {WS_URL}")
-            ws = await websockets.connect(WS_URL, ping_interval=None)
-            logger.info("✅ [LocalTTS] 连接成功")
-
-            # 重新启动接收任务
-            if receive_task and not receive_task.done():
-                receive_task.cancel()
-            receive_task = asyncio.create_task(receive_loop(ws, resampler, response_queue))
-            return ws
-
-        async def send_text_to_server(ws_conn, text):
-            nonlocal ws
-            payload = {
-                "header": {"action": "run-task", "task_id": str(uuid.uuid4())},
-                "payload": {"input": {"text": text}}
-            }
             try:
-                if ws_conn is None:
-                    # await ensure_connection()
-                    ws_conn = await ensure_connection()
-                    ws = ws_conn # 同步更新外层ws
-                await ws_conn.send(json.dumps(payload))
-                logger.info(f"发送合成片段: {text}")
+                ws = await websockets.connect(WS_URL, ping_interval=None)
+                logger.info("✅ [LocalTTS] 连接成功")
+                if receive_task and not receive_task.done():
+                    receive_task.cancel()
+                receive_task = asyncio.create_task(receive_loop(ws, resampler, response_queue))
+                return ws
             except Exception as e:
-                logger.error(f"发送文本到服务器失败{e}")
-                nonlocal ws
+                logger.error(f"连接失败: {e}")
+                return None
+
+        async def ensure_connection():
+            nonlocal ws, receive_task
+            # 关键修复：如果连接正常，直接返回，不重复连接
+            if ws and not ws.closed:
+                return ws
+
+            logger.info(f"🔄 [LocalTTS] 正在连接: {WS_URL}")
+            try:
+                ws = await websockets.connect(WS_URL, ping_interval=None)
+                logger.info("✅ [LocalTTS] 连接成功")
+
+                # 重连后重启接收任务
+                if receive_task and not receive_task.done():
+                    receive_task.cancel()
+                receive_task = asyncio.create_task(receive_loop(ws, resampler, response_queue))
+                return ws
+            except Exception as e:
+                logger.error(f"连接失败: {e}")
                 ws = None
+                return None
 
         # 1. 初始连接 (先连上再发 ready 信号，防止死锁)
         try:
@@ -1165,53 +1169,48 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 logger.error(f'队列获取异常{e}')
                 break
 
+            # 状态切换：如果 speech_id 变了，说明是新的一句话
             if sid != current_speech_id:
-                current_speech_id = sid
-                resampler.clear()  # 新的一句，重置重采样状态
-                text_buffer = "" # 清空缓冲区域
+                # 如果上一句还没说完，给服务器发一个结束信号
+                if ws and current_speech_id is not None:
+                    await send_json(ws, {
+                        "header": {"action": "finish-task", "task_id": current_task_id}
+                    })
 
+                # 更新状态
+                current_speech_id = sid
+                current_task_id = str(uuid.uuid4()) # 生成新 task_id
+                resampler.clear() # 清空重采样缓冲区
+
+            # 停止信号处理
             if sid is None:
-                # 收到终止信号,可以在这里进行清理
-                # 例如 发送特殊的完成信息到服务器 或者重置状态
-                if text_buffer.strip():
-                    await send_text_to_server(ws, text_buffer)  # 封装发送逻辑
-                text_buffer = ""
-                current_speech_id = None
+                if ws:
+                    await send_json(ws, {
+                        "header": {"action": "finish-task", "task_id": current_task_id}
+                    })
                 continue
 
 
             if not tts_text or not tts_text.strip():
                 continue
 
-            text_buffer += tts_text
+            # ========================================================
+            # 🚀 关键修改：直接发送，移除所有标点判断和缓冲
+            # ========================================================
+            ws = await ensure_connection()
+            if ws:
+                payload = {
+                    "header": {"action": "run-task", "task_id": current_task_id},
+                    "payload": {"input": {"text": tts_text}}
+                }
+                try:
+                    await ws.send(json.dumps(payload))
+                except Exception as e:
+                    logger.error(f"发送文本失败: {e}")
+                    # 标记 ws 为空，让下次 ensure_connection 触发重连
+                    await ws.close()
+                    ws = None
 
-
-
-            # 3. 检查是否包含标点符号（断句）
-            # 只要缓冲区里有标点，就切分出来发送
-            # 例如 buffer="你好啊。我是" -> 发送"你好啊。", buffer剩"我是"
-
-            while True:
-                # 寻找最早出现的标点位置
-                min_idx = -1
-                for p in PUNCTUATIONS:
-                    idx = text_buffer.find(p)
-                    if idx != -1:
-                        if min_idx == -1 or idx < min_idx:
-                            min_idx = idx
-
-                if min_idx != -1:
-                    # 切分句子
-                    sentence = text_buffer[:min_idx + 1]
-                    text_buffer = text_buffer[min_idx + 1:]
-
-                    if sentence.strip():
-                        await send_text_to_server(ws, sentence)
-                else:
-                    # 没有标点，跳出循环继续等待更多字
-                    break
-
-    # 运行 Asyncio 循环
     try:
         asyncio.run(async_worker())
     except Exception as e:
