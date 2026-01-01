@@ -1111,23 +1111,6 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
 
         async def ensure_connection():
             nonlocal ws, receive_task
-            if ws and not ws.closed:
-                return ws
-
-            logger.info(f"🔄 [LocalTTS] 正在连接: {WS_URL}")
-            try:
-                ws = await websockets.connect(WS_URL, ping_interval=None)
-                logger.info("✅ [LocalTTS] 连接成功")
-                if receive_task and not receive_task.done():
-                    receive_task.cancel()
-                receive_task = asyncio.create_task(receive_loop(ws, resampler, response_queue))
-                return ws
-            except Exception as e:
-                logger.error(f"连接失败: {e}")
-                return None
-
-        async def ensure_connection():
-            nonlocal ws, receive_task
             # 关键修复：如果连接正常，直接返回，不重复连接
             if ws and not ws.closed:
                 return ws
