@@ -1051,8 +1051,6 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     本地 CosyVoice WebSocket Worker
     适配 model_server.py 定义的 /api/v1/ws/cosyvoice 接口
     """
-    import uuid # 确保导入uuid
-
     cm = get_config_manager()
     tts_config = cm.get_model_api_config('tts_custom')
 
@@ -1205,12 +1203,12 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 except Exception as e:
                     logger.error(f"发送文本失败: {e}")
                     # 标记 ws 为空，让下次 ensure_connection 触发重连
-                try:
-                   await ws.close()
-                except Exception:
-                    pass
-                finally:
-                    ws = None
+                    try:
+                       await ws.close()
+                    except Exception:
+                        pass
+                    finally:
+                        ws = None
 
     try:
         asyncio.run(async_worker())
