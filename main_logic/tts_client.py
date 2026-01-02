@@ -1114,8 +1114,8 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         async def send_json(ws_conn, payload):
             try:
                 await ws_conn.send(json.dumps(payload))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f'发送 JSON 信息失败：{e}')
 
         async def ensure_connection():
             nonlocal ws, receive_task, task_complete_event
