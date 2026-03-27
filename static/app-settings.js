@@ -179,6 +179,12 @@
         const currentMouseTracking = typeof window.mouseTrackingEnabled !== 'undefined'
             ? window.mouseTrackingEnabled
             : true;
+        const currentLive2dFullscreenTracking = typeof window.live2dFullscreenTrackingEnabled !== 'undefined'
+            ? window.live2dFullscreenTrackingEnabled
+            : false;
+        const currentHumanoidLocalTracking = typeof window.humanoidLocalTrackingEnabled !== 'undefined'
+            ? window.humanoidLocalTrackingEnabled
+            : false;
 
         // 读取字幕设置（从 S 读取，因为 subtitle.js 会写入 S）
         const currentSubtitleEnabled = typeof S.subtitleEnabled !== 'undefined' ? S.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true');
@@ -200,6 +206,8 @@
             renderQuality: currentRenderQuality,
             targetFrameRate: currentTargetFrameRate,
             mouseTrackingEnabled: currentMouseTracking,
+            live2dFullscreenTrackingEnabled: currentLive2dFullscreenTracking,
+            humanoidLocalTrackingEnabled: currentHumanoidLocalTracking,
             subtitleEnabled: currentSubtitleEnabled,
             userLanguage: currentUserLanguage
         };
@@ -312,6 +320,30 @@
                     window.mouseTrackingEnabled = true;
                 }
 
+                // 跟踪模式设置
+                if (typeof settings.live2dFullscreenTrackingEnabled === 'boolean') {
+                    window.live2dFullscreenTrackingEnabled = settings.live2dFullscreenTrackingEnabled;
+                } else if (typeof settings.live2dFullscreenTrackingEnabled === 'string') {
+                    window.live2dFullscreenTrackingEnabled = settings.live2dFullscreenTrackingEnabled === 'true';
+                }
+
+                if (typeof settings.humanoidLocalTrackingEnabled === 'boolean') {
+                    window.humanoidLocalTrackingEnabled = settings.humanoidLocalTrackingEnabled;
+                } else if (typeof settings.humanoidLocalTrackingEnabled === 'string') {
+                    window.humanoidLocalTrackingEnabled = settings.humanoidLocalTrackingEnabled === 'true';
+                }
+
+                // 同步到运行中的实例
+                if (typeof window.live2dManager !== 'undefined' && window.live2dManager && typeof window.live2dManager.setFullscreenTrackingEnabled === 'function') {
+                    window.live2dManager.setFullscreenTrackingEnabled(window.live2dFullscreenTrackingEnabled === true);
+                }
+                if (typeof window.vrmManager !== 'undefined' && window.vrmManager && window.vrmManager._cursorFollow && typeof window.vrmManager._cursorFollow.setLocalTrackingEnabled === 'function') {
+                    window.vrmManager._cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
+                }
+                if (typeof window.mmdManager !== 'undefined' && window.mmdManager && window.mmdManager.cursorFollow && typeof window.mmdManager.cursorFollow.setLocalTrackingEnabled === 'function') {
+                    window.mmdManager.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
+                }
+
                 console.log('已加载设置:', {
                     proactiveChatEnabled: S.proactiveChatEnabled,
                     proactiveVisionEnabled: S.proactiveVisionEnabled,
@@ -339,6 +371,8 @@
                 console.log('未找到保存的设置，使用默认值');
                 window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
                 window.mouseTrackingEnabled = true;
+                window.live2dFullscreenTrackingEnabled = false;
+                window.humanoidLocalTrackingEnabled = false;
 
                 // 持久化首次启动设置，避免每次重新检测
                 saveSettings();
@@ -349,6 +383,8 @@
             // 出错时也要确保全局变量被初始化
             window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
             window.mouseTrackingEnabled = true;
+            window.live2dFullscreenTrackingEnabled = false;
+            window.humanoidLocalTrackingEnabled = false;
         }
 
         // 以下逻辑不依赖本地 JSON 解析结果，始终执行
