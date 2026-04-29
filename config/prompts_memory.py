@@ -30,7 +30,11 @@ RECENT_HISTORY_MANAGER_PROMPT = {
 - 使摘要表达更加流畅自然，避免"复读机"效果
 - 例如："讨论了辣条的口味和它的价格" 而非 "讨论了辣条的口味和辣条的价格"
 
-请以key为"对话摘要"、value为字符串的json字典格式返回。""",
+[重要]处理事实纠正：
+- 当对话后段对前段已陈述的事实出现明确纠正（例如对方更正了之前说错的内容），摘要应反映这一过程：保留"原以为X，后被纠正为Y"的脉络，而不是只写最终结论或只写最初的误会
+- 这样可以让后续对话不会重复犯同样的错误
+
+请以key为"summary"、value为字符串的json字典格式返回。""",
 
     'en': """Please summarize the following conversation to produce a concise yet informative summary:
 
@@ -45,7 +49,11 @@ Your summary should preserve key information, important facts, and main discussi
 - Keep the summary smooth and natural — avoid a "parrot" effect
 - Example: "discussed the flavor of the snack and its price" instead of "discussed the flavor of the snack and the snack's price"
 
-Return as a JSON dict with key "对话摘要" and a string value.""",
+[Important] Handle factual corrections:
+- When the later part of the conversation explicitly corrects a previously stated fact (e.g., one party corrects a prior misstatement), the summary must reflect this trajectory: keep "originally X, later corrected to Y" rather than writing only the final conclusion or only the initial misunderstanding
+- This prevents the same mistake from recurring in subsequent turns
+
+Return as a JSON dict with key "summary" and a string value.""",
 
     'ja': """以下の会話内容を要約し、簡潔かつ情報量の多い要約を作成してください：
 
@@ -59,7 +67,11 @@ Return as a JSON dict with key "对话摘要" and a string value.""",
 - 繰り返し出現する名詞やトピックワードは、最初の言及後に代名詞（それ/その/この）や文脈上の指示で置き換えてください
 - 要約をスムーズで自然な表現にし、「オウム返し」効果を避けてください
 
-JSON辞書形式で、キーを"対話摘要"、値を文字列として返してください。""",
+[重要] 事実の訂正の扱い：
+- 会話の後半で前半に述べられた事実が明示的に訂正された場合（例：相手が以前の発言を訂正した場合）、要約はその経緯を反映してください：「当初Xと考えていたが、後にYに訂正された」という流れを保持し、最終結論のみや最初の誤解のみを書かないでください
+- これにより、以降の対話で同じ誤りを繰り返さなくなります
+
+JSON辞書形式で、キーを"summary"、値を文字列として返してください。""",
 
     'ko': """다음 대화 내용을 요약하여 간결하면서도 정보가 풍부한 요약을 생성해 주세요:
 
@@ -73,7 +85,11 @@ JSON辞書形式で、キーを"対話摘要"、値を文字列として返し�
 - 반복적으로 등장하는 명사나 주제어는 첫 언급 이후 대명사(그것/해당/이)나 문맥적 지시어로 대체하세요
 - 요약을 매끄럽고 자연스럽게 표현하여 "앵무새" 효과를 피하세요
 
-JSON 딕셔너리 형식으로 키를 "对话摘要", 값을 문자열로 반환해 주세요.""",
+[중요] 사실 정정 처리:
+- 대화 후반에 전반에서 진술된 사실이 명시적으로 정정된 경우(예: 상대방이 이전 발언을 정정한 경우), 요약은 그 과정을 반영해야 합니다: "처음에는 X로 알고 있었으나 이후 Y로 정정됨"이라는 흐름을 유지하고, 최종 결론만이나 최초의 오해만을 적지 마세요
+- 이를 통해 이후 대화에서 같은 오류를 반복하지 않게 됩니다
+
+JSON 딕셔너리 형식으로 키를 "summary", 값을 문자열로 반환해 주세요.""",
 
     'ru': """Пожалуйста, обобщите следующую беседу, создав краткое, но информативное резюме:
 
@@ -87,7 +103,11 @@ JSON 딕셔너리 형식으로 키를 "对话摘要", 값을 문자열로 반환
 - После первого упоминания повторяющихся существительных или тематических слов используйте местоимения (это/его/данный) или контекстные ссылки
 - Сделайте резюме гладким и естественным, избегая эффекта «попугая»
 
-Верните в формате JSON-словаря с ключом "对话摘要" и строковым значением.""",
+[Важно] Обработка фактических исправлений:
+- Когда в более поздней части беседы явно исправляется ранее сказанный факт (например, собеседник исправляет предыдущее ошибочное утверждение), резюме должно отражать этот ход: сохраняйте «изначально X, позже исправлено на Y», а не записывайте только окончательный вывод или только первоначальное недоразумение
+- Это предотвращает повторение той же ошибки в последующих беседах
+
+Верните в формате JSON-словаря с ключом "summary" и строковым значением.""",
 }
 
 
@@ -114,7 +134,11 @@ DETAILED_RECENT_HISTORY_MANAGER_PROMPT = {
 - 使摘要表达更加流畅自然，避免"复读机"效果
 - 例如："讨论了辣条的口味和它的价格" 而非 "讨论了辣条的口味和辣条的价格"
 
-请以key为"对话摘要"、value为字符串的json字典格式返回。
+[重要]处理事实纠正：
+- 当对话后段对前段已陈述的事实出现明确纠正（例如对方更正了之前说错的内容），摘要应反映这一过程：保留"原以为X，后被纠正为Y"的脉络，而不是只写最终结论或只写最初的误会
+- 这样可以让后续对话不会重复犯同样的错误
+
+请以key为"summary"、value为字符串的json字典格式返回。
 """,
 
     'en': """Please summarize the following conversation to produce a concise yet informative summary:
@@ -130,7 +154,11 @@ Your summary should retain as much valid and clear information as possible.
 - Keep the summary smooth and natural — avoid a "parrot" effect
 - Example: "discussed the flavor of the snack and its price" instead of "discussed the flavor of the snack and the snack's price"
 
-Return as a JSON dict with key "对话摘要" and a string value.
+[Important] Handle factual corrections:
+- When the later part of the conversation explicitly corrects a previously stated fact (e.g., one party corrects a prior misstatement), the summary must reflect this trajectory: keep "originally X, later corrected to Y" rather than writing only the final conclusion or only the initial misunderstanding
+- This prevents the same mistake from recurring in subsequent turns
+
+Return as a JSON dict with key "summary" and a string value.
 """,
 
     'ja': """以下の会話内容を要約し、簡潔かつ情報量の多い要約を作成してください：
@@ -145,7 +173,11 @@ Return as a JSON dict with key "对话摘要" and a string value.
 - 繰り返し出現する名詞やトピックワードは、最初の言及後に代名詞（それ/その/この）や文脈上の指示で置き換えてください
 - 要約をスムーズで自然な表現にし、「オウム返し」効果を避けてください
 
-JSON辞書形式で、キーを"対話摘要"、値を文字列として返してください。
+[重要] 事実の訂正の扱い：
+- 会話の後半で前半に述べられた事実が明示的に訂正された場合（例：相手が以前の発言を訂正した場合）、要約はその経緯を反映してください：「当初Xと考えていたが、後にYに訂正された」という流れを保持し、最終結論のみや最初の誤解のみを書かないでください
+- これにより、以降の対話で同じ誤りを繰り返さなくなります
+
+JSON辞書形式で、キーを"summary"、値を文字列として返してください。
 """,
 
     'ko': """다음 대화 내용을 요약하여 간결하면서도 정보가 풍부한 요약을 생성해 주세요:
@@ -160,7 +192,11 @@ JSON辞書形式で、キーを"対話摘要"、値を文字列として返し�
 - 반복적으로 등장하는 명사나 주제어는 첫 언급 이후 대명사(그것/해당/이)나 문맥적 지시어로 대체하세요
 - 요약을 매끄럽고 자연스럽게 표현하여 "앵무새" 효과를 피하세요
 
-JSON 딕셔너리 형식으로 키를 "对话摘要", 값을 문자열로 반환해 주세요.
+[중요] 사실 정정 처리:
+- 대화 후반에 전반에서 진술된 사실이 명시적으로 정정된 경우(예: 상대방이 이전 발언을 정정한 경우), 요약은 그 과정을 반영해야 합니다: "처음에는 X로 알고 있었으나 이후 Y로 정정됨"이라는 흐름을 유지하고, 최종 결론만이나 최초의 오해만을 적지 마세요
+- 이를 통해 이후 대화에서 같은 오류를 반복하지 않게 됩니다
+
+JSON 딕셔너리 형식으로 키를 "summary", 값을 문자열로 반환해 주세요.
 """,
 
     'ru': """Пожалуйста, обобщите следующую беседу, создав краткое, но информативное резюме:
@@ -175,7 +211,11 @@ JSON 딕셔너리 형식으로 키를 "对话摘要", 값을 문자열로 반환
 - После первого упоминания повторяющихся существительных или тематических слов используйте местоимения (это/его/данный) или контекстные ссылки
 - Сделайте резюме гладким и естественным, избегая эффекта «попугая»
 
-Верните в формате JSON-словаря с ключом "对话摘要" и строковым значением.
+[Важно] Обработка фактических исправлений:
+- Когда в более поздней части беседы явно исправляется ранее сказанный факт (например, собеседник исправляет предыдущее ошибочное утверждение), резюме должно отражать этот ход: сохраняйте «изначально X, позже исправлено на Y», а не записывайте только окончательный вывод или только первоначальное недоразумение
+- Это предотвращает повторение той же ошибки в последующих беседах
+
+Верните в формате JSON-словаря с ключом "summary" и строковым значением.
 """,
 }
 
@@ -195,14 +235,18 @@ FURTHER_SUMMARIZE_PROMPT = {
 %s
 ======以上为内容======
 
-你的摘要应该保留关键信息、重要事实和主要讨论点，且不能具有误导性或产生歧义，不得超过500字。
+你的摘要应该保留关键信息、重要事实和主要讨论点，且不能具有误导性或产生歧义，不得超过700字。
 
 [重要]避免在摘要中过度重复使用相同的词汇：
 - 对于反复出现的名词或主题词，在第一次提及后应使用代词（它/其/该/这个）或上下文指代替换
 - 使摘要表达更加流畅自然，避免"复读机"效果
 - 例如："讨论了辣条的口味和它的价格" 而非 "讨论了辣条的口味和辣条的价格"
 
-请以key为"对话摘要"、value为字符串的json字典格式返回。""",
+[重要]处理话题/任务切换：
+- 如果当前内容中存在已经结束、或已被新话题/新任务取代的旧讨论（例如先讨论A话题并已结束或离题，后转到B话题；或先在做A任务后转去做B任务），可以大幅缩略旧讨论的细节，只保留结论或一句话提及，把篇幅留给当前正在进行的话题/任务
+- 但已被纠正的事实不能因此抹掉，仍需保留"原以为X，后被纠正为Y"的痕迹
+
+请以key为"summary"、value为字符串的json字典格式返回。""",
 
     'en': """Please summarize the following content to produce a concise yet informative summary:
 
@@ -210,13 +254,17 @@ FURTHER_SUMMARIZE_PROMPT = {
 %s
 ======以上为对话======
 
-Your summary should preserve key information, important facts, and main discussion points without being misleading or ambiguous. It must not exceed 500 words.
+Your summary should preserve key information, important facts, and main discussion points without being misleading or ambiguous. It must not exceed 700 words.
 
 [Important] Avoid excessive repetition of the same words in the summary:
 - After first mention of recurring nouns or topic words, use pronouns (it/its/this) or contextual references
 - Keep the summary smooth and natural — avoid a "parrot" effect
 
-Return as a JSON dict with key "对话摘要" and a string value.""",
+[Important] Handle topic/task transitions:
+- If the content contains older discussions that have already concluded or been superseded by a new topic/task (e.g., topic A was resolved or drifted away from and the conversation moved on to B; or task A was abandoned in favor of task B), aggressively shorten the older discussion to only its conclusion or a one-line mention, freeing space for the currently ongoing topic/task
+- However, factual corrections must not be erased — keep the "originally X, later corrected to Y" trace intact
+
+Return as a JSON dict with key "summary" and a string value.""",
 
     'ja': """以下の内容を要約し、簡潔かつ情報量の多い要約を作成してください：
 
@@ -224,13 +272,17 @@ Return as a JSON dict with key "对话摘要" and a string value.""",
 %s
 ======以上为对话======
 
-要約には重要な情報、事実、主な議論のポイントを保持し、誤解を招いたり曖昧にならないようにしてください。500字を超えないでください。
+要約には重要な情報、事実、主な議論のポイントを保持し、誤解を招いたり曖昧にならないようにしてください。700字を超えないでください。
 
 [重要] 要約中で同じ語彙を過度に繰り返さないでください：
 - 繰り返し出現する名詞やトピックワードは、最初の言及後に代名詞で置き換えてください
 - 要約をスムーズで自然な表現にしてください
 
-JSON辞書形式で、キーを"対話摘要"、値を文字列として返してください。""",
+[重要] 話題／タスクの切り替えの扱い：
+- 内容の中に既に終了した、または新しい話題／タスクに取って代わられた古い議論がある場合（例：話題Aが決着済みまたは離れており会話がBに移った場合；あるいはタスクAが中断されてタスクBに切り替わった場合）、古い議論の詳細を大幅に省略し、結論または一言の言及のみを残して、現在進行中の話題／タスクに紙幅を割いてください
+- ただし、訂正された事実は消去してはならず、「当初Xと考えていたが、後にYに訂正された」という痕跡は保持してください
+
+JSON辞書形式で、キーを"summary"、値を文字列として返してください。""",
 
     'ko': """다음 내용을 요약하여 간결하면서도 정보가 풍부한 요약을 생성해 주세요:
 
@@ -238,13 +290,17 @@ JSON辞書形式で、キーを"対話摘要"、値を文字列として返し�
 %s
 ======以上为对话======
 
-요약에는 핵심 정보, 중요한 사실, 주요 논의 사항을 보존해야 하며, 오해를 일으키거나 모호해서는 안 됩니다. 500자를 초과하면 안 됩니다.
+요약에는 핵심 정보, 중요한 사실, 주요 논의 사항을 보존해야 하며, 오해를 일으키거나 모호해서는 안 됩니다. 700자를 초과하면 안 됩니다.
 
 [중요] 요약에서 동일한 단어를 과도하게 반복하지 마세요:
 - 반복적으로 등장하는 명사나 주제어는 첫 언급 이후 대명사로 대체하세요
 - 요약을 매끄럽고 자연스럽게 표현하세요
 
-JSON 딕셔너리 형식으로 키를 "对话摘要", 값을 문자열로 반환해 주세요.""",
+[중요] 화제/작업 전환 처리:
+- 내용 안에 이미 종결되었거나 새로운 화제/작업에 의해 대체된 이전 논의가 있다면(예: 화제 A가 마무리되었거나 떠나갔고 대화가 B로 전환된 경우; 또는 작업 A를 중단하고 작업 B로 전환된 경우), 이전 논의의 세부사항을 대폭 축약하여 결론이나 한 줄 언급만 남기고, 현재 진행 중인 화제/작업에 분량을 할애하세요
+- 단, 정정된 사실은 지워서는 안 되며 "처음에는 X로 알고 있었으나 이후 Y로 정정됨"이라는 흔적은 유지해야 합니다
+
+JSON 딕셔너리 형식으로 키를 "summary", 값을 문자열로 반환해 주세요.""",
 
     'ru': """Пожалуйста, обобщите следующее содержание, создав краткое, но информативное резюме:
 
@@ -252,13 +308,17 @@ JSON 딕셔너리 형식으로 키를 "对话摘要", 값을 문자열로 반환
 %s
 ======以上为对话======
 
-Резюме должно сохранять ключевую информацию, важные факты и основные обсуждаемые темы, при этом не вводить в заблуждение и не быть двусмысленным. Не более 500 слов.
+Резюме должно сохранять ключевую информацию, важные факты и основные обсуждаемые темы, при этом не вводить в заблуждение и не быть двусмысленным. Не более 700 слов.
 
 [Важно] Избегайте чрезмерного повторения одних и тех же слов в резюме:
 - После первого упоминания повторяющихся существительных используйте местоимения или контекстные ссылки
 - Сделайте резюме гладким и естественным
 
-Верните в формате JSON-словаря с ключом "对话摘要" и строковым значением.""",
+[Важно] Обработка смены темы/задачи:
+- Если в содержании присутствуют более ранние обсуждения, которые уже завершились или были заменены новой темой/задачей (например, тема A была решена или оставлена и беседа перешла на B; или задача A была прервана ради задачи B), значительно сокращайте детали старого обсуждения, оставляя только вывод или однострочное упоминание, освобождая место для текущей активной темы/задачи
+- Однако фактические исправления нельзя стирать — сохраняйте след «изначально X, позже исправлено на Y»
+
+Верните в формате JSON-словаря с ключом "summary" и строковым значением.""",
 }
 
 
@@ -373,8 +433,8 @@ HISTORY_REVIEW_PROMPT = {
 
 请以JSON格式返回修正后的对话历史，格式为：
 {
-    "修正说明": "简要说明发现的问题和修正内容",
-    "修正后的对话": [
+    "explanation": "简要说明发现的问题和修正内容",
+    "corrected_dialogue": [
         {"role": "SYSTEM_MESSAGE/%s/%s", "content": "修正后的消息内容"},
         ...
     ]
@@ -412,8 +472,8 @@ Important notes:
 
 Return the corrected history in JSON format:
 {
-    "修正说明": "Brief description of issues found and corrections made",
-    "修正后的对话": [
+    "explanation": "Brief description of issues found and corrections made",
+    "corrected_dialogue": [
         {"role": "SYSTEM_MESSAGE/%s/%s", "content": "Corrected message content"},
         ...
     ]
@@ -451,8 +511,8 @@ Notes:
 
 修正後の会話履歴をJSON形式で返してください：
 {
-    "修正说明": "発見した問題と修正内容の簡潔な説明",
-    "修正后的对话": [
+    "explanation": "発見した問題と修正内容の簡潔な説明",
+    "corrected_dialogue": [
         {"role": "SYSTEM_MESSAGE/%s/%s", "content": "修正後のメッセージ内容"},
         ...
     ]
@@ -482,8 +542,8 @@ Notes:
 
 수정된 대화 기록을 JSON 형식으로 반환해 주세요:
 {
-    "修正说明": "발견한 문제와 수정 내용에 대한 간략한 설명",
-    "修正后的对话": [
+    "explanation": "발견한 문제와 수정 내용에 대한 간략한 설명",
+    "corrected_dialogue": [
         {"role": "SYSTEM_MESSAGE/%s/%s", "content": "수정된 메시지 내용"},
         ...
     ]
@@ -513,8 +573,8 @@ Notes:
 
 Верните исправленную историю в формате JSON:
 {
-    "修正说明": "Краткое описание найденных проблем и внесённых исправлений",
-    "修正后的对话": [
+    "explanation": "Краткое описание найденных проблем и внесённых исправлений",
+    "corrected_dialogue": [
         {"role": "SYSTEM_MESSAGE/%s/%s", "content": "Исправленное содержание сообщения"},
         ...
     ]
@@ -657,19 +717,19 @@ CHAT_HOLIDAY_CONTEXT = {
 # =====================================================================
 
 MEMORY_RECALL_HEADER = {
-    'zh': '======{name}尝试回忆=====\n',
-    'en': '======{name} tries to recall=====\n',
-    'ja': '======{name}の回想=====\n',
-    'ko': '======{name}의 회상=====\n',
-    'ru': '======{name} пытается вспомнить=====\n',
+    'zh': '======{name}尝试回忆======\n',
+    'en': '======{name} tries to recall======\n',
+    'ja': '======{name}の回想======\n',
+    'ko': '======{name}의 회상======\n',
+    'ru': '======{name} пытается вспомнить======\n',
 }
 
 MEMORY_RESULTS_HEADER = {
-    'zh': '====={name}的相关记忆=====\n',
-    'en': '====={name}\'s Related Memories=====\n',
-    'ja': '====={name}の関連する記憶=====\n',
-    'ko': '====={name}의 관련 기억=====\n',
-    'ru': '====={name} — связанные воспоминания=====\n',
+    'zh': '======{name}的相关记忆======\n',
+    'en': '======{name}\'s Related Memories======\n',
+    'ja': '======{name}の関連する記憶======\n',
+    'ko': '======{name}의 관련 기억======\n',
+    'ru': '======{name} — связанные воспоминания======\n',
 }
 
 # ---------- Persona header (static prefix) ----------
@@ -682,12 +742,15 @@ PERSONA_HEADER = {
 }
 
 # ---------- Proactive chat followup header ----------
+# 文案故意"鼓励性"而非"可选性"——之前的"可以选择性地回顾"语气太弱，配合
+# Phase 2 prompt 的反复读警告，会让模型把回忆当成"高重复风险"绕开。新表述
+# 强调这些是"久远的旧话题"，与"最近 1h 内复读"明确区分。
 PROACTIVE_FOLLOWUP_HEADER = {
-    'zh': '\n[回忆线索] 以下是之前对话中的话题，可以选择性地回顾或跟进：\n',
-    'en': '\n[Memory cues] Topics from previous conversations that could be revisited:\n',
-    'ja': '\n[記憶の手がかり] 以前の会話のトピックで、再訪できるもの：\n',
-    'ko': '\n[기억 단서] 이전 대화에서 다시 다룰 수 있는 주제:\n',
-    'ru': '\n[Подсказки памяти] Темы из предыдущих разговоров, к которым можно вернуться:\n',
+    'zh': '\n[回忆线索] 以下旧话题距今较久，适合自然回忆与跟进：\n',
+    'en': '\n[Memory cues] Older topics from prior conversations — well-suited for natural reminiscence:\n',
+    'ja': '\n[記憶の手がかり] 以前の会話で出た古い話題——自然に回想して持ち出すのに向いている：\n',
+    'ko': '\n[기억 단서] 이전 대화에서 나온 오래된 화제——자연스럽게 회상하여 꺼내기 좋음:\n',
+    'ru': '\n[Подсказки памяти] Старые темы из прошлых разговоров — удачные для естественного возврата:\n',
 }
 
 # =====================================================================
@@ -842,8 +905,7 @@ fact_extraction_prompt = FACT_EXTRACTION_PROMPT['zh']
 # prompt 结构互斥（RFC §3.4.2）。
 
 SIGNAL_DETECTION_PROMPT = {
-    'zh': """你是一个 careful deduplication judge。给你一组新提取的事实，和一组
-系统已经记录过的观察，请判断每条新事实对已有观察的关系。
+    'zh': """你是一个记忆关系判定专家。给你一组新提取的事实，和一组系统已经记录过的观察，请判断每条新事实对已有观察的关系。
 
 ======以下为新提取的事实======
 {NEW_FACTS}
@@ -858,8 +920,7 @@ SIGNAL_DETECTION_PROMPT = {
 - negates：是否反驳了某条已有观察？返回 target_id 和理由
 - 若都没有，对应新事实没有 signal —— 不写进 signals 数组即可
 
-target_id 必须来自上面"已有观察"区，不要凭空生成；若某条新事实与多条已有
-观察相关，可返回多条 signal。
+target_id 必须来自上面"已有观察"区，不要凭空生成；若某条新事实与多条已有观察相关，可返回多条 signal。
 
 输出 JSON（如果没有匹配任何已有观察，返回 {"signals": []}）：
 {
@@ -872,9 +933,7 @@ target_id 必须来自上面"已有观察"区，不要凭空生成；若某条�
     ...
   ]
 }""",
-    'en': """You are a careful deduplication judge. Given a set of newly extracted facts
-and a set of observations the system already remembers, judge the relationship
-between each new fact and the existing observations.
+    'en': """You are a memory relationship analyst. Given a set of newly extracted facts and a set of observations the system already remembers, judge the relationship between each new fact and the existing observations.
 
 ======以下为新提取的事实======
 {NEW_FACTS}
@@ -889,9 +948,7 @@ For each new fact decide:
 - negates: does it contradict any existing observation? Return target_id + reason
 - Otherwise: no signal — simply omit it from the signals array
 
-target_id MUST come from the "existing observations" section above — do not
-invent IDs. If one new fact relates to several observations, return multiple
-signals.
+target_id MUST come from the "existing observations" section above — do not invent IDs. If one new fact relates to several observations, return multiple signals.
 
 Return JSON (empty array if nothing matches):
 {
@@ -904,9 +961,7 @@ Return JSON (empty array if nothing matches):
     ...
   ]
 }""",
-    'ja': """あなたは careful deduplication judge です。新しく抽出された事実の一覧と、
-システムが既に記憶している観察の一覧が与えられます。各新事実が既存観察に
-対してどのような関係にあるかを判断してください。
+    'ja': """あなたは記憶関係の判定者です。新しく抽出された事実の一覧と、システムが既に記憶している観察の一覧が与えられます。各新事実が既存観察に対してどのような関係にあるかを判断してください。
 
 ======以下为新提取的事实======
 {NEW_FACTS}
@@ -934,9 +989,7 @@ JSON で返す（該当なしなら空配列）:
     ...
   ]
 }""",
-    'ko': """당신은 careful deduplication judge입니다. 새로 추출된 사실들과 시스템이
-이미 기억하고 있는 관찰들을 비교하여, 각 새 사실이 기존 관찰에 어떤 관계를
-갖는지 판단해 주세요.
+    'ko': """당신은 기억 관계 판정자입니다. 새로 추출된 사실들과 시스템이 이미 기억하고 있는 관찰들을 비교하여, 각 새 사실이 기존 관찰에 어떤 관계를 갖는지 판단해 주세요.
 
 ======以下为新提取的事实======
 {NEW_FACTS}
@@ -964,9 +1017,7 @@ JSON으로 반환 (일치 없으면 빈 배열):
     ...
   ]
 }""",
-    'ru': """Вы — careful deduplication judge. Дан набор новых извлечённых фактов и
-набор наблюдений, которые система уже помнит. Определите отношение каждого
-нового факта к существующим наблюдениям.
+    'ru': """Вы — аналитик связей в памяти. Дан набор новых извлечённых фактов и набор наблюдений, которые система уже помнит. Определите отношение каждого нового факта к существующим наблюдениям.
 
 ======以下为新提取的事实======
 {NEW_FACTS}
@@ -1005,11 +1056,10 @@ def get_signal_detection_prompt(lang: str = 'zh') -> str:
 # ======= Negative-keyword target check (RFC §3.4.5 Layer 2) ==========
 # =====================================================================
 # 职责：用户说"别提了 / 换个话题"这类话命中本地关键词后，派一次小 LLM 调
-# 用决定"用户到底是在说哪条？还是只是泛化情绪？"。水印：情感分析专家 +
-# "======以上为".
+# 用决定"用户到底是在说哪条？还是只是泛化情绪？"。水印："======以上为".
 
 NEGATIVE_TARGET_CHECK_PROMPT = {
-    'zh': """你是一个情感分析专家。
+    'zh': """你是一个用户回避意图判定专家。
 
 ======以下为用户最近消息======
 {USER_MESSAGES}
@@ -1019,8 +1069,7 @@ NEGATIVE_TARGET_CHECK_PROMPT = {
 {OBSERVATIONS}
 ======以上为观察列表======
 
-用户消息里，"别提了 / 不想聊 / 换个话题 / 别再说"这类表达到底指上述哪
-一条？可能多条、也可能一条都没有（用户只是泛化情绪）。
+用户消息里，"别提了 / 不想聊 / 换个话题 / 别再说"这类表达到底指上述哪一条？可能多条、也可能一条都没有（用户只是泛化情绪）。
 
 只能从"观察列表"里选 target_id，不要凭空生成。
 target_type 必须是字符串 "reflection" 或 "persona" 之一。
@@ -1029,8 +1078,7 @@ target_type 必须是字符串 "reflection" 或 "persona" 之一。
 {"targets": [{"target_type": "reflection",
               "target_id": "...",
               "reason": "简短理由"}]}""",
-    'en': """You are an emotion analysis expert.
-sends some useful information to help decide what the user is pushing back on.
+    'en': """You are a user pushback target analyst.
 
 ======以下为用户最近消息======
 {USER_MESSAGES}
@@ -1040,20 +1088,16 @@ sends some useful information to help decide what the user is pushing back on.
 {OBSERVATIONS}
 ======以上为观察列表======
 
-In the user's messages, when they say things like "don't mention / change
-the topic / stop talking about", which observation(s) above are they
-referring to? Could be several, or none at all (just a vague mood).
+In the user's messages, when they say things like "don't mention / change the topic / stop talking about", which observation(s) above are they referring to? Could be several, or none at all (just a vague mood).
 
 target_id MUST come from "observations" above — do not invent IDs.
 target_type MUST be the literal string "reflection" or "persona".
 
-Return valid JSON. If the user is just venting without a specific target,
-return an object with an empty `targets` array: {"targets": []}.
-Otherwise:
+Return valid JSON. If the user is just venting without a specific target, return an object with an empty `targets` array: {"targets": []}. Otherwise:
 {"targets": [{"target_type": "reflection",
               "target_id": "...",
               "reason": "short rationale"}]}""",
-    'ja': """あなたは感情分析の専門家です。
+    'ja': """あなたはユーザーの拒否反応が何を指しているかを判定する専門家です。
 
 ======以下为用户最近消息======
 {USER_MESSAGES}
@@ -1063,9 +1107,7 @@ Otherwise:
 {OBSERVATIONS}
 ======以上为观察列表======
 
-ユーザーが「その話はいい／話題を変えて／やめて」などと言ったのは、上の
-観察のうちどれを指していますか？複数の場合もあれば、一つも該当しない
-場合もあります（単なるムード）。
+ユーザーが「その話はいい／話題を変えて／やめて」などと言ったのは、上の観察のうちどれを指していますか？複数の場合もあれば、一つも該当しない場合もあります（単なるムード）。
 
 target_id は必ず上の "観察" から選ぶこと。
 target_type は文字列 "reflection" または "persona" のいずれかでなければならない。
@@ -1075,7 +1117,7 @@ target_type は文字列 "reflection" または "persona" のいずれかでな�
 {"targets": [{"target_type": "reflection",
               "target_id": "...",
               "reason": "短い理由"}]}""",
-    'ko': """당신은 감정 분석 전문가입니다.
+    'ko': """당신은 사용자의 거부 표현이 무엇을 가리키는지 판정하는 전문가입니다.
 
 ======以下为用户最近消息======
 {USER_MESSAGES}
@@ -1085,8 +1127,7 @@ target_type は文字列 "reflection" または "persona" のいずれかでな�
 {OBSERVATIONS}
 ======以上为观察列表======
 
-사용자가 "그 얘기는 그만 / 다른 이야기하자" 같은 표현을 쓸 때, 위 관찰
-중 어떤 것을 가리킵니까? 여러 개일 수도, 전혀 없을 수도 있습니다.
+사용자가 "그 얘기는 그만 / 다른 이야기하자" 같은 표현을 쓸 때, 위 관찰 중 어떤 것을 가리킵니까? 여러 개일 수도, 전혀 없을 수도 있습니다.
 
 target_id는 반드시 위 "관찰"에서 가져오세요.
 target_type은 문자열 "reflection" 또는 "persona" 중 하나여야 합니다.
@@ -1096,7 +1137,7 @@ target_type은 문자열 "reflection" 또는 "persona" 중 하나여야 합니�
 {"targets": [{"target_type": "reflection",
               "target_id": "...",
               "reason": "짧은 이유"}]}""",
-    'ru': """Вы эксперт по анализу эмоций.
+    'ru': """Вы эксперт по определению цели пользовательского отказа от темы.
 
 ======以下为用户最近消息======
 {USER_MESSAGES}
@@ -1106,15 +1147,12 @@ target_type은 문자열 "reflection" 또는 "persona" 중 하나여야 합니�
 {OBSERVATIONS}
 ======以上为观察列表======
 
-Когда пользователь говорит "хватит об этом / сменим тему / не надо об этом",
-к каким из перечисленных наблюдений это относится? Может быть несколько
-или ни одного (просто эмоция).
+Когда пользователь говорит "хватит об этом / сменим тему / не надо об этом", к каким из перечисленных наблюдений это относится? Может быть несколько или ни одного (просто эмоция).
 
 target_id ДОЛЖЕН быть из "наблюдений" выше.
 target_type ДОЛЖЕН быть строкой "reflection" или "persona".
 
-Верните валидный JSON. Если конкретной цели нет — объект с пустым массивом
-`targets`: {"targets": []}. В противном случае:
+Верните валидный JSON. Если конкретной цели нет — объект с пустым массивом `targets`: {"targets": []}. В противном случае:
 {"targets": [{"target_type": "reflection",
               "target_id": "...",
               "reason": "короткое обоснование"}]}""",
@@ -1129,30 +1167,59 @@ def get_negative_target_check_prompt(lang: str = 'zh') -> str:
 # ======= Negative-keyword scanning (RFC §3.4.5 Layer 1) ==============
 # =====================================================================
 # 本地确定性 frozenset 扫描；命中后异步派发 Layer 2 LLM 判定。
-# 关键词取最常见的 "让用户显式回避某话题" 的短语，不贪心——漏扫可以补、
-# 误扫会触发无用 LLM 调用。
+# 目标语义：用户希望 AI 闭嘴 / 回避特定话题（包含"嫌烦"族，因为这类词用在
+# 话题语境时基本都意味着"想结束这个话题"）。**不收纯情绪词**（焦虑/崩溃/
+# 难受/失望/痛苦…）——它们经常单独出现而无回避意图，会触发无用 LLM 调用。
+# 单字也避免（"烦"会被"麻烦你"/"麻烦了"误命中），双字以上更稳。
 NEGATIVE_KEYWORDS_I18N: dict[str, frozenset[str]] = {
     'zh': frozenset([
-        '别再说', '别说了', '别提了', '别提', '不想聊', '换个话题',
-        '这个不用说了', '别聊这个', '别再提', '不要再说', '换话题',
+        # 显式回避型
+        '别说了', '别再说', '不要再说', '不要说',
+        '别提了', '别提', '别再提', '不要再提', '不想提', '不想再提',
+        '不想说', '不想说了', '不想再说',
+        '别讲', '别再讲', '不要讲', '不要再讲',
+        '别聊', '别聊这个', '不要聊', '不想聊',
+        '换个话题', '换话题', '聊点别的', '说点别的', '这个不用说了',
+        '闭嘴', '别问了', '不要问了',
+        # 嫌烦型（暗含"想结束此话题"）
+        '烦死', '烦人', '好烦', '真烦', '烦透', '心烦',
+        '讨厌', '真讨厌', '受不了', '无语', '真无语',
     ]),
     'en': frozenset([
+        # Explicit avoidance
         "stop talking about", "don't mention", "do not mention",
         "change the topic", "change the subject",
-        "let's not discuss", "let's not talk about", "drop the subject",
-        "drop it", "not this again",
+        "let's not discuss", "let's not talk about",
+        "drop the subject", "drop it", "not this again",
+        "shut up", "let it go", "move on", "enough of this",
+        # Annoyance (implies "end this topic")
+        # `hate` must stay multi-word — bare "hate" is a substring of common
+        # words like "whatever" and would fire false positives every turn.
+        "i hate", "hate this", "hate that", "hate it", "hate when",
+        "annoying", "annoyed", "frustrating", "frustrated",
+        "sick of",
     ]),
     'ja': frozenset([
-        'その話は', 'やめて', '話題を変えて', 'その話はもう',
-        '言わないで', '別の話',
+        # 明示的な回避
+        'その話は', 'その話はもう', 'その話やめ', 'やめて',
+        '話題を変えて', '別の話', '他の話', '言わないで', '黙って',
+        # うんざり系（話題を終わらせたい含意）
+        'もう嫌', 'イライラ', 'うざい', 'しつこい',
     ]),
     'ko': frozenset([
-        '그만하자', '다른 이야기', '그 얘기는 그만',
-        '다른 얘기', '말하지 마',
+        # 명시적 회피
+        '그만하자', '그 얘기는 그만', '다른 이야기', '다른 얘기',
+        '다른 얘기 하자', '말하지 마', '닥쳐',
+        # 짜증 계열 (화제 종료 함의)
+        '짜증', '싫어', '지긋지긋',
     ]),
     'ru': frozenset([
+        # Явное избегание
         'хватит об этом', 'сменим тему', 'не говори об этом',
-        'другая тема', 'не надо об этом',
+        'другая тема', 'не надо об этом', 'замолчи', 'отстань',
+        'хватит',
+        # Раздражение (подразумевает «закроем тему»)
+        'раздражает', 'надоело', 'достало',
     ]),
 }
 
@@ -1183,7 +1250,7 @@ REFLECTION_PROMPT = {
 {FACTS}
 ======以上为事实======
 
-请基于这些事实，合成一段简短的反思洞察(2-3句话)，总结你观察到的模式、趋势或关系动态。
+请基于这些事实，合成一段简短的反思洞察，总结你观察到的模式、趋势或关系动态。
 不要简单罗列事实，而是要提炼出更高层次的理解。
 
 请判断这段反思主要关于谁：
@@ -1197,7 +1264,7 @@ REFLECTION_PROMPT = {
 - relationship 可用: dynamic(互动模式) | milestone(里程碑) | tension(摩擦) | shared_memory(共同记忆) | agreement(约定)
 - temporal_scope: current(当前) | past(过去) | ongoing(持续)
 
-要求：紧扣单一观察或模式，不要把多个无关事实混在一起；长度保持在 2-3 句简短洞察内即可。
+要求：紧扣单一观察或模式，不要把多个无关事实混在一起；长度不得超过 150 字。
 
 请以 JSON 格式返回：
 {{"reflection": "你的反思洞察", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
@@ -1207,7 +1274,7 @@ REFLECTION_PROMPT = {
 {FACTS}
 ======以上为事实======
 
-Based on these facts, synthesize a brief reflective insight (2-3 sentences) summarizing the patterns, trends, or relationship dynamics you observe.
+Based on these facts, synthesize a brief reflective insight summarizing the patterns, trends, or relationship dynamics you observe.
 Do not simply list the facts — distill a higher-level understanding.
 
 Determine which entity the reflection primarily concerns:
@@ -1221,7 +1288,7 @@ Also provide a semantic relation_type (must match the entity) and a temporal_sco
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-Requirements: stay focused on a single observation or pattern; do not mix unrelated facts. The 2-3-sentence length guidance above still applies.
+Requirements: stay focused on a single observation or pattern; do not mix unrelated facts. Keep the reflection under 150 words.
 
 Return in JSON format:
 {{"reflection": "your reflective insight", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
@@ -1231,7 +1298,7 @@ Return in JSON format:
 {FACTS}
 ======以上为事实======
 
-これらの事実に基づき、観察されたパターン、傾向、または関係の動態をまとめた簡潔な反省的洞察（2〜3文）を合成してください。
+これらの事実に基づき、観察されたパターン、傾向、または関係の動態をまとめた簡潔な反省的洞察を合成してください。
 単に事実を列挙するのではなく、より高い次元の理解を抽出してください。
 
 この反思が主に誰についてのものか判断してください：
@@ -1245,7 +1312,7 @@ Return in JSON format:
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-要件：単一の観察やパターンに集中し、無関係な事実を混ぜないこと。長さは先に示した 2-3 文の範囲を維持。
+要件：単一の観察やパターンに集中し、無関係な事実を混ぜないこと。長さは 150 字を超えないこと。
 
 JSON形式で返してください：
 {{"reflection": "あなたの反省的洞察", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
@@ -1255,7 +1322,7 @@ JSON形式で返してください：
 {FACTS}
 ======以上为事实======
 
-이 사실들을 바탕으로 관찰된 패턴, 추세 또는 관계 동태를 요약하는 간략한 반성적 통찰(2-3문장)을 합성해 주세요.
+이 사실들을 바탕으로 관찰된 패턴, 추세 또는 관계 동태를 요약하는 간략한 반성적 통찰을 합성해 주세요.
 단순히 사실을 나열하지 말고 더 높은 차원의 이해를 도출해 주세요.
 
 이 반성이 주로 누구에 대한 것인지 판단해 주세요:
@@ -1269,7 +1336,7 @@ JSON形式で返してください：
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-요구사항: 단일 관찰 또는 패턴에 집중하고 관련 없는 사실을 섞지 마세요. 위의 2-3문장 길이 지침은 그대로 유지합니다.
+요구사항: 단일 관찰 또는 패턴에 집중하고 관련 없는 사실을 섞지 마세요. 길이는 150자를 초과하지 마세요.
 
 JSON 형식으로 반환해 주세요:
 {{"reflection": "당신의 반성적 통찰", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
@@ -1279,7 +1346,7 @@ JSON 형식으로 반환해 주세요:
 {FACTS}
 ======以上为事实======
 
-На основе этих фактов синтезируйте краткое рефлексивное наблюдение (2-3 предложения), обобщающее замеченные закономерности, тенденции или динамику отношений.
+На основе этих фактов синтезируйте краткое рефлексивное наблюдение, обобщающее замеченные закономерности, тенденции или динамику отношений.
 Не просто перечисляйте факты — извлеките понимание более высокого уровня.
 
 Определите, к кому это наблюдение относится в первую очередь:
@@ -1293,7 +1360,7 @@ JSON 형식으로 반환해 주세요:
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-Требования: сосредоточьтесь на одном наблюдении или паттерне, не смешивайте не связанные факты. Указанная выше длина в 2-3 предложения сохраняется.
+Требования: сосредоточьтесь на одном наблюдении или паттерне, не смешивайте не связанные факты. Длина — не более 150 слов.
 
 Верните в формате JSON:
 {{"reflection": "ваше рефлексивное наблюдение", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
@@ -1407,12 +1474,11 @@ reflection_feedback_prompt = REFLECTION_FEEDBACK_PROMPT['zh']
 # 须给出明确判定边界。
 #
 # 双水印（§3.9.7）：
-#   - 主体语义 watermark: "careful deduplication judge."
 #   - 印象池块界 watermark: "======以上为现有印象池======"
 # 翻译时按 CLAUDE.md 规约：水印行 (`======以上为...======`) 保留中文，
 # 不翻译——审计时用以快速定位 prompt 边界。
 PROMOTION_MERGE_PROMPT = {
-    'zh': """你是一个 careful deduplication judge。你在维护 {AI_NAME} 对 {MASTER_NAME} 的长期印象。现在有一条待晋升的观察：
+    'zh': """你是一个长期印象整理专家。你在维护 {AI_NAME} 对 {MASTER_NAME} 的长期印象。现在有一条待晋升的观察：
 
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
@@ -1436,7 +1502,7 @@ PROMOTION_MERGE_PROMPT = {
 或
 {{"action": "reject", "reason": "与某条矛盾的简短说明"}}""",
 
-    'en': """You are a careful deduplication judge. You maintain {AI_NAME}'s long-term impressions of {MASTER_NAME}. A new observation is pending promotion:
+    'en': """You are a long-term impression curator. You maintain {AI_NAME}'s long-term impressions of {MASTER_NAME}. A new observation is pending promotion:
 
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
@@ -1460,7 +1526,7 @@ or
 or
 {{"action": "reject", "reason": "short note on the contradiction"}}""",
 
-    'ja': """あなたは careful deduplication judge です。{AI_NAME} の {MASTER_NAME} に対する長期的な印象を管理しています。次の観察が昇格待ちです：
+    'ja': """あなたは長期的な印象を整理する専門家です。{AI_NAME} の {MASTER_NAME} に対する長期的な印象を管理しています。次の観察が昇格待ちです：
 
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
@@ -1484,7 +1550,7 @@ R をどう扱うか判断してください：
 または
 {{"action": "reject", "reason": "矛盾する内容の簡潔な説明"}}""",
 
-    'ko': """당신은 careful deduplication judge입니다. {AI_NAME}의 {MASTER_NAME}에 대한 장기 인상을 관리합니다. 승격 대기 중인 관찰입니다:
+    'ko': """당신은 장기 인상을 정리하는 전문가입니다. {AI_NAME}의 {MASTER_NAME}에 대한 장기 인상을 관리합니다. 승격 대기 중인 관찰입니다:
 
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
@@ -1508,7 +1574,7 @@ R을 어떻게 처리할지 판단하세요:
 또는
 {{"action": "reject", "reason": "모순에 대한 짧은 설명"}}""",
 
-    'ru': """Вы — careful deduplication judge. Вы поддерживаете долгосрочные впечатления {AI_NAME} о {MASTER_NAME}. На повышение ожидает наблюдение:
+    'ru': """Вы — куратор долгосрочных впечатлений. Вы поддерживаете долгосрочные впечатления {AI_NAME} о {MASTER_NAME}. На повышение ожидает наблюдение:
 
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
@@ -1650,9 +1716,9 @@ FACT_DEDUP_PROMPT = {
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
     'en': """Below are {COUNT} candidate fact pairs flagged by cosine similarity. For each pair, decide whether they actually refer to the same thing and choose how to handle it.
 
-======candidate pairs below======
+======以下为候选事实对======
 {PAIRS}
-======candidate pairs above======
+======以上为候选事实对======
 
 For each pair, pick one action:
 - merge: the two records do refer to the same event/preference/state — keep existing, drop candidate (existing's importance will auto +1; candidate id is recorded in merged_from_ids)
@@ -1667,9 +1733,9 @@ Output only a JSON array, each item containing index and action:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
     'ja': """以下は {COUNT} 組のベクトル類似度で抽出された候補ペアです。各ペアについて、本当に同じ事柄を指しているか判断し、処理方法を選んでください。
 
-======候補ペアここから======
+======以下为候选事实对======
 {PAIRS}
-======候補ペアここまで======
+======以上为候选事实对======
 
 各ペアについて、以下のいずれかを選択：
 - merge: 同じ出来事/嗜好/状態を指している → existing を残し candidate を削除（existing の importance が自動 +1、candidate id は merged_from_ids に記録）
@@ -1684,9 +1750,9 @@ JSON 配列のみを出力し、各項目に index と action を含めてくだ
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
     'ko': """아래는 벡터 유사도로 선별된 {COUNT}쌍의 후보 사실 쌍입니다. 각 쌍에 대해 실제로 같은 것을 가리키는지 판단하고 처리 방법을 선택하세요.
 
-======후보 쌍 시작======
+======以下为候选事实对======
 {PAIRS}
-======후보 쌍 끝======
+======以上为候选事实对======
 
 각 쌍에 대해 다음 중 하나를 선택:
 - merge: 두 기록이 실제로 같은 사건/선호/상태를 가리킴 — existing 유지, candidate 제거 (existing의 importance가 자동 +1, candidate id는 merged_from_ids에 기록됨)
@@ -1701,9 +1767,9 @@ JSON 배열만 출력하고 각 항목에 index와 action을 포함하세요:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
     'ru': """Ниже представлены {COUNT} пар фактов-кандидатов, отобранных по косинусной близости. Для каждой пары определите, действительно ли они описывают одно и то же, и выберите способ обработки.
 
-======пары кандидатов ниже======
+======以下为候选事实对======
 {PAIRS}
-======пары кандидатов выше======
+======以上为候选事实对======
 
 Для каждой пары выберите одно из действий:
 - merge: записи описывают одно и то же событие/предпочтение/состояние — сохранить existing, отбросить candidate (importance у existing увеличится на 1, id candidate запишется в merged_from_ids)
@@ -1737,13 +1803,13 @@ fact_dedup_prompt = FACT_DEDUP_PROMPT['zh']
 MEMORY_RECALL_RERANK_PROMPT = {
     'zh': """以下是用户最近提到的话题。请从候选记忆中挑选最相关的 {BUDGET} 条用于注入对话上下文。
 
-======用户当前话题======
+======以下为用户当前话题======
 {QUERY}
-======用户当前话题======
+======以上为用户当前话题======
 
-======候选记忆======
+======以下为候选记忆======
 {CANDIDATES}
-======候选记忆======
+======以上为候选记忆======
 
 每条候选前的 score 是用户对该记忆的累计确认度（高 = 反复确认，低 = 较少证据）。可作为辅助信号——同等相关度时优先选 score 高的；但不要让 score 完全压倒相关性，无关的高 score 记忆不该入选。
 
@@ -1753,13 +1819,13 @@ MEMORY_RECALL_RERANK_PROMPT = {
 最多 {BUDGET} 条；若候选不足 {BUDGET} 条相关，可返回更少。""",
     'en': """Below are topics the user has just mentioned. From the candidate memories, pick the {BUDGET} most relevant ones to inject into the conversation context.
 
-======current topics======
+======以下为用户当前话题======
 {QUERY}
-======current topics======
+======以上为用户当前话题======
 
-======candidate memories======
+======以下为候选记忆======
 {CANDIDATES}
-======candidate memories======
+======以上为候选记忆======
 
 The `score` annotation on each candidate is the user's cumulative confirmation count for that memory (high = repeatedly confirmed, low = thin evidence). Use it as an auxiliary signal — when relevance is tied, prefer the higher score; but do not let score override relevance, an irrelevant high-score memory should not be picked.
 
@@ -1769,13 +1835,13 @@ Output only a JSON array, ordered most-important first. Each item must contain a
 At most {BUDGET} items; return fewer if not enough candidates are relevant.""",
     'ja': """以下はユーザーが最近言及したトピックです。候補メモリから、対話コンテキストに注入する最も関連性の高い {BUDGET} 件を選んでください。
 
-======現在のトピック======
+======以下为用户当前话题======
 {QUERY}
-======現在のトピック======
+======以上为用户当前话题======
 
-======候補メモリ======
+======以下为候选记忆======
 {CANDIDATES}
-======候補メモリ======
+======以上为候选记忆======
 
 各候補の score 注釈は、ユーザーがそのメモリを累積確認した回数です（高 = 繰り返し確認、低 = 証拠が薄い）。補助シグナルとして利用してください。関連性が同等なら score の高い方を優先しますが、関連性を score が完全に覆すべきではありません。
 
@@ -1785,13 +1851,13 @@ JSON 配列のみを出力し、重要度順に並べてください。各項目
 最大 {BUDGET} 件。関連する候補がそれ以下なら、より少なく返しても構いません。""",
     'ko': """아래는 사용자가 최근 언급한 주제입니다. 후보 메모리 중에서 대화 컨텍스트에 주입할 가장 관련성 높은 {BUDGET}개를 선택하세요.
 
-======현재 주제======
+======以下为用户当前话题======
 {QUERY}
-======현재 주제======
+======以上为用户当前话题======
 
-======후보 메모리======
+======以下为候选记忆======
 {CANDIDATES}
-======후보 메모리======
+======以上为候选记忆======
 
 각 후보의 score는 사용자가 해당 메모리를 누적적으로 확인한 횟수입니다(높음 = 반복 확인, 낮음 = 증거 부족). 보조 신호로 활용하세요. 관련성이 같으면 score 높은 쪽을 우선하지만, 관련성을 score가 완전히 압도해서는 안 됩니다.
 
@@ -1801,13 +1867,13 @@ JSON 배열만 출력하고 중요도 순으로 정렬하세요. 각 항목에 `
 최대 {BUDGET}개; 관련 후보가 부족하면 더 적게 반환해도 됩니다.""",
     'ru': """Ниже представлены темы, которые пользователь только что упомянул. Из кандидатов памяти выберите {BUDGET} наиболее релевантных для внедрения в контекст диалога.
 
-======текущие темы======
+======以下为用户当前话题======
 {QUERY}
-======текущие темы======
+======以上为用户当前话题======
 
-======кандидаты======
+======以下为候选记忆======
 {CANDIDATES}
-======кандидаты======
+======以上为候选记忆======
 
 Аннотация `score` рядом с каждым кандидатом — это накопленное число подтверждений пользователем (высокое = повторяющееся подтверждение, низкое = слабые доказательства). Используйте как вспомогательный сигнал: при равной релевантности предпочтите более высокий score, но не позволяйте score полностью перевесить релевантность.
 

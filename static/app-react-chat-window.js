@@ -38,7 +38,8 @@
         onAvatarInteraction: null,
         onAvatarToolStateChange: null,
         pendingRollbackDrafts: Object.create(null),
-        rollbackDraft: ''
+        rollbackDraft: '',
+        _toolCursorResetKey: ''
     };
 
     var MOBILE_MAX_HEIGHT_RATIO = 0.85;
@@ -406,6 +407,7 @@
             composerAttachments: state.composerAttachments,
             rollbackDraft: state.rollbackDraft || undefined,
             _rollbackKey: state._rollbackKey || undefined,
+            _toolCursorResetKey: state._toolCursorResetKey || undefined,
             composerHidden: state.composerHidden,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
@@ -991,6 +993,11 @@
         renderWindow();
     }
 
+    function deactivateToolCursor() {
+        state._toolCursorResetKey = 'tcr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+        renderWindow();
+    }
+
     function setComposerAttachments(attachments) {
         state.composerAttachments = Array.isArray(attachments)
             ? attachments.map(function (attachment, index) {
@@ -1346,12 +1353,12 @@
         var btnIcon = getMinimizeIcon();
         var ballIcon = ensureMinimizedBallIcon();
         if (button) {
-            button.setAttribute('aria-label', minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框'));
+            button.setAttribute('aria-label', minimized ? getI18nText('chat.reactWindowRestore', '恢复聊天框') : getI18nText('chat.reactWindowMinimize', '最小化聊天框'));
             button.title = minimized ? getI18nText('chat.reactWindowRestoreShort', '恢复') : getI18nText('chat.reactWindowMinimizeShort', '最小化');
         }
         if (btnIcon) {
             btnIcon.src = minimized ? '/static/icons/expand_icon_on.png' : '/static/icons/expand_icon_off.png';
-            btnIcon.alt = minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框');
+            btnIcon.alt = minimized ? getI18nText('chat.reactWindowRestore', '恢复聊天框') : getI18nText('chat.reactWindowMinimize', '最小化聊天框');
         }
         // 重置悬浮球图标到默认态（清除可能残留的 hover 图标）
         if (ballIcon) {
@@ -1378,7 +1385,7 @@
         ensureBundleLoaded()
             .then(function () {
                 if (!mountWindow()) {
-                    showToast(getI18nText('chat.reactWindowMountFailed', '新版聊天框挂载失败'), 3000);
+                    showToast(getI18nText('chat.reactWindowMountFailed', '聊天框挂载失败'), 3000);
                     return;
                 }
                 // closeWindow 已经会重置 minimized，所以到这里通常 minimized=false
@@ -1399,7 +1406,7 @@
             })
             .catch(function (error) {
                 console.error('[ReactChatWindow] open failed:', error);
-                showToast(getI18nText('chat.reactWindowLoadFailed', '新版聊天框资源加载失败'), 3500);
+                showToast(getI18nText('chat.reactWindowLoadFailed', '聊天框资源加载失败'), 3500);
             });
     }
 
@@ -1885,10 +1892,24 @@
         });
     }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
+    async function initAfterStorageBarrier() {
+        if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+            try {
+                await window.waitForStorageLocationStartupBarrier();
+            } catch (_) {}
+        } else if (window.__nekoStorageLocationStartupBarrier
+            && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+            try {
+                await window.__nekoStorageLocationStartupBarrier;
+            } catch (_) {}
+        }
         init();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initAfterStorageBarrier);
+    } else {
+        initAfterStorageBarrier();
     }
 
     window.reactChatWindowHost = {
@@ -1899,6 +1920,7 @@
         setMessages: setMessages,
         setComposerAttachments: setComposerAttachments,
         setComposerHidden: setComposerHidden,
+        deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,
         removeMessage: removeMessage,

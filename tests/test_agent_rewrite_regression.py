@@ -2,11 +2,19 @@ import ast
 import asyncio
 import json
 from pathlib import Path
+from urllib.parse import urlencode
 
 import pytest
 from starlette.requests import Request
 
 from utils.config_manager import ConfigManager, get_config_manager
+
+
+def _expected_plugin_dashboard_location(v: str = "") -> str:
+    from config import USER_PLUGIN_BASE
+
+    base_ui = USER_PLUGIN_BASE.rstrip("/") + "/ui"
+    return f"{base_ui}?{urlencode({'v': v})}" if v else base_ui
 
 
 def _route_paths_from_decorators(py_file_path: str, target_name: str):
@@ -96,29 +104,51 @@ def test_main_agent_router_expected_proxy_endpoints_exist():
 
 
 @pytest.mark.asyncio
-async def test_main_agent_router_plugin_dashboard_redirect_preserves_yui_handoff_query():
-    from config import USER_PLUGIN_SERVER_PORT
+async def test_main_agent_router_plugin_dashboard_redirect_uses_base_ui_url_without_query():
     from main_routers.agent_router import redirect_plugin_dashboard
 
-    scope = {
+    request = Request({
         "type": "http",
         "method": "GET",
-        "scheme": "http",
-        "server": ("testserver", 80),
-        "client": ("127.0.0.1", 12345),
-        "root_path": "",
         "path": "/api/agent/user_plugin/dashboard",
-        "raw_path": b"/api/agent/user_plugin/dashboard",
-        "query_string": b"yui_guide=1&flow_id=home_yui_guide_v1&source_page=home&resume_scene=plugin_dashboard_landing&handoff_token=h_abc123",
         "headers": [],
-    }
-    response = await redirect_plugin_dashboard(Request(scope))
+        "query_string": b"",
+    })
+    response = await redirect_plugin_dashboard(request)
 
-    assert response.headers["location"] == (
-        f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/ui"
-        "?yui_guide=1&flow_id=home_yui_guide_v1&source_page=home"
-        "&resume_scene=plugin_dashboard_landing&handoff_token=h_abc123"
-    )
+    assert response.headers["location"] == _expected_plugin_dashboard_location()
+
+
+@pytest.mark.asyncio
+async def test_main_agent_router_plugin_dashboard_redirect_keeps_only_v_query():
+    from main_routers.agent_router import redirect_plugin_dashboard
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/agent/user_plugin/dashboard",
+        "headers": [],
+        "query_string": b"v=abc123&yui_guide=1&handoff=token",
+    })
+    response = await redirect_plugin_dashboard(request)
+
+    assert response.headers["location"] == _expected_plugin_dashboard_location("abc123")
+
+
+@pytest.mark.asyncio
+async def test_main_agent_router_plugin_dashboard_redirect_ignores_empty_v_query():
+    from main_routers.agent_router import redirect_plugin_dashboard
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/agent/user_plugin/dashboard",
+        "headers": [],
+        "query_string": b"v=&yui_guide=1",
+    })
+    response = await redirect_plugin_dashboard(request)
+
+    assert response.headers["location"] == _expected_plugin_dashboard_location()
 
 
 def test_agent_server_expected_event_driven_endpoints_exist():
@@ -232,6 +262,14 @@ def _script_tag_position(source: str, script_name: str) -> int:
     return position
 
 
+def _stylesheet_tag_position(source: str, stylesheet_name: str) -> int:
+    """Find a stylesheet link while allowing cache-buster query strings."""
+    needle = f'<link rel="stylesheet" href="/static/css/{stylesheet_name}'
+    position = source.find(needle)
+    assert position != -1, f"missing stylesheet link for {stylesheet_name}"
+    return position
+
+
 def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
     source = Path("templates/index.html").read_text(encoding="utf-8")
 
@@ -253,7 +291,7 @@ def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
             for name in (*_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
         ]
         assert positions == sorted(positions), template_path
-        assert '<link rel="stylesheet" href="/static/css/yui-guide.css">' in source
+        _stylesheet_tag_position(source, "yui-guide.css")
 
 
 def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_mappings():
@@ -271,24 +309,14 @@ def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_
         assert expected in source
 
 
-def test_plugin_manager_bootstraps_yui_overlay_bridge_and_runtime():
+def test_plugin_manager_bootstraps_plugin_dashboard_runtime_without_overlay_bridge():
     app_source = Path("frontend/plugin-manager/src/App.vue").read_text(encoding="utf-8")
     main_source = Path("frontend/plugin-manager/src/main.ts").read_text(encoding="utf-8")
-    bridge_source = Path("frontend/plugin-manager/src/composables/useYuiTutorialBridge.ts").read_text(encoding="utf-8")
 
-    assert "<YuiTutorialOverlay />" in app_source
-    assert "useYuiTutorialBridge" in main_source
-    assert "tutorialBridge.init()" in main_source
+    assert "<YuiTutorialOverlay />" not in app_source
+    assert "useYuiTutorialBridge" not in main_source
+    assert "tutorialBridge.init()" not in main_source
     assert "initPluginDashboardYuiGuideRuntime()" in main_source
-    for expected in (
-        "const QUERY_KEY_GUIDE = 'yui_guide'",
-        "const QUERY_KEY_FLOW_ID = 'flow_id'",
-        "const QUERY_KEY_SOURCE_PAGE = 'source_page'",
-        "const QUERY_KEY_RESUME_SCENE = 'resume_scene'",
-        "const QUERY_KEY_HANDOFF_TOKEN = 'handoff_token'",
-        "const COMPLETE_MESSAGE_TYPE = 'neko:yui-guide:plugin-dashboard-complete'",
-    ):
-        assert expected in bridge_source
 
 
 def test_task_executor_format_messages_marks_latest_user_request():
@@ -578,7 +606,7 @@ def test_agent_server_openclaw_sender_id_prefers_latest_user_identity():
             break
     assert fn_src is not None
 
-    ns = {}
+    ns = {"AGENT_HISTORY_TURNS": 8}
     exec("from typing import Any\n" + fn_src, ns)
     resolver = ns["_resolve_openclaw_sender_id"]
 
@@ -1429,6 +1457,233 @@ def test_cross_server_publish_no_http_fallback():
         "_publish_analyze_request_with_fallback still contains HTTP fallback"
     assert "/agent/analyze_request" not in func_src, \
         "_publish_analyze_request_with_fallback still targets HTTP endpoint"
+
+
+class _FakeInternalResponse:
+    def __init__(self, status, body):
+        self.status_code = status
+        self.text = body
+
+
+def _make_fake_internal_client(status, body, capture=None):
+    class FakeInternalClient:
+        async def post(self, url, **kwargs):
+            if capture is not None:
+                capture.append({"url": url, **kwargs})
+            return _FakeInternalResponse(status, body)
+
+    return FakeInternalClient
+
+
+async def test_cross_server_post_memory_server_success_and_url_encoding(monkeypatch):
+    """_post_memory_server should treat 2xx + JSON body as success and URL-encode names."""
+    from main_logic.cross_server import _post_memory_server
+
+    calls = []
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(
+            200,
+            json.dumps({"status": "cached", "count": 2}, ensure_ascii=False),
+            capture=calls,
+        )(),
+    )
+
+    ok, err_detail, payload = await _post_memory_server(
+        "cache",
+        "小天/测试",
+        [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        timeout_s=3.0,
+    )
+
+    assert ok is True
+    assert err_detail == ""
+    assert payload.get("status") == "cached"
+    assert calls
+    assert calls[0]["url"].endswith("/cache/%E5%B0%8F%E5%A4%A9%2F%E6%B5%8B%E8%AF%95")
+    assert "input_history" in calls[0]["json"]
+
+
+async def test_cross_server_post_memory_server_handles_http_non_2xx(monkeypatch):
+    """_post_memory_server should convert non-2xx response into explicit error detail."""
+    from main_logic.cross_server import _post_memory_server
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(502, "bad gateway")(),
+    )
+
+    ok, err_detail, payload = await _post_memory_server(
+        "cache",
+        "Tian",
+        [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        timeout_s=3.0,
+    )
+
+    assert ok is False
+    assert "HTTP 502" in err_detail
+    assert payload == {}
+
+
+async def test_cross_server_post_memory_server_handles_non_json_2xx(monkeypatch):
+    """_post_memory_server should fail loudly when body is non-JSON despite 2xx."""
+    from main_logic.cross_server import _post_memory_server
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(200, "<html>oops</html>")(),
+    )
+
+    ok, err_detail, payload = await _post_memory_server(
+        "cache",
+        "Tian",
+        [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        timeout_s=3.0,
+    )
+
+    assert ok is False
+    assert "non-JSON response" in err_detail
+    assert payload == {}
+
+
+async def test_cross_server_post_memory_server_handles_business_error(monkeypatch):
+    """_post_memory_server should return explicit error when memory_server returns status=error."""
+    from main_logic.cross_server import _post_memory_server
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(200, json.dumps({"status": "error", "message": "boom"}))(),
+    )
+
+    ok, err_detail, payload = await _post_memory_server(
+        "cache",
+        "Tian",
+        [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        timeout_s=3.0,
+    )
+
+    assert ok is False
+    assert err_detail == "boom"
+    assert payload.get("status") == "error"
+
+
+def test_cross_server_session_end_uses_settle_for_zero_remaining():
+    """session end must call /settle when everything was already /cache-synced."""
+    source = Path("main_logic/cross_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assignments = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in {"_settle_endpoint", "_settle_payload"}:
+                assignments[target.id] = ast.dump(node.value, include_attributes=False)
+
+    assert assignments["_settle_endpoint"] == ast.dump(
+        ast.parse('"process" if remaining else "settle"', mode="eval").body,
+        include_attributes=False,
+    )
+    assert assignments["_settle_payload"] == ast.dump(
+        ast.parse("remaining if remaining else []", mode="eval").body,
+        include_attributes=False,
+    )
+
+
+def test_cross_server_memory_cache_failure_paths_are_selective():
+    """No warning-rate-limit helper should be reintroduced for memory cache writes."""
+    source = Path("main_logic/cross_server.py").read_text(encoding="utf-8")
+    assert "MEMORY_WRITE_WARN_WINDOW_S" not in source
+    assert "_warn_memory_write_issue_rate_limited" not in source
+
+
+def test_cross_server_memory_write_exception_classification():
+    from main_logic.cross_server import _is_expected_memory_write_exception
+    import aiohttp
+
+    assert _is_expected_memory_write_exception(asyncio.TimeoutError()) is True
+    assert _is_expected_memory_write_exception(aiohttp.ClientError("x")) is True
+    assert _is_expected_memory_write_exception(ConnectionError("x")) is True
+    assert _is_expected_memory_write_exception(OSError("x")) is True
+    assert _is_expected_memory_write_exception(ValueError("x")) is False
+
+
+def test_cross_server_memory_cache_exception_logs_warning_once_then_debug(monkeypatch):
+    import main_logic.cross_server as cs
+
+    warning_msgs = []
+    debug_msgs = []
+
+    monkeypatch.setattr(
+        cs.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warning_msgs.append(msg % args if args else msg),
+    )
+    monkeypatch.setattr(
+        cs.logger,
+        "debug",
+        lambda msg, *args, **kwargs: debug_msgs.append(msg % args if args else msg),
+    )
+
+    health_state = {cs.MEMORY_CACHE_SCOPE_TURN_END: False}
+    cs._mark_memory_cache_exception("小天", cs.MEMORY_CACHE_SCOPE_TURN_END, asyncio.TimeoutError(), health_state)
+    cs._mark_memory_cache_exception("小天", cs.MEMORY_CACHE_SCOPE_TURN_END, asyncio.TimeoutError(), health_state)
+
+    assert len(warning_msgs) == 1
+    assert len(debug_msgs) == 1
+    assert "进入异常状态" in warning_msgs[0]
+    assert "持续" in debug_msgs[0]
+    assert health_state[cs.MEMORY_CACHE_SCOPE_TURN_END] is True
+
+
+def test_cross_server_unknown_memory_cache_exception_keeps_traceback(monkeypatch):
+    import main_logic.cross_server as cs
+
+    warning_calls = []
+    monkeypatch.setattr(
+        cs.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warning_calls.append(
+            {"message": msg % args if args else msg, "kwargs": kwargs}
+        ),
+    )
+
+    health_state = {cs.MEMORY_CACHE_SCOPE_TURN_END: False}
+    cs._mark_memory_cache_exception("小天", cs.MEMORY_CACHE_SCOPE_TURN_END, ValueError("bad payload"), health_state)
+
+    assert len(warning_calls) == 1
+    assert "未知类型" in warning_calls[0]["message"]
+    assert warning_calls[0]["kwargs"].get("exc_info") is True
+
+
+def test_cross_server_memory_cache_business_failure_and_recovery(monkeypatch):
+    import main_logic.cross_server as cs
+
+    debug_msgs = []
+    info_msgs = []
+
+    monkeypatch.setattr(
+        cs.logger,
+        "debug",
+        lambda msg, *args, **kwargs: debug_msgs.append(msg % args if args else msg),
+    )
+    monkeypatch.setattr(
+        cs.logger,
+        "info",
+        lambda msg, *args, **kwargs: info_msgs.append(msg % args if args else msg),
+    )
+
+    health_state = {cs.MEMORY_CACHE_SCOPE_AVATAR: False}
+    cs._mark_memory_cache_business_failure("小天", cs.MEMORY_CACHE_SCOPE_AVATAR, "boom", health_state)
+    cs._mark_memory_cache_business_failure("小天", cs.MEMORY_CACHE_SCOPE_AVATAR, "boom2", health_state)
+    cs._mark_memory_cache_success("小天", cs.MEMORY_CACHE_SCOPE_AVATAR, health_state)
+    cs._mark_memory_cache_success("小天", cs.MEMORY_CACHE_SCOPE_AVATAR, health_state)
+
+    assert "进入失败状态" in debug_msgs[0]
+    assert "持续" in debug_msgs[1]
+    assert len(info_msgs) == 1
+    assert "已恢复" in info_msgs[0]
+    assert health_state[cs.MEMORY_CACHE_SCOPE_AVATAR] is False
 
 
 # ---------------------------------------------------------------------------
