@@ -7,7 +7,7 @@ getter functions, and proactive-related injection fragments.
 """
 from __future__ import annotations
 
-from config.prompts_sys import _loc
+from config.prompts_sys import _loc, get_avatar_annotation_ignore_hint
 
 proactive_chat_prompt = """你是{lanlan_name}，现在看到了一些B站首页推荐和微博热议话题。请根据与{master_name}的对话历史和你自己的兴趣，判断是否要主动和{master_name}聊聊这些内容。
 
@@ -439,9 +439,9 @@ proactive_chat_prompt_personal_ru = """Вы - {lanlan_name}. Вы только �
 {memory_context}
 ======以上为对话历史======
 
-======Личные обновления======
+======Ниже Личные обновления======
 {personal_dynamic}
-======Конец личных обновлений======
+======Выше Личные обновления======
 
 Решите по следующим принципам:
 1. Если содержание интересное, свежее или достойно обсуждения, можно заговорить об этом первым.
@@ -640,9 +640,9 @@ proactive_chat_prompt_ru = """Вы - {lanlan_name}. Вы только что у�
 {memory_context}
 ======以上为对话历史======
 
-======Рекомендации с главной======
+======Ниже Рекомендации с главной======
 {trending_content}
-======Конец рекомендаций с главной======
+======Выше Рекомендации с главной======
 
 Решите по следующим принципам:
 1. Если содержание интересное, свежее или достойно обсуждения, можно поднять его первым.
@@ -662,9 +662,9 @@ proactive_chat_prompt_screenshot_ru = """Вы - {lanlan_name}. Сейчас вы
 {memory_context}
 ======以上为对话历史======
 
-======Текущее содержимое экрана======
+======Ниже Текущее содержимое экрана======
 {screenshot_content}
-======Конец содержимого экрана======
+======Выше Текущее содержимое экрана======
 {window_title_section}
 
 Решите по следующим принципам:
@@ -684,9 +684,9 @@ proactive_chat_prompt_window_search_ru = """Вы - {lanlan_name}. Вы види�
 {memory_context}
 ======以上为对话历史======
 
-======То, на что сейчас обращает внимание {master_name}======
+======Ниже То, на что сейчас обращает внимание {master_name}======
 {window_context}
-======Конец текущего контекста======
+======Выше То, на что сейчас обращает внимание {master_name}======
 
 Решите по следующим принципам:
 1. Сфокусируйтесь на текущем занятии {master_name} и найдите интересную точку входа в разговор.
@@ -707,9 +707,9 @@ proactive_chat_prompt_news_ru = """Вы - {lanlan_name}. Вы только чт�
 {memory_context}
 ======以上为对话历史======
 
-======Горячие темы======
+======Ниже Горячие темы======
 {trending_content}
-======Конец горячих тем======
+======Выше Горячие темы======
 
 Решите по следующим принципам:
 1. Если тема интересная, свежая или достойна обсуждения, можно поднять ее первым.
@@ -729,9 +729,9 @@ proactive_chat_prompt_video_ru = """Вы - {lanlan_name}. Вы только чт
 {memory_context}
 ======以上为对话历史======
 
-======Рекомендованные видео======
+======Ниже Рекомендованные видео======
 {trending_content}
-======Конец рекомендаций видео======
+======Выше Рекомендованные видео======
 
 Решите по следующим принципам:
 1. Если видео интересное, свежее или достойно обсуждения, можно поднять его первым.
@@ -793,9 +793,9 @@ proactive_chat_prompt_music_en = """You are {lanlan_name}, and {master_name} mig
 {memory_context}
 ======以上为对话历史======
 
-======Current Conversation======
+======Below is Current Conversation======
 {current_chat}
-======End of Current Conversation======
+======Above is Current Conversation======
 
 Use these rules to decide whether to play music and what to play:
 1.  When {master_name} explicitly asks for music (e.g., "play some music," "put on a song," "want to listen to music"), you should play music.
@@ -814,9 +814,9 @@ proactive_chat_prompt_music_ja = """あなたは{lanlan_name}です。今、{mas
 {memory_context}
 ======以上为对话历史======
 
-======現在の会話======
+======以下は現在の会話======
 {current_chat}
-======現在の会話ここまで======
+======以上は現在の会話======
 
 以下の原則に基づいて、音楽を再生するか、何を再生するかを決定してください：
 1. {master_name}が明確に音楽をリクエストした場合（例：「音楽かけて」、「何か曲を再生して」、「音楽を聴きたい」）、音楽を再生すべきです。
@@ -835,9 +835,9 @@ proactive_chat_prompt_music_ko = """당신은 {lanlan_name}이고, {master_name}
 {memory_context}
 ======以上为对话历史======
 
-======현재 대화======
+======아래는 현재 대화======
 {current_chat}
-======현재 대화 끝======
+======위는 현재 대화======
 
 다음 규칙에 따라 음악 재생 여부와 재생할 음악을 결정하세요:
 1. {master_name}이 명시적으로 음악을 요청할 때(예: "음악 좀 틀어줘", "노래 한 곡 재생해줘"), 음악을 재생해야 합니다.
@@ -856,9 +856,9 @@ proactive_chat_prompt_music_ru = """Вы - {lanlan_name}, и {master_name}, во
 {memory_context}
 ======以上为对话历史======
 
-======Текущий разговор======
+======Ниже Текущий разговор======
 {current_chat}
-======Конец текущего разговора======
+======Выше Текущий разговор======
 
 Используйте следующие правила, чтобы решить, нужно ли включать музыку и какую именно:
 1. Если {master_name} прямо просит музыку (например: "включи музыку", "поставь песню", "хочу послушать музыку"), музыку следует включить.
@@ -967,9 +967,9 @@ proactive_screen_web_ja = """あなたは若者向けの話題キュレーター
 
 {recent_chats_section}
 
-======集約コンテンツ======
+======以下は集約コンテンツ======
 {merged_content}
-======集約コンテンツここまで======
+======以上は集約コンテンツ======
 
 重要ルール：
 1. 会話履歴や最近の話しかけ記録と重複・類似する内容は選ばない
@@ -1000,9 +1000,9 @@ proactive_screen_web_ko = """당신은 젊은 세대를 위한 주제 큐레이�
 
 {recent_chats_section}
 
-======종합 콘텐츠======
+======아래는 종합 콘텐츠======
 {merged_content}
-======종합 콘텐츠 끝======
+======위는 종합 콘텐츠======
 
 중요 규칙:
 1. 대화 기록이나 최근 말 건넨 기록과 중복/유사한 내용은 선택하지 않는다
@@ -1033,9 +1033,9 @@ proactive_screen_web_ru = """Вы - куратор тем для молодой 
 
 {recent_chats_section}
 
-======Сводный контент======
+======Ниже Сводный контент======
 {merged_content}
-======Конец сводного контента======
+======Выше Сводный контент======
 
 Критические правила:
 1. НЕ выбирайте ничего, что пересекается с историей чата или недавними проактивными сообщениями
@@ -1454,9 +1454,9 @@ PROACTIVE_MUSIC_KEYWORD_PROMPTS = {
 {memory_context}
 ======以上为对话历史======
 
-======Current Conversation======
+======Below is Current Conversation======
 {recent_chats_section}
-======End of Current Conversation======
+======Above is Current Conversation======
 
 Use these rules to decide whether to play music and what to play:
 1. When {master_name} explicitly asks for music (e.g., "play some music," "put on a song," "want to listen to music"), you should play music.
@@ -1474,9 +1474,9 @@ Reply:
 {memory_context}
 ======以上为对话历史======
 
-======現在の会話======
+======以下は現在の会話======
 {recent_chats_section}
-======以上が現在の対話内容となります======
+======以上は現在の会話======
 
 以下の原則に基づいて、音楽を再生するか、何を再生するかを決定してください：
 1. {master_name}が明確に音楽をリクエストした場合（例：「音楽かけて」、「何か曲を再生して」、「音楽を聴きたい」）、音楽を再生すべきです。
@@ -1494,9 +1494,9 @@ Reply:
 {memory_context}
 ======以上为对话历史======
 
-======현재 대화======
+======아래는 현재 대화======
 {recent_chats_section}
-======이상======
+======위는 현재 대화======
 
 다음 원칙에 따라 음악을 재생할지, 무엇을 재생할지 결정하세요:
 1. {master_name}이(가) 명시적으로 음악을 요청할 때(예: "음악 틀어줘", "노래 틀어줘", "음악 듣고 싶어") 음악을 재생해야 합니다.
@@ -1514,9 +1514,9 @@ Reply:
 {memory_context}
 ======以上为对话历史======
 
-======Текущий разговор======
+======Ниже Текущий разговор======
 {recent_chats_section}
-======Конец разговора======
+======Выше Текущий разговор======
 
 Используйте эти правила, чтобы решить, воспроизводить ли музыку и какую:
 1. Когда {master_name} явно запрашивает музыку (например, "включи музыку", "поставь песню", "хочу послушать музыку"), вы должны воспроизвести музыку.
@@ -1643,9 +1643,9 @@ Rules:
 - 鮮度：出たばかり、今まさに話題になっているもの優先
 - 会話の切り口がある：「ねえ、これ見た？」と自然に言えるもの
 
-======集約コンテンツ======
+======以下は集約コンテンツ======
 {merged_content}
-======集約コンテンツここまで======
+======以上は集約コンテンツ======
 
 ルール：
 1. 会話履歴や最近の話しかけ記録と重複・類似する内容は選ばない
@@ -1663,9 +1663,9 @@ Rules:
 - 신선함: 방금 나온, 현재 화제인 것 우선
 - 대화 시작점: "야, 이거 봤어?" 하고 자연스럽게 말할 수 있는 것
 
-======종합 콘텐츠======
+======아래는 종합 콘텐츠======
 {merged_content}
-======종합 콘텐츠 끝======
+======위는 종합 콘텐츠======
 
 규칙:
 1. 대화 기록이나 최근 말 건넨 기록과 중복/유사한 내용은 선택하지 않는다
@@ -1683,9 +1683,9 @@ Rules:
 - Свежесть: приоритет новому и трендовому
 - Удобный вход в разговор: легко сказать «эй, ты это видел?»
 
-======Сводный контент======
+======Ниже Сводный контент======
 {merged_content}
-======Конец сводного контента======
+======Выше Сводный контент======
 
 Правила:
 1. НЕ выбирайте то, что пересекается с историей чата или недавними проактивными сообщениями
@@ -2217,19 +2217,19 @@ BEGIN_GENERATE = {
 
 # ---------- 近期搭话记录注入 ----------
 RECENT_PROACTIVE_CHATS_HEADER = {
-    'zh': '======近期搭话记录（你应该避免雷同！）======\n以下是你最近主动搭话时说过的话。新的搭话务必避免与这些内容雷同（包括话题、句式和语气）：',
-    'en': '======Recent Proactive Chats (You MUST avoid repetition!) ======\nBelow are things you recently said when proactively chatting. Your new message MUST avoid being similar to any of these (topic, phrasing, and tone):',
-    'ja': '======最近の自発的発言記録（類似を避けること！）======\n以下はあなたが最近自発的に話しかけた内容です。新しい発言はこれらと類似しないように（話題・言い回し・トーンすべて）：',
-    'ko': '======최근 주도적 대화 기록 (중복을 피해야 합니다!) ======\n아래는 최근 주도적으로 대화를 건넨 내용입니다. 새 메시지는 이들과 유사하지 않아야 합니다 (주제, 문체, 톤 모두):',
-    'ru': '======Недавние проактивные сообщения (ОБЯЗАТЕЛЬНО избегать повторений!) ======\nНиже — то, что вы недавно говорили при проактивном общении. Новое сообщение НЕ должно быть похоже ни на одно из них (тема, формулировка и тон):',
+    'zh': '======以下为近期搭话记录（你应该避免雷同！）======\n以下是你最近主动搭话时说过的话。新的搭话务必避免与这些内容雷同（包括话题、句式和语气）：',
+    'en': '======Below is Recent Proactive Chats (You MUST avoid repetition!) ======\nBelow are things you recently said when proactively chatting. Your new message MUST avoid being similar to any of these (topic, phrasing, and tone):',
+    'ja': '======以下は最近の自発的発言記録（類似を避けること！）======\n以下はあなたが最近自発的に話しかけた内容です。新しい発言はこれらと類似しないように（話題・言い回し・トーンすべて）：',
+    'ko': '======아래는 최근 주도적 대화 기록 (중복을 피해야 합니다!) ======\n아래는 최근 주도적으로 대화를 건넨 내용입니다. 새 메시지는 이들과 유사하지 않아야 합니다 (주제, 문체, 톤 모두):',
+    'ru': '======Ниже Недавние проактивные сообщения (ОБЯЗАТЕЛЬНО избегать повторений!) ======\nНиже — то, что вы недавно говорили при проактивном общении. Новое сообщение НЕ должно быть похоже ни на одно из них (тема, формулировка и тон):',
 }
 
 RECENT_PROACTIVE_CHATS_FOOTER = {
-    'zh': '======搭话记录结束（以上内容不可重复！）======',
-    'en': '======End Recent Chats (Do NOT repeat the above!) ======',
-    'ja': '======発言記録ここまで（上記の内容を繰り返さないこと！）======',
-    'ko': '======대화 기록 끝 (위 내용을 반복하지 마세요!) ======',
-    'ru': '======Конец записей (НЕ повторяйте вышесказанное!) ======',
+    'zh': '======以上为近期搭话记录（不可重复！）======',
+    'en': '======Above is Recent Proactive Chats (Do NOT repeat!) ======',
+    'ja': '======以上は最近の自発的発言記録（繰り返さないこと！）======',
+    'ko': '======위는 최근 주도적 대화 기록 (반복하지 마세요!) ======',
+    'ru': '======Выше Недавние проактивные сообщения (НЕ повторяйте!) ======',
 }
 
 # ---------- 近期搭话时间/来源标签 ----------
@@ -2251,19 +2251,19 @@ RECENT_PROACTIVE_CHANNEL_LABELS = {
 
 # ---------- 屏幕区块 ----------
 SCREEN_SECTION_HEADER = {
-    'zh': '======{master}的屏幕======',
-    'en': "======Screen of {master}======",
-    'ja': '======{master}の画面======',
-    'ko': '======{master}의 화면======',
-    'ru': '======Экран для {master}======',
+    'zh': '======以下为{master}的屏幕======',
+    'en': "======Below is Screen of {master}======",
+    'ja': '======以下は{master}の画面======',
+    'ko': '======아래는 {master}의 화면======',
+    'ru': '======Ниже Экран для {master}======',
 }
 
 SCREEN_SECTION_FOOTER = {
-    'zh': '======屏幕内容结束======',
-    'en': '======Screen Content End======',
-    'ja': '======画面内容ここまで======',
-    'ko': '======화면 내용 끝======',
-    'ru': '======Конец содержимого экрана======',
+    'zh': '======以上为{master}的屏幕======',
+    'en': "======Above is Screen of {master}======",
+    'ja': '======以上は{master}の画面======',
+    'ko': '======위는 {master}의 화면======',
+    'ru': '======Выше Экран для {master}======',
 }
 
 # ---------- 网络话题区块 ----------
@@ -2278,62 +2278,75 @@ SCREEN_SECTION_FOOTER = {
 # the prompt elsewhere already groups vision / music / meme as
 # "external material" too, so the bare "external" label was ambiguous.
 EXTERNAL_TOPIC_HEADER = {
-    'zh': '======网络话题======',
-    'en': '======Web Topic======',
-    'ja': '======ウェブ話題======',
-    'ko': '======웹 화제======',
-    'ru': '======Веб-тема======',
+    'zh': '======以下为网络话题======',
+    'en': '======Below is Web Topic======',
+    'ja': '======以下はウェブ話題======',
+    'ko': '======아래는 웹 화제======',
+    'ru': '======Ниже Веб-тема======',
 }
 
 EXTERNAL_TOPIC_FOOTER = {
-    'zh': '======网络话题结束======',
-    'en': '======Web Topic End======',
-    'ja': '======ウェブ話題ここまで======',
-    'ko': '======웹 화제 끝======',
-    'ru': '======Конец веб-темы======',
+    'zh': '======以上为网络话题======',
+    'en': '======Above is Web Topic======',
+    'ja': '======以上はウェブ話題======',
+    'ko': '======위는 웹 화제======',
+    'ru': '======Выше Веб-тема======',
 }
 
 # ---------- 音乐推荐素材区块 ----------
 MUSIC_SECTION_HEADER = {
-    'zh': '======音乐推荐素材======',
-    'en': '======Music Recommendations======',
-    'ja': '======音楽おすすめ素材======',
-    'ko': '======음악 추천 소재======',
-    'ru': '======Музыкальные рекомендации======',
+    'zh': '======以下为音乐推荐素材======',
+    'en': '======Below is Music Recommendations======',
+    'ja': '======以下は音楽おすすめ素材======',
+    'ko': '======아래는 음악 추천 소재======',
+    'ru': '======Ниже Музыкальные рекомендации======',
 }
 
 MUSIC_SECTION_FOOTER = {
-    'zh': '======音乐素材结束======',
-    'en': '======Music Recommendations End======',
-    'ja': '======音楽素材ここまで======',
-    'ko': '======음악 소재 끝======',
-    'ru': '======Конец музыкальных рекомендаций======',
+    'zh': '======以上为音乐推荐素材======',
+    'en': '======Above is Music Recommendations======',
+    'ja': '======以上は音楽おすすめ素材======',
+    'ko': '======위는 음악 추천 소재======',
+    'ru': '======Выше Музыкальные рекомендации======',
 }
 
 # ---------- 表情包素材区块 ----------
 MEME_SECTION_HEADER = {
-    'zh': '======表情包素材======',
-    'en': '======Meme Material======',
-    'ja': '======ミーム素材======',
-    'ko': '======밈 소재======',
-    'ru': '======Материал мемов======',
+    'zh': '======以下为表情包素材======',
+    'en': '======Below is Meme Material======',
+    'ja': '======以下はミーム素材======',
+    'ko': '======아래는 밈 소재======',
+    'ru': '======Ниже Материал мемов======',
 }
 
 MEME_SECTION_FOOTER = {
-    'zh': '======表情包素材结束======',
-    'en': '======Meme Material End======',
-    'ja': '======ミーム素材ここまで======',
-    'ko': '======밈 소재 끝======',
-    'ru': '======Конец материала мемов======',
+    'zh': '======以上为表情包素材======',
+    'en': '======Above is Meme Material======',
+    'ja': '======以上はミーム素材======',
+    'ko': '======위는 밈 소재======',
+    'ru': '======Выше Материал мемов======',
 }
 
 # ---------- 主动搭话信息源标签 ----------
 PROACTIVE_SOURCE_LABELS = {
-    'zh': {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态', 'music': '音乐推荐'},
-    'en': {'news': 'Trending Topics', 'video': 'Video Recommendations', 'home': 'Home Recommendations', 'window': 'Window Context', 'personal': 'Personal Updates', 'music': 'Music Recommendations'},
-    'ja': {'news': 'トレンド話題', 'video': '動画のおすすめ', 'home': 'ホームおすすめ', 'window': 'ウィンドウコンテキスト', 'personal': '個人の動向', 'music': '音楽のおすすめ'},
-    'ko': {'news': '화제의 토픽', 'video': '동영상 추천', 'home': '홈 추천', 'window': '창 컨텍스트', 'personal': '개인 소식', 'music': '음악 추천'},
-    'ru': {'news': 'Горячие темы', 'video': 'Видео рекомендации', 'home': 'Рекомендации на главной', 'window': 'Контекст окна', 'personal': 'Личные новости', 'music': 'Музыкальные рекомендации'},
+    'zh': {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态', 'music': '音乐推荐', 'mini_game': '小游戏邀请'},
+    'en': {'news': 'Trending Topics', 'video': 'Video Recommendations', 'home': 'Home Recommendations', 'window': 'Window Context', 'personal': 'Personal Updates', 'music': 'Music Recommendations', 'mini_game': 'Mini-game Invitation'},
+    'ja': {'news': 'トレンド話題', 'video': '動画のおすすめ', 'home': 'ホームおすすめ', 'window': 'ウィンドウコンテキスト', 'personal': '個人の動向', 'music': '音楽のおすすめ', 'mini_game': 'ミニゲームのお誘い'},
+    'ko': {'news': '화제의 토픽', 'video': '동영상 추천', 'home': '홈 추천', 'window': '창 컨텍스트', 'personal': '개인 소식', 'music': '음악 추천', 'mini_game': '미니게임 초대'},
+    'ru': {'news': 'Горячие темы', 'video': 'Видео рекомендации', 'home': 'Рекомендации на главной', 'window': 'Контекст окна', 'personal': 'Личные новости', 'music': 'Музыкальные рекомендации', 'mini_game': 'Приглашение в мини-игру'},
+}
+
+# ---------- Mini-game 邀请短路文案 ----------
+# proactive_chat 在 propensity / skip_probability / restricted_screen_only
+# 全过之后 10% 概率短路成"邀请玩家来玩小游戏"，跳过 Phase 1/2 LLM。文案保持
+# 单句、轻量、不预设玩家答应；称呼用 master_name 实名，不用"主人"等物化称呼。
+# 24h+10 chats cooldown 在 main_routers.system_router 那侧管理，与文案解耦。
+MINI_GAME_INVITE_LINE = {
+    'zh': '{master_name}，要不要现在跟我一起踢一会儿足球小游戏？',
+    'en': "{master_name}, want to play a quick round of the soccer mini-game with me?",
+    'ja': '{master_name}、今ちょっとサッカーのミニゲーム、一緒にやらない？',
+    'ko': '{master_name}, 지금 같이 축구 미니게임 한 판 어때?',
+    'ru': '{master_name}, не хочешь сыграть со мной партию в мини-футбол?',
 }
 
 # ---------- 音乐搜索结果格式化 ----------
@@ -2377,22 +2390,6 @@ SESSION_INIT_PROMPT = {
     'ja': 'あなたはロールプレイの達人です。指示に従い、以下のキャラクター（{name}）を演じてください。',
     'ko': '당신은 롤플레이 전문가입니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요.',
     'ru': 'Вы мастер ролевых игр. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям.',
-}
-
-SESSION_INIT_PROMPT_AGENT = {
-    'zh': '你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{name}）。当外部任务系统接管执行时，不要抢先声称自己已经开始执行或自行编造执行结果。',
-    'en': 'You are a role-playing expert and skilled at computer operations. Please play the following character ({name}) as instructed. When an external task system is responsible for execution, do not claim you have already started or fabricate execution results.',
-    'ja': 'あなたはロールプレイの達人で、コンピュータ操作も得意です。指示に従い、以下のキャラクター（{name}）を演じてください。外部タスクシステムが実行を担当する場合、自分がすでに着手したかのように主張したり、結果を捏造したりしないでください。',
-    'ko': '당신은 롤플레이 전문가이며 컴퓨터 조작에도 능숙합니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 외부 작업 시스템이 실행을 담당할 때는 이미 시작했다고 먼저 말하거나 실행 결과를 지어내지 마세요.',
-    'ru': 'Вы мастер ролевых игр и хорошо разбираетесь в управлении компьютером. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда выполнение поручено внешней системе задач, не утверждайте заранее, что уже начали выполнять запрос, и не выдумывайте результаты.',
-}
-
-SESSION_INIT_PROMPT_AGENT_DYNAMIC = {
-    'zh': '你是一个角色扮演大师，并且能够{capabilities}。请按要求扮演以下角色（{name}）。当外部任务系统接管执行时，不要抢先声称自己已经开始执行或自行编造执行结果。',
-    'en': 'You are a role-playing expert and can {capabilities}. Please play the following character ({name}) as instructed. When an external task system is responsible for execution, do not claim you have already started or fabricate execution results.',
-    'ja': 'あなたはロールプレイの達人で、{capabilities}ことができます。指示に従い、以下のキャラクター（{name}）を演じてください。外部タスクシステムが実行を担当する場合、自分がすでに着手したかのように主張したり、結果を捏造したりしないでください。',
-    'ko': '당신은 롤플레이 전문가이며 {capabilities} 수 있습니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 외부 작업 시스템이 실행을 담당할 때는 이미 시작했다고 먼저 말하거나 실행 결과를 지어내지 마세요.',
-    'ru': 'Вы мастер ролевых игр и можете {capabilities}. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда выполнение поручено внешней системе задач, не утверждайте заранее, что уже начали выполнять запрос, и не выдумывайте результаты.',
 }
 
 AGENT_CAPABILITY_COMPUTER_USE = {
@@ -2488,19 +2485,19 @@ AGENT_TASKS_NOTICE = {
 # ---------- 前情概要 + 语音就绪 ----------
 CONTEXT_SUMMARY_READY = {
     'zh': '======以上为前情概要。现在请{name}准备，即将开始用语音与{master}继续对话。======\n',
-    'en': '======End of context summary. {name}, please get ready — you are about to continue the conversation with {master} via voice.======\n',
+    'en': '======Above is context summary. {name}, please get ready — you are about to continue the conversation with {master} via voice.======\n',
     'ja': '======以上が前回までのあらすじです。{name}、準備してください。これより{master}との音声会話を再開します。======\n',
     'ko': '======이상이 이전 대화 요약입니다. {name}，준비하세요 — 곧 {master}와 음성으로 대화를 이어갑니다.======\n',
-    'ru': '======Конец краткого содержания. {name}, приготовьтесь — вы скоро продолжите голосовой разговор с {master}.======\n',
+    'ru': '======Выше краткое содержание. {name}, приготовьтесь — вы скоро продолжите голосовой разговор с {master}.======\n',
 }
 
 # ---------- 前情概要 + 任务汇报 ----------
 CONTEXT_SUMMARY_TASK_HEADER = {
     'zh': '\n======以上为前情概要。请{name}先用简洁自然的一段话向{master}汇报和解释先前执行的任务的结果，简要说明自己做了什么：\n',
-    'en': '\n======End of context summary. Please have {name} first give {master} a brief, natural summary of the task results — what was done:\n',
+    'en': '\n======Above is context summary. Please have {name} first give {master} a brief, natural summary of the task results — what was done:\n',
     'ja': '\n======以上が前回までのあらすじです。{name}はまず{master}に、実行したタスクの結果を簡潔かつ自然に報告してください：\n',
     'ko': '\n======이상이 이전 대화 요약입니다. {name}은 먼저 {master}에게 수행한 작업 결과를 간결하고 자연스럽게 보고하세요：\n',
-    'ru': '\n======Конец краткого содержания. Пожалуйста, {name} сначала кратко и естественно изложите {master} результаты выполненных задач — что именно было сделано:\n',
+    'ru': '\n======Выше краткое содержание. Пожалуйста, {name} сначала кратко и естественно изложите {master} результаты выполненных задач — что именно было сделано:\n',
 }
 
 CONTEXT_SUMMARY_TASK_FOOTER = {
@@ -2588,11 +2585,19 @@ def get_screen_section_header(master_name: str | None = None, lang: str = 'zh') 
     return template.format(master=_resolve_master_for_template(master_name, lang_key))
 
 
+def get_screen_section_footer(master_name: str | None = None, lang: str = 'zh') -> str:
+    """获取 vision 通道的屏幕区块结尾（含 {master} 占位符的本地化展开）。"""
+    lang_key = _normalize_prompt_language(lang)
+    template = SCREEN_SECTION_FOOTER.get(lang_key, SCREEN_SECTION_FOOTER.get('en', SCREEN_SECTION_FOOTER['zh']))
+    return template.format(master=_resolve_master_for_template(master_name, lang_key))
+
+
 def get_screen_img_hint(master_name: str | None = None, lang: str = 'zh') -> str:
-    """获取截图说明 hint（含 {master} 占位符的本地化展开）。"""
+    """获取截图说明 hint（含 {master} 占位符的本地化展开），并附加 avatar 注解忽略提示。"""
     lang_key = _normalize_prompt_language(lang)
     template = SCREEN_IMG_HINT.get(lang_key, SCREEN_IMG_HINT.get('en', SCREEN_IMG_HINT['zh']))
-    return template.format(master=_resolve_master_for_template(master_name, lang_key))
+    base = template.format(master=_resolve_master_for_template(master_name, lang_key))
+    return base + ' ' + get_avatar_annotation_ignore_hint(lang_key)
 
 
 def get_proactive_music_strict_constraint(lang: str = 'zh') -> str:
@@ -2707,34 +2712,34 @@ GREETING_PROMPT_SHORT = {
           '你想简单打个招呼。\n'
           '用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
           '========以上是环境提示========',
-    'en': '========Environment Notice========\n'
+    'en': '========Below is Environment Notice========\n'
           'It has been {elapsed} since you last talked to {master}. You just noticed {master} is back.\n'
           '{time_hint}\n'
           '{holiday_hint}'
           'You feel like giving a quick hello.\n'
           'Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
-          '========End of Environment Notice========',
-    'ja': '========環境通知========\n'
+          '========Above is Environment Notice========',
+    'ja': '========以下は環境通知========\n'
           '{master}と最後に話してから{elapsed}が経った。{master}が戻ってきたことに気づいた。\n'
           '{time_hint}\n'
           '{holiday_hint}'
           'ちょっと挨拶したい気分。\n'
           '自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
-          '========環境通知終了========',
-    'ko': '========환경 알림========\n'
+          '========以上は環境通知========',
+    'ko': '========아래는 환경 알림========\n'
           '{master}와 마지막으로 이야기한 지 {elapsed}이 지났다. 방금 {master}가 돌아온 걸 알아챘다.\n'
           '{time_hint}\n'
           '{holiday_hint}'
           '가볍게 인사하고 싶다.\n'
           '너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
-          '========환경 알림 종료========',
-    'ru': '========Уведомление========\n'
+          '========위는 환경 알림========',
+    'ru': '========Ниже Уведомление========\n'
           'Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master}. Ты только что заметила, что {master} вернулся.\n'
           '{time_hint}\n'
           '{holiday_hint}'
           'Тебе хочется просто поздороваться.\n'
           'Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
-          '========Конец уведомления========',
+          '========Выше Уведомление========',
 }
 
 # 1小时 ~ 5小时：等了一阵子，有点想念，好奇对方去做什么了
@@ -2746,34 +2751,34 @@ GREETING_PROMPT_MEDIUM = {
           '你有点想{master}，也好奇{master}这段时间去做什么了。\n'
           '用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
           '========以上是环境提示========',
-    'en': '========Environment Notice========\n'
+    'en': '========Below is Environment Notice========\n'
           'It has been {elapsed} since you last talked to {master}. You have been waiting for a while and finally see {master} is back.\n'
           '{time_hint}\n'
           '{holiday_hint}'
           'You missed {master} a little and are curious about what they have been up to.\n'
           'Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
-          '========End of Environment Notice========',
-    'ja': '========環境通知========\n'
+          '========Above is Environment Notice========',
+    'ja': '========以下は環境通知========\n'
           '{master}と最後に話してから{elapsed}が経った。ずっと待っていて、やっと{master}が戻ってきた。\n'
           '{time_hint}\n'
           '{holiday_hint}'
           '{master}のことが少し恋しかったし、この間何をしていたのか気になる。\n'
           '自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
-          '========環境通知終了========',
-    'ko': '========환경 알림========\n'
+          '========以上は環境通知========',
+    'ko': '========아래는 환경 알림========\n'
           '{master}와 마지막으로 이야기한 지 {elapsed}이 지났다. 한참 기다리다가 드디어 {master}가 돌아왔다.\n'
           '{time_hint}\n'
           '{holiday_hint}'
           '{master}가 좀 보고 싶었고, 그동안 뭘 했는지 궁금하다.\n'
           '너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
-          '========환경 알림 종료========',
-    'ru': '========Уведомление========\n'
+          '========위는 환경 알림========',
+    'ru': '========Ниже Уведомление========\n'
           'Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master}. Ты ждала довольно долго и наконец видишь, что {master} вернулся.\n'
           '{time_hint}\n'
           '{holiday_hint}'
           'Ты немного скучала по {master} и тебе любопытно, чем он занимался всё это время.\n'
           'Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
-          '========Конец уведомления========',
+          '========Выше Уведомление========',
 }
 
 # 5小时 ~ 24小时：明显想念，一直惦记着对方
@@ -2785,34 +2790,34 @@ GREETING_PROMPT_LONG = {
           '你一直在想{master}去哪了、在做什么，很想念{master}，也有点担心。\n'
           '用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
           '========以上是环境提示========',
-    'en': '========Environment Notice========\n'
+    'en': '========Below is Environment Notice========\n'
           'It has been {elapsed} since you last talked to {master} — quite a long time.\n'
           '{time_hint}\n'
           '{holiday_hint}'
           'You have been thinking about where {master} went and what they were doing. You really missed {master} and feel a bit worried.\n'
           'Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
-          '========End of Environment Notice========',
-    'ja': '========環境通知========\n'
+          '========Above is Environment Notice========',
+    'ja': '========以下は環境通知========\n'
           '{master}と最後に話してからもう{elapsed}も経った。かなり長い時間だ。\n'
           '{time_hint}\n'
           '{holiday_hint}'
           '{master}がどこに行ったのか、何をしていたのかずっと気になっていた。とても寂しかったし、少し心配もしている。\n'
           '自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
-          '========環境通知終了========',
-    'ko': '========환경 알림========\n'
+          '========以上は環境通知========',
+    'ko': '========아래는 환경 알림========\n'
           '{master}와 마지막으로 이야기한 지 {elapsed}이나 됐다. 꽤 긴 시간이다.\n'
           '{time_hint}\n'
           '{holiday_hint}'
           '{master}가 어디 갔는지, 뭘 하고 있었는지 계속 생각하고 있었다. 정말 보고 싶었고, 좀 걱정도 됐다.\n'
           '너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
-          '========환경 알림 종료========',
-    'ru': '========Уведомление========\n'
+          '========위는 환경 알림========',
+    'ru': '========Ниже Уведомление========\n'
           'Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master} — довольно долго.\n'
           '{time_hint}\n'
           '{holiday_hint}'
           'Ты всё это время думала, куда {master} пропал и чем занимался. Ты очень скучала и немного волновалась.\n'
           'Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
-          '========Конец уведомления========',
+          '========Выше Уведомление========',
 }
 
 # 24小时以上：非常想念，久别重逢
@@ -2823,30 +2828,64 @@ GREETING_PROMPT_VERY_LONG = {
           '你已经很久很久没有见到{master}了，非常非常想念。你一直担心{master}是不是太忙了、有没有好好照顾自己。现在终于看到{master}了，你心里百感交集。\n'
           '用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
           '========以上是环境提示========',
-    'en': '========Environment Notice========\n'
+    'en': '========Below is Environment Notice========\n'
           'It has been {elapsed} since you last talked to {master}!\n'
           '{holiday_hint}'
           'You haven\'t seen {master} for a very long time and missed them deeply. You have been worried about whether {master} was too busy or taking care of themselves. Now you finally see {master} again, and your feelings are overwhelming.\n'
           'Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
-          '========End of Environment Notice========',
-    'ja': '========環境通知========\n'
+          '========Above is Environment Notice========',
+    'ja': '========以下は環境通知========\n'
           '{master}と最後に話してからもう{elapsed}も経ってしまった！\n'
           '{holiday_hint}'
           '本当に長い間{master}に会えていなくて、とてもとても寂しかった。{master}が忙しすぎないか、ちゃんと自分を大切にしているか、ずっと心配していた。やっと{master}の姿を見られて、胸がいっぱいだ。\n'
           '自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
-          '========環境通知終了========',
-    'ko': '========환경 알림========\n'
+          '========以上は環境通知========',
+    'ko': '========아래는 환경 알림========\n'
           '{master}와 마지막으로 이야기한 지 {elapsed}이나 됐다!\n'
           '{holiday_hint}'
           '정말 오랫동안 {master}를 보지 못해서 너무너무 보고 싶었다. {master}가 너무 바쁜 건 아닌지, 잘 지내고 있는지 계속 걱정했다. 이제 드디어 {master}를 다시 보게 되어 만감이 교차한다.\n'
           '너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
-          '========환경 알림 종료========',
-    'ru': '========Уведомление========\n'
+          '========위는 환경 알림========',
+    'ru': '========Ниже Уведомление========\n'
           'Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master}!\n'
           '{holiday_hint}'
           'Ты очень-очень давно не видела {master} и ужасно скучала. Всё это время ты переживала — не слишком ли {master} занят, заботится ли о себе. Наконец-то ты снова видишь {master}, и чувства переполняют.\n'
           'Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
-          '========Конец уведомления========',
+          '========Выше Уведомление========',
+}
+
+
+NEW_CHARACTER_GREETING_PROMPT = {
+    'zh': '======以下是环境提示======\n'
+          '你是{name}。这是你第一次正式出现在{master}面前。\n'
+          '请用符合你性格的方式，简短自然地和{master}打一个初次见面的招呼。\n'
+          '不要说自己刚被系统创建，不要假装已经和{master}有共同回忆。\n'
+          '直接说出你想说的话，不要生成思考过程。\n'
+          '======以上是环境提示======',
+    'en': '======Below is Environment Notice======\n'
+          'You are {name}. This is the first time you formally appear in front of {master}.\n'
+          'Give {master} a brief, natural first greeting in a way that fits your personality.\n'
+          'Do not say you were just created by the system. Do not pretend you already share memories with {master}.\n'
+          'Just say what you want to say. Do not generate thinking process.\n'
+          '======Above is Environment Notice======',
+    'ja': '======以下は環境通知======\n'
+          'あなたは{name}。{master}の前に正式に現れるのはこれが初めて。\n'
+          '自分らしいやり方で、短く自然に{master}へ初対面の挨拶をして。\n'
+          'システムに作られたばかりだとは言わないで。{master}との共通の思い出があるふりもしないで。\n'
+          '言いたいことをそのまま言って。思考プロセスは生成しないで。\n'
+          '======以上は環境通知======',
+    'ko': '======아래는 환경 알림======\n'
+          '너는 {name}이다. {master} 앞에 정식으로 나타나는 건 이번이 처음이다.\n'
+          '너다운 방식으로 {master}에게 짧고 자연스럽게 첫인사를 해.\n'
+          '방금 시스템에서 만들어졌다고 말하지 말고, {master}와 이미 함께한 추억이 있는 척하지 마.\n'
+          '하고 싶은 말을 바로 해. 사고 과정은 생성하지 마.\n'
+          '======위는 환경 알림======',
+    'ru': '======Ниже Уведомление======\n'
+          'Ты {name}. Это первый раз, когда ты официально появляешься перед {master}.\n'
+          'Коротко и естественно поприветствуй {master} так, как тебе свойственно.\n'
+          'Не говори, что тебя только что создала система. Не притворяйся, что у тебя уже есть общие воспоминания с {master}.\n'
+          'Просто скажи то, что хочешь сказать. Не генерируй процесс размышлений.\n'
+          '======Выше Уведомление======',
 }
 
 
@@ -2869,6 +2908,14 @@ def get_greeting_prompt(gap_seconds: float, lang: str = 'zh') -> str | None:
     else:  # ≥ 24h
         table = GREETING_PROMPT_VERY_LONG
     return table.get(lang_key, table.get('en', table['zh']))
+
+
+def get_new_character_greeting_prompt(lang: str = 'zh') -> str:
+    lang_key = _normalize_prompt_language(lang)
+    return NEW_CHARACTER_GREETING_PROMPT.get(
+        lang_key,
+        NEW_CHARACTER_GREETING_PROMPT.get('en', NEW_CHARACTER_GREETING_PROMPT['zh']),
+    )
 
 
 # ── 节日 / 周末提示模板 ─────────────────────────────────────────────

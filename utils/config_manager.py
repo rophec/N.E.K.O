@@ -28,6 +28,8 @@ from utils.api_config_loader import (
     get_core_api_profiles,
     get_assist_api_profiles,
     get_assist_api_key_fields,
+    get_livestream_config,
+    is_livestream_active,
 )
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.file_utils import atomic_write_json
@@ -185,7 +187,20 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
     if not isinstance(override, dict):
         return prompt_text
 
-    guidance = str(override.get("prompt_guidance") or "").strip()
+    guidance = ""
+    preset_id = str(override.get("preset_id") or "").strip()
+    if preset_id:
+        # 运行时按当前全局语言重新解析，使 persona prompt 与基础 LANLAN prompt
+        # 一样跟随语言切换；仅当 preset_id 已被代码移除时才退回到落盘字符串。
+        try:
+            from utils.persona_presets import get_persona_prompt_guidance
+            guidance = (get_persona_prompt_guidance(preset_id) or "").strip()
+        except Exception:
+            guidance = ""
+
+    if not guidance:
+        guidance = str(override.get("prompt_guidance") or "").strip()
+
     if not guidance:
         return prompt_text
 
@@ -938,7 +953,6 @@ class ConfigManager:
                 buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
                 windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
                 api_path = Path(buf.value)
-                self._log(f"[ConfigManager] Legacy Documents API returned path: {api_path}")
                 candidates.append(api_path)
 
                 if not api_path.exists() and api_path.drive:
@@ -961,7 +975,6 @@ class ConfigManager:
                 reg_path_str = winreg.QueryValueEx(key, "Personal")[0]
                 winreg.CloseKey(key)
                 reg_path = Path(os.path.expandvars(reg_path_str))
-                self._log(f"[ConfigManager] Legacy Documents registry path: {reg_path}")
                 candidates.append(reg_path)
             except Exception as e:
                 print(f"Warning: Failed to get legacy Documents path from registry: {e}", file=sys.stderr)
@@ -1339,6 +1352,38 @@ class ConfigManager:
         except Exception as e:
             print(f"Warning: Failed to create card_faces directory: {e}", file=sys.stderr)
             return False
+
+    def migrate_default_card_faces(self):
+        """补写内置默认卡面，不覆盖用户已经创建的卡面。"""
+        source_dir = self.project_config_dir.parent / "static" / "default" / "card_faces"
+        if not source_dir.exists():
+            return
+        if not self.ensure_card_faces_directory():
+            return
+
+        try:
+            source_files = list(source_dir.glob("*.png"))
+        except Exception as e:
+            self._log(f"Warning: Failed to scan default card faces: {e}")
+            return
+
+        for source_path in source_files:
+            target_path = self.card_faces_dir / source_path.name
+            if not target_path.exists():
+                try:
+                    shutil.copy2(source_path, target_path)
+                    self._log(f"[ConfigManager] Migrated default card face: {source_path.name}")
+                except Exception as e:
+                    self._log(f"Warning: Failed to migrate default card face {source_path.name}: {e}")
+
+            source_meta_path = source_path.with_suffix(".json")
+            target_meta_path = self.card_face_meta_path(source_path.stem)
+            if source_meta_path.exists() and not target_meta_path.exists():
+                try:
+                    shutil.copy2(source_meta_path, target_meta_path)
+                    self._log(f"[ConfigManager] Migrated default card face meta: {source_meta_path.name}")
+                except Exception as e:
+                    self._log(f"Warning: Failed to migrate default card face meta {source_meta_path.name}: {e}")
 
     def card_face_meta_path(self, name: str):
         """返回猫娘卡面元数据 sidecar 文件路径（card_faces/{name}.json）。
@@ -2520,18 +2565,72 @@ class ConfigManager:
             print(f"[GeoIP] Dual check indeterminate (IP={ip_result}, Steam={steam_result}), transient mainland default", file=sys.stderr)
         return False
 
+    # Livestream 派生只接管 free 路这三个已知端点，避免劫持其他 lanlan.tech 路径
+    # （例如未来新增 /docs /metrics 之类的非数据端点）
+    _LIVESTREAM_DERIVE_PATHS = frozenset({'/core', '/text/v1', '/tts'})
+
     def _adjust_free_api_url(self, url: str, is_free: bool) -> str:
-        """Internal URL adjustment for free API users based on region."""
+        """Internal URL adjustment for free API users.
+
+        优先级：livestream prefix 派生 > 海外 lanlan.tech→lanlan.app 切换 > 原样返回。
+        livestream 启用时仅接管 lanlan.tech 域下白名单内的 free 路端点
+        （/core /text/v1 /tts），其他 path 走原地区切换。
+        """
         if not url or 'lanlan.tech' not in url:
             return url
-        
+
+        try:
+            if is_livestream_active():
+                orig_path = urlparse(url).path or ''
+                if orig_path in self._LIVESTREAM_DERIVE_PATHS:
+                    derived = self._derive_livestream_url(
+                        url, get_livestream_config()['server_prefix']
+                    )
+                    if derived:
+                        return derived
+        except Exception as e:
+            logger.warning(f"Livestream URL 派生失败，回退到原始路径: {e}")
+
         try:
             if self._check_non_mainland():
                 return url.replace('lanlan.tech', 'lanlan.app')
         except Exception:
             pass
-        
+
         return url
+
+    @staticmethod
+    def _derive_livestream_url(original_url: str, prefix: str) -> str:
+        """从 livestream server_prefix 派生 lanlan.tech URL 的等价地址。
+
+        - 保留原 URL 的 path（``/core`` / ``/tts`` / ``/text/v1``）拼到 prefix path 之后
+        - scheme 家族不变（原 ws/wss → 输出 ws/wss；原 http/https → 输出 http/https）
+        - 加密与否（``s`` 后缀）按 prefix 的 scheme 走（prefix 是 https/wss → 输出加密）
+
+        例：
+        - ``wss://www.lanlan.tech/core`` + ``http://host:port/tok`` → ``ws://host:port/tok/core``
+        - ``https://www.lanlan.tech/text/v1`` + ``http://host:port/tok`` → ``http://host:port/tok/text/v1``
+        - ``wss://www.lanlan.tech/tts`` + ``https://host/tok`` → ``wss://host/tok/tts``
+        """
+        if not original_url or not prefix:
+            return ''
+        try:
+            orig = urlparse(original_url)
+            pref = urlparse(prefix)
+        except Exception:
+            return ''
+        if not pref.scheme or not pref.netloc:
+            return ''
+
+        is_ws_family = orig.scheme in ('ws', 'wss')
+        is_secure = pref.scheme in ('https', 'wss')
+        if is_ws_family:
+            out_scheme = 'wss' if is_secure else 'ws'
+        else:
+            out_scheme = 'https' if is_secure else 'http'
+
+        base_path = pref.path.rstrip('/')
+        return f"{out_scheme}://{pref.netloc}{base_path}{orig.path}"
 
     def get_core_config(self):
         """动态读取核心配置"""
@@ -2814,11 +2913,27 @@ class ConfigManager:
             ]
             for prefix, model_key, url_key, apikey_key in _custom_api_fields:
                 provider = core_cfg.get(f'{prefix}ModelProvider', '')
+                # follow_core / follow_assist 的 URL 是前端联动 readonly 自填的提示值
+                # （static/js/api_key_settings.js: onCustomModelProviderChange），不代表
+                # 用户选择"自定义部署"。但只在 omni/tts 才会出问题：
+                #   - omni: get_model_api_config 看见 REALTIME_MODEL+_URL 都非空 →
+                #     强行 api_type='local'（TODO 未实现）→ core_api_type='local' →
+                #     TTS 调度落 dummy_tts_worker → 静音
+                #   - tts:  TTS_MODEL_URL 被联动值污染让 tts_custom 走错 provider
+                # 其他 model type（conversation/summary/correction/emotion/vision/agent）
+                # 走 chat completion REST，没有 'local' 分支；跳 URL 反而会改变它们的
+                # follow_* 路由（详见 PR #1084 review thread），故仅对 omni/tts 跳。
+                # 注：follow_* 下用户填的 modelId 当前在 get_model_api_config fallback
+                # 路径里读不到（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
+                # 那是另一个层面的问题，下个 PR 跟进。
+                is_follow = provider in ('follow_core', 'follow_assist')
+                skip_url_for_follow = is_follow and prefix in ('omni', 'tts')
 
-                # URL: 空值回退到已有配置
-                cfg_url = core_cfg.get(f'{prefix}ModelUrl')
-                if cfg_url is not None:
-                    config[url_key] = cfg_url or config.get(url_key, '')
+                # URL: 空值回退到已有配置；omni/tts follow_* 时跳过
+                if not skip_url_for_follow:
+                    cfg_url = core_cfg.get(f'{prefix}ModelUrl')
+                    if cfg_url is not None:
+                        config[url_key] = cfg_url or config.get(url_key, '')
 
                 # Model ID: 空值回退到已有配置
                 cfg_model = core_cfg.get(f'{prefix}ModelId')
@@ -3487,6 +3602,7 @@ def _ensure_config_manager_migrated():
     # 统一在首次真正需要运行时配置时再迁移，允许启动 phase-0
     # 先基于“尚未注入默认配置的运行根”判断是否需要导入云快照。
     _config_manager.migrate_config_files()
+    _config_manager.migrate_default_card_faces()
     _config_manager.migrate_memory_files()
     # 在 config/memory 基础迁移完成后，对遗留 Documents/AppData 路径下的
     # N.E.K.O/memory 做一次性软迁移：只迁移已关联角色的条目，未关联条目

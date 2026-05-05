@@ -103,6 +103,7 @@ LEGACY_RUNTIME_DIR_NAMES = (
     "mmd",
     "workshop",
     "character_cards",
+    "card_faces",
     "cloudsave",
     "cloudsave_backups",
     ".cloudsave_staging",
@@ -132,6 +133,7 @@ RUNTIME_ASSET_DIR_NAMES = (
     "mmd",
     "workshop",
     "character_cards",
+    "card_faces",
 )
 
 _cloud_apply_lock_handle = None
@@ -1960,7 +1962,7 @@ def _derive_character_binding_summary(
 
     fallback_model_ref = ""
     if asset_state != "ready" and binding_model_type != "live2d":
-        fallback_model_ref = "mao_pro/mao_pro.model3.json"
+        fallback_model_ref = "yui-origin/yui-origin.model3.json"
 
     return {
         "character_name": character_name,

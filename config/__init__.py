@@ -13,7 +13,7 @@ from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_pr
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.7.4"
+APP_VERSION = "0.8.0"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -893,7 +893,7 @@ PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 #   - OpenClaw magic intent user_text（用 1MB 输入做 80-token 分类，自找的）
 #   - emotion 分析 user text
 #   - bilibili knowledge_context（用户配置的知识库）
-#   - sts2_autoplay strategy_prompt（用户写的策略文件）
+#   - 插件自定义 prompt / strategy 文件（由插件自行管理）
 # 详见 docs/design/llm-prompt-budget.md "已知不 cap 项"。
 # ========================================================================
 
@@ -1300,6 +1300,29 @@ PROACTIVE_CHAT_HISTORY_MAX = 10
 - 用途：每个 lanlan 维护的最近主动搭话记录，用于 1h 内去重。
 - 上游：proactive 触发的搭话事件。"""
 
+MINI_GAME_INVITE_ENABLED = True
+"""Mini-game 邀请短路通道总开关（默认开）。
+- 用途：proactive_chat 在过完 propensity / skip_probability / restricted_screen_only
+  这几道门后，按 MINI_GAME_INVITE_TRIGGER_PROBABILITY 概率短路成"邀请玩家来玩
+  小游戏"，跳过 Phase 1/2 LLM。关掉此开关 = 永远不触发该分支，proactive_chat
+  退化回纯 source-driven。
+- 上游：main_routers/system_router._maybe_deliver_mini_game_invite。"""
+
+MINI_GAME_INVITE_TRIGGER_PROBABILITY = 0.1
+"""每次 eligible 主动搭话进入 mini-game 邀请短路的概率。
+- 取值约定：[0.0, 1.0]，0.0=禁用（等价于 ENABLED=False），1.0=每次都邀请。
+- 上游：random.random() < 此值 → 命中 → 走邀请短路。"""
+
+MINI_GAME_INVITE_COOLDOWN_SECONDS = 24 * 3600
+"""一次邀请被回应后的最小静默秒数（默认 24h）。
+- 配合 MINI_GAME_INVITE_COOLDOWN_CHATS：两条件都跨过才允许下次掷骰。
+- 上游：_mini_game_invite_in_cooldown 时间侧判定。"""
+
+MINI_GAME_INVITE_COOLDOWN_CHATS = 10
+"""一次邀请被回应后，需要再经过的"成功投递的主动搭话"次数。
+- 与 MINI_GAME_INVITE_COOLDOWN_SECONDS 同时满足才解禁；任一不满足都继续抑制。
+- 上游：_mini_game_invite_in_cooldown 计数侧判定。"""
+
 PROACTIVE_SOURCE_HARD_SKIP_SECONDS = 5 * 3600
 """主动搭话 source 衰减历史的硬窗口（p_skip=1.0）。
 - 用途：5h 内同一 URL 必跳，超过后按 kind 半衰期指数衰减。
@@ -1393,7 +1416,7 @@ EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote 合并决策
 # level (drop the model file → on; remove it → off) without a config edit.
 VECTORS_ENABLED = True                       # master kill switch
 VECTORS_EMBEDDING_DIM = "auto"               # "auto" | 32/64/128/256/512/768
-VECTORS_QUANTIZATION = "auto"                # "auto" | "int8" | "fp32"
+VECTORS_QUANTIZATION = "auto"                # "auto" | "int8" | "fp32" (fp32 needs model.onnx on disk)
 VECTORS_MIN_RAM_GB = 4.0                     # below this → disabled regardless
 VECTORS_MODEL_PROFILE_ID = "local-text-retrieval-v1"  # anonymous profile id + local model folder
 # Warmup: the ONNX session (~150 MB unpack) loads on first triggering
@@ -1591,6 +1614,10 @@ __all__ = [
     'PROACTIVE_PHASE2_GENERATE_MAX_TOKENS',
     'PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS',
     'PROACTIVE_CHAT_HISTORY_MAX',
+    'MINI_GAME_INVITE_ENABLED',
+    'MINI_GAME_INVITE_TRIGGER_PROBABILITY',
+    'MINI_GAME_INVITE_COOLDOWN_SECONDS',
+    'MINI_GAME_INVITE_COOLDOWN_CHATS',
     'PROACTIVE_SOURCE_HARD_SKIP_SECONDS',
     'PROACTIVE_SOURCE_HALF_LIFE_BY_KIND',
     'PROACTIVE_SOURCE_HALF_LIFE_DEFAULT',

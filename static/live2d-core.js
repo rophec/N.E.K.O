@@ -79,6 +79,7 @@ class Live2DManager {
         this.pixi_app = null;
         this.isInitialized = false;
         this.motionTimer = null;
+        this._motionTimerGeneration = 0;
         this.isEmotionChanging = false;
         this.dragEnabled = false;
         this.isFocusing = false;
@@ -112,6 +113,10 @@ class Live2DManager {
         // 常驻表情：使用官方 expression 播放并在清理后自动重放
         this.persistentExpressionNames = [];
         this.persistentExpressionParamsByName = {};
+        this.motionBaselineParameters = {};
+        this._activeExpressionParamIds = null;
+        this._activeMotionParamIds = null;
+        this._motionParameterTrackGeneration = 0;
 
         // UI/Ticker 资源句柄（便于在切换模型时清理）
         this._lockIconTicker = null;
@@ -124,6 +129,9 @@ class Live2DManager {
         this._origMotionManagerUpdate = null; // 保存原始的 motionManager.update 方法
         this._origCoreModelUpdate = null; // 保存原始的 coreModel.update 方法
         this._mouthTicker = null;
+        this._temporaryMotionSuspendToken = null;
+        this._idleMotionFinishHandler = null;
+        this._idleMotionFinishModel = null;
 
         // 记录最后一次加载模型的原始路径（用于保存偏好时使用）
         this._lastLoadedModelPath = null;
@@ -4466,8 +4474,9 @@ class Live2DManager {
     setMouseTrackingEnabled(enabled) {
         this._mouseTrackingEnabled = enabled;
         window.mouseTrackingEnabled = enabled;
+        const effectiveEnabled = enabled && window.nekoYuiGuideFaceForwardLock !== true;
 
-        if (enabled) {
+        if (effectiveEnabled) {
             // 重新启用时，如果模型存在且没有鼠标跟踪监听器，则启用
             if (this.currentModel && !this._mouseTrackingListener) {
                 this.enableMouseTracking(this.currentModel);
@@ -4491,6 +4500,9 @@ class Live2DManager {
      * @returns {boolean}
      */
     isMouseTrackingEnabled() {
+        if (window.nekoYuiGuideFaceForwardLock === true) {
+            return false;
+        }
         return this._mouseTrackingEnabled !== false;
     }
 

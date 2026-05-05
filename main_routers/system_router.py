@@ -7,6 +7,11 @@ Handles system-related endpoints including:
 - Emotion analysis
 - Steam achievements
 - File utilities (file-exists, find-first-image, proxy-image)
+
+URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
+See ``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import os
@@ -15,6 +20,7 @@ import asyncio
 import base64
 import difflib
 import hashlib
+import hmac
 import ipaddress
 import math
 import random
@@ -67,6 +73,10 @@ from config import (
     PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
     PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
     PROACTIVE_CHAT_HISTORY_MAX,
+    MINI_GAME_INVITE_ENABLED,
+    MINI_GAME_INVITE_TRIGGER_PROBABILITY,
+    MINI_GAME_INVITE_COOLDOWN_SECONDS,
+    MINI_GAME_INVITE_COOLDOWN_CHATS,
     PROACTIVE_SOURCE_HARD_SKIP_SECONDS,
     PROACTIVE_SOURCE_HALF_LIFE_BY_KIND,
     PROACTIVE_SOURCE_HALF_LIFE_DEFAULT,
@@ -74,7 +84,18 @@ from config import (
     EMOTION_ANALYSIS_MAX_TOKENS,
 )
 from config.prompts_sys import _loc
-from config.prompts_emotion import get_outward_emotion_analysis_prompt
+from config.prompts_emotion import (
+    get_outward_emotion_analysis_prompt,
+    get_emotion_keywords_flat,
+    get_angry_attack_patterns_flat,
+    get_sad_vulnerable_patterns_flat,
+    get_happy_playful_patterns_flat,
+    get_heuristic_negation_tokens_flat,
+    get_heuristic_tight_negation_tokens_flat,
+    get_heuristic_negation_blocklist_flat,
+    get_heuristic_contrast_conjunctions_flat,
+    get_emotion_label_aliases_flat,
+)
 from config.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
 from config.prompts_proactive import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
@@ -83,11 +104,10 @@ from config.prompts_proactive import (
     get_proactive_music_failsafe_hint,
     get_proactive_music_strict_constraint,
     get_proactive_format_sections,
-    get_screen_section_header, get_screen_img_hint,
+    get_screen_section_header, get_screen_section_footer, get_screen_img_hint,
     RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
     RECENT_PROACTIVE_TIME_LABELS, RECENT_PROACTIVE_CHANNEL_LABELS,
     BEGIN_GENERATE,
-    SCREEN_SECTION_FOOTER,
     SCREEN_WINDOW_TITLE,
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
     MUSIC_SECTION_HEADER, MUSIC_SECTION_FOOTER,
@@ -95,6 +115,7 @@ from config.prompts_proactive import (
     PROACTIVE_SOURCE_LABELS,
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
+    MINI_GAME_INVITE_LINE,
     build_proactive_action_note,
 )
 from utils.file_utils import atomic_write_json_async, read_json
@@ -137,6 +158,13 @@ from config import APP_NAME
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
 _AUTOSTART_CSRF_HEADER = "X-CSRF-Token"
+_YUI_GUIDE_HANDOFF_TOKEN_VERSION = 1
+_YUI_GUIDE_HANDOFF_FLOW_ID = "home_yui_guide_v1"
+_YUI_GUIDE_HANDOFF_TTL_SECONDS = 5 * 60
+_YUI_GUIDE_HANDOFF_MAX_RECORDS = 128
+_YUI_GUIDE_HANDOFF_SECRET = secrets.token_bytes(32)
+_yui_guide_handoff_lock = asyncio.Lock()
+_yui_guide_handoff_tokens: dict[str, dict[str, Any]] = {}
 
 
 def _set_no_store_headers(response: Response) -> None:
@@ -604,6 +632,211 @@ async def _read_json_object(request: Request) -> dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _normalize_yui_handoff_text(value: object, *, max_length: int = 160) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip()[:max_length]
+
+
+def _build_yui_handoff_signature(record: dict[str, Any]) -> str:
+    signed_fields = (
+        str(record.get("token") or ""),
+        str(record.get("token_version") or ""),
+        str(record.get("flow_id") or ""),
+        str(record.get("source_origin") or ""),
+        str(record.get("source_page") or ""),
+        str(record.get("source_path") or ""),
+        str(record.get("target_page") or ""),
+        str(record.get("target_path") or ""),
+        str(record.get("resume_scene") or ""),
+        str(record.get("expires_at") or ""),
+    )
+    message = "\n".join(signed_fields).encode("utf-8")
+    return hmac.new(_YUI_GUIDE_HANDOFF_SECRET, message, hashlib.sha256).hexdigest()
+
+
+def _public_yui_handoff_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "token": record.get("token", ""),
+        "token_version": record.get("token_version", _YUI_GUIDE_HANDOFF_TOKEN_VERSION),
+        "flow_id": record.get("flow_id", _YUI_GUIDE_HANDOFF_FLOW_ID),
+        "source_page": record.get("source_page", ""),
+        "source_path": record.get("source_path", ""),
+        "target_page": record.get("target_page", ""),
+        "target_path": record.get("target_path", ""),
+        "resume_scene": record.get("resume_scene") or None,
+        "created_at": record.get("created_at", 0),
+        "expires_at": record.get("expires_at", 0),
+        "consumed": bool(record.get("consumed_at")),
+        "consumed_by": record.get("consumed_by", ""),
+        "consumed_at": record.get("consumed_at", 0),
+        "signature": record.get("signature", ""),
+        "authority": "server",
+    }
+
+
+def _prune_yui_handoff_records(now_ms: int) -> None:
+    expired_tokens = [
+        token
+        for token, record in _yui_guide_handoff_tokens.items()
+        if int(record.get("expires_at", 0) or 0) <= now_ms
+    ]
+    for token in expired_tokens:
+        _yui_guide_handoff_tokens.pop(token, None)
+
+    if len(_yui_guide_handoff_tokens) <= _YUI_GUIDE_HANDOFF_MAX_RECORDS:
+        return
+
+    ordered_tokens = sorted(
+        _yui_guide_handoff_tokens,
+        key=lambda token: int(_yui_guide_handoff_tokens[token].get("created_at", 0) or 0),
+    )
+    overflow = len(_yui_guide_handoff_tokens) - _YUI_GUIDE_HANDOFF_MAX_RECORDS
+    for token in ordered_tokens[:overflow]:
+        _yui_guide_handoff_tokens.pop(token, None)
+
+
+@router.post("/yui-guide/handoff/create")
+async def create_yui_guide_handoff(request: Request):
+    payload = await _read_json_object(request)
+    validation_error = _validate_local_mutation_request(request, payload=payload)
+    if validation_error is not None:
+        _set_no_store_headers(validation_error)
+        return validation_error
+
+    target_page = _normalize_yui_handoff_text(payload.get("target_page"), max_length=80)
+    if not target_page:
+        return _json_no_store_response(
+            {
+                "ok": False,
+                "error_code": "invalid_target_page",
+                "error": "target_page is required",
+            },
+            status_code=400,
+        )
+
+    now_ms = int(time.time() * 1000)
+    request_origin = _get_request_origin(request) or _normalize_origin_value(str(request.base_url))
+    record: dict[str, Any] = {
+        "token": secrets.token_urlsafe(24),
+        "token_version": _YUI_GUIDE_HANDOFF_TOKEN_VERSION,
+        "flow_id": _normalize_yui_handoff_text(payload.get("flow_id"), max_length=80) or _YUI_GUIDE_HANDOFF_FLOW_ID,
+        "source_origin": request_origin,
+        "source_page": _normalize_yui_handoff_text(payload.get("source_page"), max_length=80) or "home",
+        "source_path": _normalize_yui_handoff_text(payload.get("source_path"), max_length=240),
+        "target_page": target_page,
+        "target_path": _normalize_yui_handoff_text(payload.get("target_path"), max_length=240),
+        "resume_scene": _normalize_yui_handoff_text(payload.get("resume_scene"), max_length=120) or None,
+        "created_at": now_ms,
+        "expires_at": now_ms + (_YUI_GUIDE_HANDOFF_TTL_SECONDS * 1000),
+        "consumed_at": 0,
+        "consumed_by": "",
+    }
+    record["signature"] = _build_yui_handoff_signature(record)
+
+    async with _yui_guide_handoff_lock:
+        _prune_yui_handoff_records(now_ms)
+        _yui_guide_handoff_tokens[record["token"]] = record
+
+    return _json_no_store_response({"ok": True, "token": _public_yui_handoff_record(record)})
+
+
+@router.post("/yui-guide/handoff/consume")
+async def consume_yui_guide_handoff(request: Request):
+    payload = await _read_json_object(request)
+    validation_error = _validate_local_mutation_request(request, payload=payload)
+    if validation_error is not None:
+        _set_no_store_headers(validation_error)
+        return validation_error
+
+    token = _normalize_yui_handoff_text(payload.get("token"), max_length=128)
+    signature = _normalize_yui_handoff_text(payload.get("signature"), max_length=128)
+    expected_page = _normalize_yui_handoff_text(payload.get("expected_page"), max_length=80)
+    consumed_by = _normalize_yui_handoff_text(payload.get("consumer_id"), max_length=120)
+    request_origin = _get_request_origin(request) or _normalize_origin_value(str(request.base_url))
+    now_ms = int(time.time() * 1000)
+
+    if not token or not signature:
+        return _json_no_store_response(
+            {
+                "ok": False,
+                "error_code": "invalid_handoff_token",
+                "error": "token and signature are required",
+            },
+            status_code=400,
+        )
+
+    if not expected_page:
+        return _json_no_store_response(
+            {
+                "ok": False,
+                "error_code": "invalid_expected_page",
+                "error": "expected_page is required",
+            },
+            status_code=400,
+        )
+
+    async with _yui_guide_handoff_lock:
+        _prune_yui_handoff_records(now_ms)
+        record = _yui_guide_handoff_tokens.get(token)
+        if not record:
+            return _json_no_store_response(
+                {
+                    "ok": False,
+                    "error_code": "handoff_token_not_found",
+                    "error": "handoff token not found",
+                },
+                status_code=404,
+            )
+
+        stored_signature = str(record.get("signature") or "")
+        if not hmac.compare_digest(signature, stored_signature):
+            return _json_no_store_response(
+                {
+                    "ok": False,
+                    "error_code": "handoff_signature_mismatch",
+                    "error": "handoff signature mismatch",
+                },
+                status_code=403,
+            )
+
+        source_origin = str(record.get("source_origin") or "")
+        if source_origin and request_origin and request_origin != source_origin:
+            return _json_no_store_response(
+                {
+                    "ok": False,
+                    "error_code": "handoff_origin_mismatch",
+                    "error": "handoff origin mismatch",
+                },
+                status_code=403,
+            )
+
+        target_page = str(record.get("target_page") or "")
+        if expected_page != target_page:
+            return _json_no_store_response(
+                {
+                    "ok": False,
+                    "error_code": "handoff_target_mismatch",
+                    "error": "handoff target mismatch",
+                },
+                status_code=403,
+            )
+
+        if record.get("consumed_at"):
+            return _json_no_store_response(
+                {
+                    "ok": False,
+                    "error_code": "handoff_token_consumed",
+                    "error": "handoff token already consumed",
+                },
+                status_code=409,
+            )
+
+        record["consumed_at"] = now_ms
+        record["consumed_by"] = consumed_by or request_origin or "unknown"
+        return _json_no_store_response({"ok": True, "token": _public_yui_handoff_record(record)})
+
+
 @router.get("/system/status")
 async def get_system_status(response: Response):
     """Return a lightweight readiness snapshot for the web bootstrap sentinel."""
@@ -647,122 +880,8 @@ async def get_system_status(response: Response):
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
 
-_EMOTION_LABEL_ALIASES = {
-    "happy": "happy",
-    "happiness": "happy",
-    "joy": "happy",
-    "joyful": "happy",
-    "excited": "happy",
-    "cute": "happy",
-    "playful": "happy",
-    "开心": "happy",
-    "高兴": "happy",
-    "兴奋": "happy",
-    "快乐": "happy",
-    "嬉しい": "happy",
-    "うれしい": "happy",
-    "喜び": "happy",
-    "幸せ": "happy",
-    "楽しい": "happy",
-    "행복": "happy",
-    "행복해": "happy",
-    "행복하다": "happy",
-    "기쁨": "happy",
-    "신남": "happy",
-    "радость": "happy",
-    "счастье": "happy",
-    "счастливый": "happy",
-    "счастлива": "happy",
-    "доволен": "happy",
-    "довольна": "happy",
-    "sad": "sad",
-    "sadness": "sad",
-    "down": "sad",
-    "upset": "sad",
-    "depressed": "sad",
-    "难过": "sad",
-    "伤心": "sad",
-    "失落": "sad",
-    "委屈": "sad",
-    "悲しい": "sad",
-    "かなしい": "sad",
-    "悲しみ": "sad",
-    "寂しい": "sad",
-    "슬퍼": "sad",
-    "슬픈": "sad",
-    "슬픔": "sad",
-    "우울": "sad",
-    "우울함": "sad",
-    "속상해": "sad",
-    "서운해": "sad",
-    "грустно": "sad",
-    "грусть": "sad",
-    "грустный": "sad",
-    "грустная": "sad",
-    "печаль": "sad",
-    "расстроен": "sad",
-    "расстроена": "sad",
-    "angry": "angry",
-    "anger": "angry",
-    "mad": "angry",
-    "annoyed": "angry",
-    "irritated": "angry",
-    "生气": "angry",
-    "愤怒": "angry",
-    "烦躁": "angry",
-    "恼火": "angry",
-    "怒り": "angry",
-    "怒ってる": "angry",
-    "怒った": "angry",
-    "腹が立つ": "angry",
-    "화남": "angry",
-    "화난": "angry",
-    "분노": "angry",
-    "짜증남": "angry",
-    "злой": "angry",
-    "злая": "angry",
-    "злость": "angry",
-    "сержусь": "angry",
-    "рассержен": "angry",
-    "рассержена": "angry",
-    "surprised": "surprised",
-    "surprise": "surprised",
-    "shock": "surprised",
-    "shocked": "surprised",
-    "astonished": "surprised",
-    "惊讶": "surprised",
-    "震惊": "surprised",
-    "意外": "surprised",
-    "驚き": "surprised",
-    "驚いた": "surprised",
-    "驚いてる": "surprised",
-    "びっくり": "surprised",
-    "놀람": "surprised",
-    "놀란": "surprised",
-    "놀랐어": "surprised",
-    "깜짝": "surprised",
-    "удивлен": "surprised",
-    "удивлена": "surprised",
-    "удивление": "surprised",
-    "шок": "surprised",
-    "neutral": "neutral",
-    "calm": "neutral",
-    "平静": "neutral",
-    "冷静": "neutral",
-    "中性": "neutral",
-    "普通": "neutral",
-    "平穏": "neutral",
-    "穏やか": "neutral",
-    "落ち着いてる": "neutral",
-    "보통": "neutral",
-    "차분": "neutral",
-    "차분함": "neutral",
-    "평온": "neutral",
-    "нейтрально": "neutral",
-    "спокойно": "neutral",
-    "спокойный": "neutral",
-    "спокойная": "neutral",
-}
+# 多语言关键词/别名表统一在 config/prompts_emotion.py 维护，此处只做扁平索引。
+_EMOTION_LABEL_ALIASES = get_emotion_label_aliases_flat()
 
 _EMOTION_CANONICAL_LABELS = ("happy", "sad", "angry", "surprised", "neutral")
 _EMOTION_NORMALIZED_ALIAS_LOOKUP = {}
@@ -853,42 +972,11 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
 
     return False
 
-_EMOTION_KEYWORDS = {
-    "happy": ("哈哈", "嘿嘿", "嘻嘻", "开心", "高兴", "喜欢", "太棒", "可爱", "好耶", "真好", "好开心", "爱你",
-              "haha", "hehe", "happy", "glad", "love", "lovely", "cute", "yay", "great", "awesome",
-              "うれしい", "嬉しい", "楽しい", "かわいい", "好き", "やった", "最高",
-              "좋아", "행복", "기뻐", "신나", "귀여워", "좋다", "최고",
-              "счастлив", "рада", "рад", "весело", "люблю", "милый", "класс"),
-    "sad": ("难过", "伤心", "委屈", "想哭", "要哭", "哭了", "哭", "呜呜", "呜", "遗憾", "失落", "沮丧", "低落", "心疼", "欺负", "最怕",
-            "sad", "cry", "upset", "depressed", "sorry", "regret", "heartbroken",
-            "悲しい", "つらい", "寂しい", "落ち込", "しんどい", "泣きたい",
-            "슬퍼", "우울", "속상", "서운", "힘들", "울고",
-            "грустно", "печально", "обидно", "жаль", "тоск", "плак"),
-    "angry": ("气死", "生气", "烦死", "烦", "恼火", "可恶", "离谱", "无语", "讨厌", "炸毛", "火大",
-              "angry", "mad", "annoyed", "irritated", "furious", "damn", "hate",
-              "ムカつく", "腹立", "うざい", "最悪", "イライラ", "ふざけ",
-              "짜증", "화나", "열받", "빡쳐", "어이없", "최악",
-              "злюсь", "бесит", "раздраж", "ужас", "ненавиж", "достал"),
-    "surprised": ("哇", "居然", "竟然", "不会吧", "诶", "欸", "啊这", "天哪", "真的假的", "怎么会",
-                  "wow", "whoa", "omg", "really", "seriously", "what", "unexpected", "surprised",
-                  "えっ", "うそ", "まじ", "本当", "びっくり", "なんで",
-                  "헉", "우와", "진짜", "설마", "뭐야", "깜짝",
-                  "ого", "ничего себе", "серьезно", "правда", "внезапно", "удив"),
-}
-
-_SAD_VULNERABLE_PATTERNS = (
-    "委屈", "想哭", "要哭", "哭了", "哭", "呜呜", "呜", "别欺负", "不要欺负", "欺负我",
-    "不要这样对我", "别这样对我", "最怕", "怕你这样说", "心里难受", "好难过", "可怜"
-)
-
-_ANGRY_ATTACK_PATTERNS = (
-    "气死", "生气", "烦死", "恼火", "可恶", "讨厌", "离谱", "无语", "火大",
-    "别烦", "闭嘴", "滚", "受不了"
-)
-
-_HAPPY_PLAYFUL_PATTERNS = (
-    "哈哈", "嘿嘿", "嘻嘻", "贴贴", "撒娇", "可爱", "好耶"
-)
+# 启发式关键词/patterns 全部在 config/prompts_emotion.py 按语种维护，此处只做扁平化。
+_EMOTION_KEYWORDS = get_emotion_keywords_flat()
+_SAD_VULNERABLE_PATTERNS = get_sad_vulnerable_patterns_flat()
+_ANGRY_ATTACK_PATTERNS = get_angry_attack_patterns_flat()
+_HAPPY_PLAYFUL_PATTERNS = get_happy_playful_patterns_flat()
 
 
 def _normalize_emotion_label(raw_emotion, raw_confidence=None):
@@ -1007,6 +1095,107 @@ def _coerce_emotion_confidence(raw_confidence, default=0.5):
     return max(0.0, min(1.0, confidence))
 
 
+# 启发式打分时的否定回看 token / 转折连词表统一在 config/prompts_emotion.py 按语种维护。
+_HEURISTIC_NEGATION_TOKENS = get_heuristic_negation_tokens_flat()
+_HEURISTIC_TIGHT_NEGATION_TOKENS = get_heuristic_tight_negation_tokens_flat()
+_HEURISTIC_NEGATION_BLOCKLIST = get_heuristic_negation_blocklist_flat()
+_HEURISTIC_CONTRAST_CONJUNCTIONS = get_heuristic_contrast_conjunctions_flat()
+_HEURISTIC_NEGATION_LOOKBACK = 14
+# zh 单字否定（`不/没/别/未` 等）假阳率高，必须紧邻情绪词才算真否定，
+# 避免 `不错/不思议/不具合` 等非否定词组里的单字误触发。
+_HEURISTIC_TIGHT_NEGATION_LOOKBACK = 2
+# 子句分隔符：回看窗口越过分隔符后的内容视为另一小句，不再修饰本次命中。
+# 避免 "我不是难过，我是生气" 中 `生气` 的回看抓到前一小句的 `不` 而被误判否定。
+_HEURISTIC_CLAUSE_DELIMITERS = (
+    '.', ',', ';', '!', '?', '\n',
+    '，', '。', '；', '！', '？', '、', '：', ':',
+)
+
+
+def _has_heuristic_negation_before(text_value, position):
+    if position <= 0:
+        return False
+    start = max(0, position - _HEURISTIC_NEGATION_LOOKBACK)
+    window = text_value[start:position]
+    # 1) 窗口越过子句分隔符（标点）的部分丢掉，只看与命中关键词同小句的前文
+    last_delim = -1
+    for delim in _HEURISTIC_CLAUSE_DELIMITERS:
+        idx = window.rfind(delim)
+        if idx > last_delim:
+            last_delim = idx
+    if last_delim >= 0:
+        window = window[last_delim + 1:]
+    # 2) 句首场景补一个前导空格，统一处理带前导空格的 token（否定 ` no `、连词 ` but `）
+    window = ' ' + window
+    # 3) 让步/转折连词同样切断否定范围：处理 "not X but Y / 不是 X 而是 Y" 对比句，
+    #    避免前半的否定被错误带到后半的情绪关键词。
+    last_conj = -1
+    for conj in _HEURISTIC_CONTRAST_CONJUNCTIONS:
+        idx = window.rfind(conj)
+        if idx >= 0:
+            end_pos = idx + len(conj)
+            if end_pos > last_conj:
+                last_conj = end_pos
+    if last_conj >= 0:
+        window = window[last_conj:]
+    # 4) 排除非否定固定搭配（`not only / 不仅 / не только` 等肯定结构里的 not/不/не
+    #    并不是真否定）：把这些短语从 window 里替换成等长空白后再做 token 匹配。
+    sanitized = window
+    for phrase in _HEURISTIC_NEGATION_BLOCKLIST:
+        if phrase and phrase in sanitized:
+            sanitized = sanitized.replace(phrase, ' ' * len(phrase))
+    # 5) 多字否定 token（宽 lookback）
+    if any(token in sanitized for token in _HEURISTIC_NEGATION_TOKENS):
+        return True
+    # 6) zh 单字否定 token：仅在紧邻命中关键词的尾部窗口里才算真否定，
+    #    避免 `不错/不思议/不具合` 等非否定词组里的单字误触发整个否定。
+    if _HEURISTIC_TIGHT_NEGATION_TOKENS:
+        tight_window = sanitized[-_HEURISTIC_TIGHT_NEGATION_LOOKBACK:]
+        if any(token in tight_window for token in _HEURISTIC_TIGHT_NEGATION_TOKENS):
+            return True
+    return False
+
+
+# 英文 keyword 用 ASCII-only 词边界匹配，避免 `happy` 命中 `unhappy`、`surprised`
+# 命中 `unsurprised` 这类反向情绪嵌入。
+# 注意：不能用 `\b`，因为 Python regex 默认 Unicode 模式下 CJK 也算 \w，
+# 在 mixed-script 文本（如 `好happy啊 / 超annoyed欸`）里 `好` 和 `h` 之间没有
+# word boundary，导致英文 keyword 完全失配。改用前后 ASCII 字母断言：
+# `(?<![a-zA-Z])keyword(?![a-zA-Z])`，CJK / 标点 / 空白都允许作为边界。
+_ASCII_WORD_KEYWORD_RE_CACHE = {}
+
+
+def _is_ascii_word_keyword(keyword):
+    if not keyword:
+        return False
+    return all(c.isascii() and (c.isalpha() or c in " '") for c in keyword)
+
+
+def _count_keyword_hits(text_value, keyword):
+    if not keyword or not text_value:
+        return 0
+    if _is_ascii_word_keyword(keyword):
+        pattern = _ASCII_WORD_KEYWORD_RE_CACHE.get(keyword)
+        if pattern is None:
+            pattern = re.compile(r'(?<![a-zA-Z])' + re.escape(keyword) + r'(?![a-zA-Z])')
+            _ASCII_WORD_KEYWORD_RE_CACHE[keyword] = pattern
+        hits = 0
+        for match in pattern.finditer(text_value):
+            if not _has_heuristic_negation_before(text_value, match.start()):
+                hits += 1
+        return hits
+    hits = 0
+    search_start = 0
+    while True:
+        pos = text_value.find(keyword, search_start)
+        if pos < 0:
+            break
+        if not _has_heuristic_negation_before(text_value, pos):
+            hits += 1
+        search_start = pos + len(keyword)
+    return hits
+
+
 def _infer_emotion_from_text(text):
     text_value = str(text or "").lower()
     if not text_value:
@@ -1015,21 +1204,23 @@ def _infer_emotion_from_text(text):
     scores = {key: 0 for key in _EMOTION_KEYWORDS}
     for emotion, keywords in _EMOTION_KEYWORDS.items():
         for keyword in keywords:
-            if keyword and keyword in text_value:
-                scores[emotion] += 1
+            scores[emotion] += _count_keyword_hits(text_value, keyword)
 
     if "!!" in text_value or "！？" in text_value or "!?" in text_value or "??" in text_value:
         scores["surprised"] += 1
 
-    sad_vulnerable_hits = sum(1 for pattern in _SAD_VULNERABLE_PATTERNS if pattern in text_value)
-    angry_attack_hits = sum(1 for pattern in _ANGRY_ATTACK_PATTERNS if pattern in text_value)
-    happy_playful_hits = sum(1 for pattern in _HAPPY_PLAYFUL_PATTERNS if pattern in text_value)
+    sad_vulnerable_hits = sum(_count_keyword_hits(text_value, p) for p in _SAD_VULNERABLE_PATTERNS)
+    angry_attack_hits = sum(_count_keyword_hits(text_value, p) for p in _ANGRY_ATTACK_PATTERNS)
+    happy_playful_hits = sum(_count_keyword_hits(text_value, p) for p in _HAPPY_PLAYFUL_PATTERNS)
 
     if sad_vulnerable_hits:
         scores["sad"] += sad_vulnerable_hits * 2
     if angry_attack_hits:
         scores["angry"] += angry_attack_hits * 2
     if happy_playful_hits and not sad_vulnerable_hits and not angry_attack_hits:
+        # playful patterns（哈哈/嘿嘿/嘻嘻/可爱/好耶 等）大量与 happy keyword 重叠，
+        # 重复出现时 keyword 那边已经按命中数累加分数；这里只额外 +1 作为信号 boost，
+        # 避免 `haha haha haha / 哈哈哈哈哈` 类 filler 文本被双倍放大触发 override。
         scores["happy"] += 1
     if sad_vulnerable_hits and happy_playful_hits:
         # 撒娇外壳下的委屈/想哭，优先视为 sad 而不是 happy
@@ -1278,6 +1469,20 @@ async def get_changelog(since: str = "", lang: str = ""):
 # --- 主动搭话近期记录暂存区 ---
 # {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
 _proactive_chat_history: dict[str, deque] = {}
+
+# --- Mini-game 邀请短路状态（每角色独立）---
+# {lanlan_name: {'delivered_at': float|None,
+#                'responded_at': float|None,
+#                'chats_since_response': int}}
+# - delivered_at: 上次成功投递邀请的时间戳。None=从未发过 / 已过完整冷却。
+# - responded_at: 投递后被用户回应（任何用户消息时间戳 > delivered_at）的时间。
+#   pending（delivered_at!=None and responded_at=None）期间一律抑制掷骰，避免
+#   邀请挂着不响应又再发第二次。
+# - chats_since_response: responded_at 设上后成功投递的"普通主动搭话"次数。
+#   两条件（>= COOLDOWN_SECONDS 且 >= COOLDOWN_CHATS）都跨过才允许下次掷骰。
+# 进程内 dict，重启清零——24h 跟 10 chats 都是软冷却，重启后多发一次邀请的
+# 代价远小于持久化存储引依赖的代价；与 _proactive_chat_history 同样是内存。
+_mini_game_invite_state: dict[str, dict[str, Any]] = {}
 
 _RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
 _PROACTIVE_SIMILARITY_THRESHOLD = 0.94  # 高阈值，尽量避免误杀
@@ -1790,6 +1995,225 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     _proactive_chat_history[lanlan_name].append((time.time(), message, channel))
 
 
+# ---------- Mini-game 邀请短路状态管理 ----------
+# 入口在 proactive_chat 内部、过完 propensity / skip_probability /
+# restricted_screen_only 几道门之后调 _maybe_deliver_mini_game_invite。命中
+# 即静态 i18n 模板 → feed_tts_chunk + finish_proactive_delivery 直投递；不走
+# Phase 1/2 LLM。冷却语义：一次邀请被回应后，必须同时跨过
+#   ``time.time() - responded_at >= MINI_GAME_INVITE_COOLDOWN_SECONDS``
+# 与
+#   ``chats_since_response >= MINI_GAME_INVITE_COOLDOWN_CHATS``
+# 才允许下次掷骰。pending（投递了但还没被回应）期间一律抑制，避免邀请挂着
+# 不响应又再发第二次。
+
+def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
+    """Lazy-init per-character state."""
+    state = _mini_game_invite_state.get(lanlan_name)
+    if state is None:
+        state = {
+            'delivered_at': None,
+            'responded_at': None,
+            'chats_since_response': 0,
+        }
+        _mini_game_invite_state[lanlan_name] = state
+    return state
+
+
+def _mini_game_invite_advance_response(
+    lanlan_name: str, last_user_msg_at: float | None,
+) -> None:
+    """如果有 pending 邀请且用户已经在 delivered_at 之后说过话，标记为已回应。
+
+    每次进 proactive_chat（含 voice fast path 与 text path 两条）都调一次。
+    last_user_msg_at 是「用户最后一次活动的时间戳」——caller 负责从合适来源
+    解出来：text path 用 activity_snapshot.seconds_since_user_msg 反推；voice
+    path 直接用 mgr.last_user_activity_time（voice 不走 activity tracker，但
+    session 自己跟踪 RMS / 文本输入活动）。任一缺失（None）都按"未回应"保留
+    pending，不主动 flip。
+
+    Anchor 到 last_user_msg_at 而不是"检测到的此刻"——advance 只在新一轮
+    proactive_chat 跑时被调，user 回完到下次 proactive 之间可能隔几小时，
+    用 now 会让 24h 冷却被这段间隔白白拉长。"""
+    state = _mini_game_invite_state.get(lanlan_name)
+    if not state:
+        return
+    if state['delivered_at'] is None or state['responded_at'] is not None:
+        return
+    if last_user_msg_at is None:
+        return
+    if last_user_msg_at > state['delivered_at']:
+        state['responded_at'] = float(last_user_msg_at)
+        state['chats_since_response'] = 0
+        now = time.time()
+        logger.info(
+            "[%s] mini-game invite responded "
+            "(delivered_at=%.1fs ago, last user msg=%.1fs ago)",
+            lanlan_name, now - state['delivered_at'], now - float(last_user_msg_at),
+        )
+
+
+def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
+    """是否处于冷却期。True = 本轮不该掷骰。
+
+    覆盖：
+      - pending（投递了但 responded_at=None）→ True
+      - 已回应但 24h 或 10 chats 任一未跨过 → True
+      - 从未投递 / 已完整跨过两道 → False
+    """
+    state = _mini_game_invite_state.get(lanlan_name)
+    if not state or state['delivered_at'] is None:
+        return False
+    if state['responded_at'] is None:
+        return True
+    elapsed = time.time() - state['responded_at']
+    return (
+        elapsed < MINI_GAME_INVITE_COOLDOWN_SECONDS
+        or state['chats_since_response'] < MINI_GAME_INVITE_COOLDOWN_CHATS
+    )
+
+
+def _mini_game_invite_record_delivered(lanlan_name: str) -> None:
+    """记录一次成功投递的邀请。重置 responded/counter 进入新一轮 pending。"""
+    state = _mini_game_invite_get_state(lanlan_name)
+    state['delivered_at'] = time.time()
+    state['responded_at'] = None
+    state['chats_since_response'] = 0
+
+
+def _mini_game_invite_count_post_response_chat(lanlan_name: str) -> None:
+    """每次成功投递的主动搭话调一次：若上次邀请已被回应，counter +1。
+
+    在 _record_proactive_chat 后立即调。任何 channel 都计——只要 AI 真发了
+    一条主动搭话出去，"24h+10次"里的 10 次门就推进一格。pending 期间（还没
+    被回应）此函数 no-op，避免靠"邀请自身这一条"提前耗 counter。"""
+    state = _mini_game_invite_state.get(lanlan_name)
+    if not state or state['responded_at'] is None:
+        return
+    state['chats_since_response'] += 1
+
+
+async def _maybe_deliver_mini_game_invite(
+    *,
+    lanlan_name: str,
+    mgr,
+    activity_snapshot,
+    invite_lang: str,
+    master_name: str,
+) -> dict | None:
+    """命中即投递 mini-game 邀请、返回 _end_proactive 用的 JSON dict；未命中返 None。
+
+    短路条件（任一不满足即返 None，由 caller 继续走原 Phase1/2 流水线）：
+      - MINI_GAME_INVITE_ENABLED=False
+      - activity_snapshot is None（隐私模式 / tracker 不可用——保守不发）
+      - propensity == 'restricted_screen_only'（focused_work / non-casual gaming）
+      - state == 'away'（用户离场，邀请没人接）
+      - activity_snapshot.unfinished_thread is not None（AI 刚抛了问题用户
+        还没接，跟进 thread 优先于换话题；与 skip_probability /
+        restricted_screen_only 对 unfinished_thread 的优先级约定对齐）
+      - _mini_game_invite_in_cooldown
+      - random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY
+
+    投递路径完全镜像 ``main_routers/game_router._deliver_postgame_text_bubble``：
+    prepare_proactive_delivery → feed_tts_chunk → finish_proactive_delivery。
+    不走 Phase 1/2 LLM；文案来自 ``MINI_GAME_INVITE_LINE`` 静态 i18n 模板。"""
+    if not MINI_GAME_INVITE_ENABLED:
+        return None
+    if activity_snapshot is None:
+        return None
+    propensity = getattr(activity_snapshot, 'propensity', None)
+    state_label = getattr(activity_snapshot, 'state', None)
+    if propensity == 'restricted_screen_only':
+        return None
+    if state_label == 'away':
+        return None
+    # AI 上一轮抛了问题（含 ?/吗/呢/么 等）用户还没接 → 跟进 thread 优先。
+    # skip_probability 在 system_router.py 同一文件的 propensity 段也是这条
+    # 优先级，统一不让 mini-game 邀请把 promised follow-up 抢走。
+    if getattr(activity_snapshot, 'unfinished_thread', None) is not None:
+        return None
+    if _mini_game_invite_in_cooldown(lanlan_name):
+        return None
+    import random as _random
+    if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
+        return None
+
+    template = _loc(MINI_GAME_INVITE_LINE, invite_lang)
+    safe_master = (master_name or '').strip()
+    try:
+        invite_text = template.format(master_name=safe_master).strip()
+    except Exception:
+        invite_text = template.replace('{master_name}', safe_master).strip()
+    if not invite_text:
+        return None
+
+    if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
+        return {
+            "success": True,
+            "action": "pass",
+            "message": "mini-game invite skipped: prepare_proactive_delivery refused",
+        }
+    proactive_sid = mgr.current_speech_id
+    from main_logic.session_state import SessionEvent as _SE
+    await mgr.state.fire(_SE.PROACTIVE_PHASE2)
+    try:
+        feed = getattr(mgr, 'feed_tts_chunk', None)
+        if callable(feed):
+            await feed(invite_text, expected_speech_id=proactive_sid)
+    except Exception as exc:
+        logger.warning(
+            "[%s] mini-game invite feed_tts_chunk failed: %s", lanlan_name, exc,
+        )
+    committed = await mgr.finish_proactive_delivery(
+        invite_text,
+        expected_speech_id=proactive_sid,
+    )
+    if not committed:
+        return {
+            "success": True,
+            "action": "pass",
+            "message": "mini-game invite skipped: user took over before delivery",
+        }
+    _record_proactive_chat(lanlan_name, invite_text, channel='mini_game')
+    _mini_game_invite_record_delivered(lanlan_name)
+    print(f"[{lanlan_name}] Mini-game invite delivered: {invite_text[:60]}…")
+    return {
+        "success": True,
+        "action": "chat",
+        "message": "mini-game invite delivered",
+        "channel": "mini_game",
+        "lanlan_name": lanlan_name,
+        "turn_id": proactive_sid,
+    }
+
+
+def _clear_channel_from_proactive_history(lanlan_name: str, channel: str) -> int:
+    """把指定通道在 _proactive_chat_history 中的 channel 标记清空。
+
+    用途：用户给出强正向反馈（例如音乐完整播放完毕），相当于明确接受了这一通道
+    最近的输出，这时 _compute_source_weights 不应该继续因为"刚刚用过"惩罚该通道。
+    把 channel 字段置空即可让 raw_score 不再累加该条 entry，但 message 文本仍然
+    保留在 deque 里供 dedup / similarity / format_recent_proactive_chats 复用。
+
+    返回被清空的 entry 数。
+    """
+    history = _proactive_chat_history.get(lanlan_name)
+    if not history:
+        return 0
+    rewritten: list[tuple] = []
+    cleared = 0
+    for entry in history:
+        if len(entry) >= 3 and entry[2] == channel:
+            rewritten.append((entry[0], entry[1], ''))
+            cleared += 1
+        else:
+            rewritten.append(entry)
+    if cleared == 0:
+        return 0
+    history.clear()
+    history.extend(rewritten)
+    return cleared
+
+
 def _normalize_text_for_similarity(text: str) -> str:
     """
     文本归一化（保守策略）：
@@ -2282,7 +2706,9 @@ async def emotion_analysis(request: Request):
 
                 heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
                 if heuristic_emotion:
-                    if heuristic_emotion != emotion and heuristic_score >= 4 and confidence < 0.85:
+                    # 强 override：启发式分数较高（≥4）且模型置信度不算很高（<0.8）时
+                    # 才推翻模型判断；避免单个吐槽词把模型 happy/neutral 翻成 angry。
+                    if heuristic_emotion != emotion and heuristic_score >= 4 and confidence < 0.8:
                         emotion = heuristic_emotion
                         confidence = max(confidence, min(0.86, 0.44 + heuristic_score * 0.07))
                         decision_source = "heuristic_strong_override"
@@ -3291,6 +3717,22 @@ async def proactive_chat(request: Request):
         mgr = session_manager.get(lanlan_name)
         if not mgr:
             return JSONResponse({"success": False, "error": f"角色 {lanlan_name} 不存在"}, status_code=404)
+
+        try:
+            from main_routers.game_router import is_game_route_active
+            if is_game_route_active(lanlan_name):
+                return JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "game route active; ordinary proactive skipped",
+                })
+        except Exception as game_route_err:
+            logger.warning("[%s] proactive game-route guard failed closed: %s", lanlan_name, game_route_err)
+            return JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "game route guard unavailable; ordinary proactive skipped",
+            })
         
         # 检查能否发起新一轮主动搭话：状态机统一把 "AI 正在响应"（_is_responding）、
         # "另一轮 proactive 在跑"（phase != IDLE）两个信号收拢到 O(1) 判定。
@@ -3301,6 +3743,14 @@ async def proactive_chat(request: Request):
         # 语音模式下不走 Phase1/Phase2，不占 SM 的 proactive phase；先用只读
         # can_start_proactive 做 409 判定即可。
         if data.get('voice_mode') and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
+            # Mini-game invite 状态机推进：voice fast path 不走 activity tracker，
+            # 直接用 mgr.last_user_activity_time（session 自己跟踪 RMS / 文本输入
+            # 活动）作为「用户最后一次活动时间」喂给 advance_response。否则纯
+            # voice 用户收到 mini-game 邀请回应后，pending 永远翻不掉，邀请会被
+            # 永久抑制；CodeRabbit Major review 指出。
+            _mini_game_invite_advance_response(
+                lanlan_name, getattr(mgr, 'last_user_activity_time', None),
+            )
             if not mgr.state.can_start_proactive(session=probe_session):
                 return JSONResponse({
                     "success": False,
@@ -3309,6 +3759,10 @@ async def proactive_chat(request: Request):
                     "state": mgr.state.snapshot(),
                 }, status_code=409)
             delivered = await mgr.trigger_voice_proactive_nudge()
+            if delivered:
+                # 24h+10 chats 冷却的 chat counter：voice nudge 也算一次主动搭话，
+                # 与 text path 在 _record_proactive_chat 之后调 count 对称。
+                _mini_game_invite_count_post_response_chat(lanlan_name)
             return JSONResponse({
                 "success": True,
                 "action": "chat" if delivered else "pass",
@@ -3388,6 +3842,18 @@ async def proactive_chat(request: Request):
             except Exception as _act_err:
                 logger.warning(f"[{lanlan_name}] activity snapshot fetch failed: {_act_err}; falling back to open propensity")
                 activity_snapshot = None
+
+        # 进 proactive_chat 后第一时间推进 mini-game invite 的"已回应"判定：
+        # 即便本轮不发邀请，pending 的上一次邀请也得在用户已说话时翻成已回应，
+        # 否则 cooldown 永远卡在 pending。Text path 从 activity_snapshot 反推
+        # last_user_msg_at；voice fast path 在上面的 voice block 内独立调一次
+        # （用 mgr.last_user_activity_time），两边对称。
+        _text_last_user_msg_at: float | None = None
+        if activity_snapshot is not None:
+            _secs = getattr(activity_snapshot, 'seconds_since_user_msg', None)
+            if _secs is not None:
+                _text_last_user_msg_at = time.time() - float(_secs)
+        _mini_game_invite_advance_response(lanlan_name, _text_last_user_msg_at)
 
         # ========== Hard short-circuit: propensity=closed ==========
         # ``private`` state pins propensity to ``closed`` (see
@@ -3486,6 +3952,32 @@ async def proactive_chat(request: Request):
                 }))
 
         print(f"[{lanlan_name}] 启用的搭话模式: {enabled_modes}")
+
+        # ========== Mini-game 邀请短路 ==========
+        # 过完 propensity / skip_probability / restricted_screen_only 这几道门后，
+        # 独立掷一次 10% 骰子；命中即用静态 i18n 模板直投递邀请，跳过 Phase 1/2
+        # LLM 与 source fetching。一次邀请被回应后 24h+10 chats cooldown，期间
+        # 不再掷骰。activity_snapshot is None（隐私模式 / tracker 不可用）保守
+        # 不发——无法判断是否在工作状态。
+        try:
+            _request_lang_for_invite = (
+                data.get('language') or data.get('lang') or data.get('i18n_language')
+            )
+            invite_lang = (
+                normalize_language_code(_request_lang_for_invite, format='short')
+                if _request_lang_for_invite else get_global_language()
+            )
+        except Exception:
+            invite_lang = 'zh'
+        invite_outcome = await _maybe_deliver_mini_game_invite(
+            lanlan_name=lanlan_name,
+            mgr=mgr,
+            activity_snapshot=activity_snapshot,
+            invite_lang=invite_lang,
+            master_name=master_name_current,
+        )
+        if invite_outcome is not None:
+            return await _end_proactive(JSONResponse(invite_outcome))
 
         # 全局 source 衰减历史：进入 picking 前确保已惰性加载到内存（首次为线程池
         # IO，后续是 O(1) flag 检查）。同步 picking loop 后续直接读 dict。
@@ -4394,7 +4886,7 @@ async def proactive_chat(request: Request):
         screen_section = ""
         if screenshot_b64_for_phase2:
             sl = get_screen_section_header(master_name_current, proactive_lang)
-            sf = _loc(SCREEN_SECTION_FOOTER, proactive_lang)
+            sf = get_screen_section_footer(master_name_current, proactive_lang)
             vision_window = vision_content.get('window_title', '') if vision_content else ''
             window_line = _loc(SCREEN_WINDOW_TITLE, proactive_lang).format(window=vision_window) if vision_window else ""
             hint = get_screen_img_hint(master_name_current, proactive_lang)
@@ -4692,7 +5184,11 @@ async def proactive_chat(request: Request):
                 await _emit_safe(cleaned)
         
         # --- 结果处理 ---
-        print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {(buffer + full_text)[:300]}\n")
+        # buffer 是流前 ~80 字符的原始累积（含 [TAG]\n 前缀和正文头部），
+        # full_text 是去标签后真正投递给 TTS / send_lanlan_response 的内容。
+        # 两者拼起来打印会让正文头部"复读"一遍，看着像 bug 实际不是。
+        # 调试只需要 tag + 实际投递文本即可。
+        print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {full_text[:300]}\n")
         if aborted or not full_text.strip():
             # 只有当用户没接管时才调 handle_new_message 清 TTS —— 否则会把
             # 用户正常回复的 TTS 也清掉（PR #862 修的 bug）。状态机的
@@ -4821,6 +5317,10 @@ async def proactive_chat(request: Request):
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
+        # Mini-game 邀请冷却 counter 推进：spec 是"被回应后再 10 次搭话才解禁"，
+        # 任何 channel 的成功投递都算一次，pending 期间（responded_at=None）函数
+        # 内部自然 no-op，不靠"邀请自身"提前耗 counter。
+        _mini_game_invite_count_post_response_chat(lanlan_name)
         # Reminiscence usage：本轮 surfaced 了 pending reflection（不管 AI 最终
         # 用了什么标签，followup 都出现在 prompt 里）→ 记一次 reminiscence 用量。
         # 用独立 buffer (_reminiscence_usage_history) 而不是把同一条 message
@@ -4956,6 +5456,34 @@ async def proactive_chat(request: Request):
 
 
 
+
+
+@router.post('/proactive/music_played_through')
+async def proactive_music_played_through(request: Request):
+    """
+    用户把推荐的歌完整听完后由前端 fire（aplayer 'ended' 事件）。
+    后端把 _proactive_chat_history 中该角色所有 channel == 'music' 的 entry 的
+    通道字段清空，从而让 _compute_source_weights 不再把"刚刚共享过音乐"
+    继续计入对 music 通道的衰减惩罚——完整播放是用户对该通道最强的正向反馈。
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    try:
+        config_manager = get_config_manager()
+        _, her_name_default, _, _, _, _, _, _, _ = await config_manager.aget_character_data()
+    except Exception:
+        her_name_default = ''
+    lanlan_name = (data.get('lanlan_name') or her_name_default or '').strip()
+    if not lanlan_name:
+        return JSONResponse({"success": False, "error": "lanlan_name missing"}, status_code=400)
+    cleared = _clear_channel_from_proactive_history(lanlan_name, 'music')
+    if cleared:
+        logger.info(f"[{lanlan_name}] 音乐完整播放，重置 music 通道权重衰减（清空 {cleared} 条）")
+    return JSONResponse({"success": True, "cleared": cleared, "lanlan_name": lanlan_name})
 
 
 @router.post('/translate')

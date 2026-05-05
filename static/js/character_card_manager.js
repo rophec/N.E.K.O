@@ -151,11 +151,59 @@ function closeModalOnOutsideClick(event) {
     }
 }
 
-// 检查当前模型是否为默认模型（mao_pro）
+// 检查当前模型是否为默认模型（yui-origin）
 function isDefaultModel() {
     // 使用保存的角色卡模型名称
     const currentModel = window.currentCharacterCardModel || '';
-    return currentModel === 'mao_pro';
+    return isStaticDefaultLive2DModel(currentModel, window._currentCardRawData || {});
+}
+
+function getLive2DModelInfo(modelName) {
+    if (!modelName) {
+        return null;
+    }
+    const allModels = Array.isArray(window.allModels) ? window.allModels : [];
+    const matches = allModels.filter(model => model && model.name === modelName);
+    return matches.length === 1 ? matches[0] : null;
+}
+
+function hasStaticModelFlag(metadata) {
+    if (!metadata || typeof metadata !== 'object') {
+        return false;
+    }
+    return metadata.source === 'static'
+        || metadata.isStatic === true
+        || metadata.is_static === true
+        || metadata.isDefault === true
+        || metadata.is_default === true;
+}
+
+function isLegacyDefaultLive2DModel(modelName) {
+    return modelName === 'yui_default' || modelName === 'yui-default';
+}
+
+function isStaticDefaultLive2DModel(modelName, rawData = {}) {
+    if (isLegacyDefaultLive2DModel(modelName)) {
+        return true;
+    }
+
+    if (modelName !== 'yui-origin') {
+        return false;
+    }
+
+    if (window.currentCharacterCardModel === modelName && window.currentCharacterCardModelSource) {
+        return window.currentCharacterCardModelSource === 'static';
+    }
+
+    const modelInfo = getLive2DModelInfo(modelName);
+    if (hasStaticModelFlag(modelInfo) || hasStaticModelFlag(modelInfo && modelInfo.modelMetadata)) {
+        return true;
+    }
+
+    const rawModel = rawData && typeof rawData.model === 'object' ? rawData.model : null;
+    return hasStaticModelFlag(rawData && rawData.modelMetadata)
+        || hasStaticModelFlag(rawData && rawData._reserved && rawData._reserved.modelMetadata)
+        || hasStaticModelFlag(rawModel);
 }
 
 // 更新上传按钮状态（不再依赖model-select元素）
@@ -2242,7 +2290,7 @@ function unsubscribeItem(itemId, itemName) {
                     return;
                 }
                 const errorMsg = (data && (data.error || data.message)) || `HTTP ${response.status}`;
-                showMessage(`${window.t ? window.t('steam.unsubscribeFailed') : '取消订阅失败'}: ${errorMsg}`, 'error');
+                showMessage(window.t ? window.t('steam.unsubscribeFailed', { error: errorMsg }) : `取消订阅失败: ${errorMsg}`, 'error');
                 restoreCard();
                 return;
             }
@@ -2327,7 +2375,7 @@ function unsubscribeItem(itemId, itemName) {
                 }
             } else {
                 const errorMsg = (data && (data.error || data.message)) || (window.t ? window.t('common.unknownError') : '未知错误');
-                showMessage(`${window.t ? window.t('steam.unsubscribeFailed') : '取消订阅失败'}: ${errorMsg}`, 'error');
+                showMessage(window.t ? window.t('steam.unsubscribeFailed', { error: errorMsg }) : `取消订阅失败: ${errorMsg}`, 'error');
                 restoreCard();
             }
         })
@@ -2525,7 +2573,7 @@ function syncTitleDataText() {
 // 加载角色卡数据
 async function loadCharacterData() {
     try {
-        const resp = await fetch('/api/characters/');
+        const resp = await fetch('/api/characters');
         if (!resp.ok) {
             throw new Error(`HTTP ${resp.status}`);
         }
@@ -2861,6 +2909,210 @@ async function loadCardFaceNames() {
     }
 }
 
+function openManagedPopup(url, windowName, features) {
+    window._openWindows = window._openWindows || {};
+    const existingWindow = window._openWindows[windowName];
+    if (existingWindow && !existingWindow.closed) {
+        existingWindow.focus();
+        return existingWindow;
+    }
+    delete window._openWindows[windowName];
+
+    const popup = window.open(url, windowName, features);
+    if (popup) {
+        window._openWindows[windowName] = popup;
+        try { popup.focus(); } catch (_) {}
+    }
+    return popup;
+}
+
+function refreshOpenCardMetaBlock(name) {
+    const panelWrapper = document.getElementById('catgirl-panel-wrapper');
+    if (!panelWrapper || !name) return;
+    const formName = panelWrapper.querySelector('form [name="档案名"]')?.value;
+    if (formName !== name) return;
+    const metaBlock = panelWrapper.querySelector('#card-meta-block');
+    if (metaBlock && typeof renderCardMetaBlock === 'function') {
+        renderCardMetaBlock(metaBlock, name, false);
+    }
+}
+
+function updateCardMetaAfterFaceChange(name, timestamp) {
+    if (!name) return;
+    window._cardMetas = window._cardMetas || {};
+    const existing = window._cardMetas[name] || {};
+    const updatedAt = new Date(timestamp || Date.now()).toISOString();
+    window._cardMetas[name] = {
+        author: existing.author || '',
+        origin: 'self',
+        created_at: existing.created_at || updatedAt,
+        updated_at: updatedAt
+    };
+    refreshOpenCardMetaBlock(name);
+}
+
+function applyCardFaceUpdated(name, timestamp) {
+    if (!name) return;
+    const ts = timestamp || Date.now();
+    const newSrc = `/api/characters/catgirl/${encodeURIComponent(name)}/card-face?t=${ts}`;
+    if (window._cardFaceNames) window._cardFaceNames.add(name);
+    updateCardMetaAfterFaceChange(name, ts);
+
+    const panelWrapper = document.getElementById('catgirl-panel-wrapper');
+    if (panelWrapper) {
+        const formName = panelWrapper.querySelector('form [name="档案名"]')?.value;
+        if (formName === name) {
+            const cardImage = panelWrapper.querySelector('.catgirl-panel-card-image');
+            const placeholder = cardImage?.querySelector('.card-avatar-placeholder');
+            if (cardImage) {
+                let panelImg = cardImage.querySelector('.card-face-img');
+                if (!panelImg) {
+                    panelImg = document.createElement('img');
+                    panelImg.className = 'card-face-img';
+                    panelImg.alt = '角色卡面';
+                    cardImage.insertBefore(panelImg, placeholder || cardImage.firstChild);
+                }
+                panelImg.onload = () => {
+                    if (placeholder) placeholder.style.display = 'none';
+                };
+                panelImg.onerror = () => {
+                    if (placeholder) placeholder.style.display = '';
+                };
+                panelImg.src = newSrc;
+            }
+        }
+    }
+
+    document.querySelectorAll('.chara-card-item').forEach(cardItem => {
+        const cardName = cardItem.querySelector('.card-name');
+        if (!cardName || cardName.textContent !== name) return;
+        const gridAvatar = cardItem.querySelector('.card-avatar');
+        if (!gridAvatar) return;
+        let gridImg = gridAvatar.querySelector('.card-face-img');
+        const gridPlaceholder = gridAvatar.querySelector('.card-avatar-placeholder');
+        if (!gridImg) {
+            gridImg = document.createElement('img');
+            gridImg.className = 'card-face-img';
+            gridImg.alt = name;
+            if (gridPlaceholder) {
+                gridAvatar.insertBefore(gridImg, gridPlaceholder);
+            } else {
+                gridAvatar.appendChild(gridImg);
+            }
+        }
+        gridImg.onload = () => {
+            if (gridPlaceholder) gridPlaceholder.style.display = 'none';
+        };
+        gridImg.onerror = () => {
+            if (gridPlaceholder) gridPlaceholder.style.display = '';
+        };
+        gridImg.src = newSrc;
+    });
+}
+
+function handleExternalCardFaceUpdated(data) {
+    if (!data || data.type !== 'card-face-updated') return;
+    applyCardFaceUpdated(data.name, data.timestamp);
+}
+
+(function initCardFaceUpdateEvents() {
+    window.addEventListener('message', event => {
+        if (event.origin !== window.location.origin) return;
+        handleExternalCardFaceUpdated(event.data);
+    });
+    if (typeof BroadcastChannel === 'function') {
+        try {
+            const channel = new BroadcastChannel('neko-card-face-events');
+            channel.onmessage = event => {
+                if (event.origin !== window.location.origin) return;
+                handleExternalCardFaceUpdated(event.data);
+            };
+        } catch (_) {}
+    }
+    window.addEventListener('storage', event => {
+        if (event.key !== 'neko_card_face_event' || !event.newValue) return;
+        try {
+            handleExternalCardFaceUpdated(JSON.parse(event.newValue));
+        } catch (_) {}
+    });
+})();
+
+async function openModelManagerForCharacterForm(form, fallbackName) {
+    let catgirlName = form?.querySelector?.('[name="档案名"]')?.value || fallbackName;
+    if (!catgirlName) {
+        showMessage(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名', 'warning');
+        return;
+    }
+
+    if (form && form._isNew && !form._autoCreated) {
+        try {
+            const tmpResp = await fetch('/api/characters/catgirl', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ '档案名': catgirlName })
+            });
+            if (tmpResp.ok) {
+                const tmpResult = await tmpResp.json().catch(() => ({}));
+                const createdName = tmpResult.character_name || catgirlName;
+                const nameInput = form.querySelector?.('[name="档案名"]');
+                if (nameInput) nameInput.value = createdName;
+                catgirlName = createdName;
+                form._autoCreated = true;
+                form._autoCreatedName = createdName;
+            } else {
+                const errData = await tmpResp.json().catch(() => ({}));
+                showMessage((window.t ? window.t('character.tempSaveFailed', { error: errData.error || '' }) : '临时保存失败: ' + (errData.error || '')), 'error');
+                return;
+            }
+        } catch (e) {
+            showMessage((window.t ? window.t('character.tempSaveFailed', { error: e.message }) : '临时保存失败: ' + e.message), 'error');
+            return;
+        }
+    }
+
+    const url = '/model_manager?lanlan_name=' + encodeURIComponent(catgirlName);
+    if (!window._openSettingsWindows) window._openSettingsWindows = {};
+    const existingWindow = window._openSettingsWindows[url];
+    if (existingWindow && !existingWindow.closed) {
+        if (form && form._autoCreated) form._autoCreatedDependentPopup = existingWindow;
+        existingWindow.focus();
+        return;
+    }
+    delete window._openSettingsWindows[url];
+
+    const popup = window.open(url, '_blank',
+        'toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=' + screen.availWidth + ',height=' + screen.availHeight + ',top=0,left=0');
+    if (!popup) {
+        if (typeof showAlert === 'function') await showAlert(window.t ? window.t('character.allowPopups') : '请允许弹窗！');
+        // 弹窗被拦截：回滚本次及此前重命名遗留的 detached 临时角色，避免用户直接刷新/关页时残留空记录
+        if (form && (form._autoCreated || form._autoCreatedDetachedName)) {
+            await rollbackAutoCreatedCatgirl(form);
+        }
+        return;
+    }
+
+    window._openSettingsWindows[url] = popup;
+    if (form && form._autoCreated) form._autoCreatedDependentPopup = popup;
+    popup.moveTo(0, 0);
+    popup.resizeTo(screen.availWidth, screen.availHeight);
+    const timer = setInterval(() => {
+        if (!popup.closed) {
+            if (form && popup._modelManagerHasSaved) form._autoCreatedDependentPopupSaved = true;
+            return;
+        }
+        clearInterval(timer);
+        if (window._openSettingsWindows[url] === popup) delete window._openSettingsWindows[url];
+        if (form && popup._modelManagerHasSaved) form._autoCreatedDependentPopupSaved = true;
+        if (form && form._autoCreatedDependentPopup === popup) form._autoCreatedDependentPopup = null;
+        if (form && form._autoCreatedRollbackWhenDependentCloses && !form._autoCreatedDependentPopupSaved) {
+            rollbackAutoCreatedCatgirl(form).catch(e => console.warn('[角色面板] 延迟回滚临时角色失败:', e));
+        }
+        if (typeof loadCharacterCards === 'function') {
+            loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
+        }
+    }, 500);
+}
+
 // 卡面元数据缓存 { name: { author, origin, created_at, updated_at } }
 window._cardMetas = window._cardMetas || {};
 async function loadCardMetas() {
@@ -2964,7 +3216,8 @@ function renderCardMetaBlock(container, name, isNew, rawData) {
                     if (window._cardMetas) window._cardMetas[name] = data.meta || { ...m, author: newVal };
                     showMessage(window.t ? window.t('character.cardAuthorUpdated') : '作者已更新', 'success');
                 } catch (e) {
-                    showMessage(window.t ? window.t('character.cardAuthorUpdateFailed') : '作者更新失败', 'error');
+                    const errorMessage = e.message || String(e);
+                    showMessage(window.t ? window.t('character.cardAuthorUpdateFailed', { error: errorMessage }) : '更新作者失败: ' + errorMessage, 'error');
                     authorInput.value = author;
                 } finally { saving = false; }
             };
@@ -3606,7 +3859,7 @@ function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
         avatar.className = 'card-avatar';
         const placeholderSpan = document.createElement('span');
         placeholderSpan.className = 'card-avatar-placeholder';
-        placeholderSpan.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
+        placeholderSpan.textContent = window.t ? window.t('steam.noCardImage') : '点击此处\n设置卡面';
         avatar.appendChild(placeholderSpan);
 
         // 加载已有的卡面图片（仅在服务器侧确实存在时才请求，避免 404 噪声）
@@ -3644,9 +3897,9 @@ function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
 
         const switchBtn = document.createElement('button');
         switchBtn.className = 'card-action-btn switch-btn';
-        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
+        switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
         switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-            + '<span>' + (window.t ? window.t('character.switchCard') : '切换角色卡') + '</span>';
+            + '<span>' + (window.t ? window.t('character.switchCard') : '切换该角色') + '</span>';
         switchBtn.disabled = isCurrent;
         switchBtn.onclick = function (e) {
             e.stopPropagation();
@@ -3720,9 +3973,9 @@ function renderCharaCardsList(container, cards, currentCatgirl, hiddenKeys) {
 
         const switchBtn = document.createElement('button');
         switchBtn.className = 'list-action-btn switch-btn';
-        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
+        switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
         switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-            + '<span class="list-action-label">' + (window.t ? window.t('character.switchCard') : '切换角色卡') + '</span>';
+            + '<span class="list-action-label">' + (window.t ? window.t('character.switchCard') : '切换该角色') + '</span>';
         switchBtn.disabled = isCurrent;
         switchBtn.onclick = function (e) {
             e.stopPropagation();
@@ -3816,11 +4069,24 @@ function openCatgirlPanel(card, originEl) {
 
     const cardImage = document.createElement('div');
     cardImage.className = 'catgirl-panel-card-image';
-    cardImage.setAttribute('data-edit-label', window.t ? window.t('character.editCardFace') : '✎ 编辑卡面');
     const imgPlaceholder = document.createElement('span');
     imgPlaceholder.className = 'card-avatar-placeholder';
-    imgPlaceholder.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
+    imgPlaceholder.textContent = window.t ? window.t('steam.noCardImage') : '点击此处\n设置卡面';
     cardImage.appendChild(imgPlaceholder);
+
+    const cardActionOverlay = document.createElement('div');
+    cardActionOverlay.className = 'catgirl-panel-card-actions';
+    const modelSettingsAction = document.createElement('button');
+    modelSettingsAction.type = 'button';
+    modelSettingsAction.className = 'catgirl-panel-card-action';
+    modelSettingsAction.textContent = window.t ? window.t('character.cardFaceModelSettings') : '模型设置';
+    const editCardFaceAction = document.createElement('button');
+    editCardFaceAction.type = 'button';
+    editCardFaceAction.className = 'catgirl-panel-card-action';
+    editCardFaceAction.textContent = window.t ? window.t('character.editCardFace') : '编辑卡面';
+    cardActionOverlay.appendChild(modelSettingsAction);
+    cardActionOverlay.appendChild(editCardFaceAction);
+    cardImage.appendChild(cardActionOverlay);
 
     // 加载已有的卡面图片（仅在服务器侧确实存在时才请求，避免 404 噪声）
     if (name && window._cardFaceNames && window._cardFaceNames.has(name)) {
@@ -3835,8 +4101,7 @@ function openCatgirlPanel(card, originEl) {
         img.src = cardFaceUrl + '?t=' + Date.now();
     }
 
-    // 点击卡面打开角色卡制作页面
-    cardImage.addEventListener('click', () => {
+    const openCardMaker = () => {
         // 优先使用表单中当前填写的档案名（新建猫娘可能已临时保存）
         const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
         const currentName = form?.querySelector('[name="档案名"]')?.value || name;
@@ -3845,56 +4110,35 @@ function openCatgirlPanel(card, originEl) {
             return;
         }
         const makerUrl = `/card_maker?name=${encodeURIComponent(currentName)}&mode=maker`;
-        window.open(makerUrl, '_blank', 'width=1200,height=800');
+        const windowName = `card_maker_${encodeURIComponent(currentName)}`;
+        openManagedPopup(makerUrl, windowName, 'width=1200,height=800');
+    };
+
+    // 点击卡面主体或右侧按钮打开角色卡制作页面
+    cardImage.addEventListener('click', (event) => {
+        if (event.target.closest('.catgirl-panel-card-action')) return;
+        openCardMaker();
+    });
+    editCardFaceAction.addEventListener('click', (event) => {
+        event.stopPropagation();
+        openCardMaker();
+    });
+    modelSettingsAction.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
+        openModelManagerForCharacterForm(form, name);
     });
 
     // 监听角色卡制作页面的保存消息
     const onCardFaceMessage = (event) => {
+        if (event.origin !== window.location.origin) return;
         // 获取当前实际的档案名（新建猫娘时 name 为 null，需要从表单读取）
         const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
         const currentName = form?.querySelector('[name="档案名"]')?.value || name;
         if (!currentName) return;
 
         if (event.data && event.data.type === 'card-face-updated' && event.data.name === currentName) {
-            const ts = event.data.timestamp;
-            const newSrc = `/api/characters/catgirl/${encodeURIComponent(currentName)}/card-face?t=${ts}`;
-            // 更新缓存：标记该名字现在已有卡面
-            if (window._cardFaceNames) window._cardFaceNames.add(currentName);
-
-            // 更新面板卡面图片
-            let panelImg = cardImage.querySelector('.card-face-img');
-            if (!panelImg) {
-                panelImg = document.createElement('img');
-                panelImg.className = 'card-face-img';
-                panelImg.alt = '角色卡面';
-                cardImage.insertBefore(panelImg, imgPlaceholder);
-                imgPlaceholder.style.display = 'none';
-            }
-            panelImg.src = newSrc;
-
-            // 同步更新角色列表中的卡面
-            document.querySelectorAll('.chara-card-item').forEach(cardItem => {
-                const cardName = cardItem.querySelector('.card-name');
-                if (cardName && cardName.textContent === currentName) {
-                    const gridAvatar = cardItem.querySelector('.card-avatar');
-                    if (gridAvatar) {
-                        let gridImg = gridAvatar.querySelector('.card-face-img');
-                        const gridPlaceholder = gridAvatar.querySelector('.card-avatar-placeholder');
-                        if (!gridImg) {
-                            gridImg = document.createElement('img');
-                            gridImg.className = 'card-face-img';
-                            gridImg.alt = currentName;
-                            if (gridPlaceholder) {
-                                gridAvatar.insertBefore(gridImg, gridPlaceholder);
-                                gridPlaceholder.style.display = 'none';
-                            } else {
-                                gridAvatar.appendChild(gridImg);
-                            }
-                        }
-                        gridImg.src = newSrc;
-                    }
-                }
-            });
+            applyCardFaceUpdated(currentName, event.data.timestamp);
         }
     };
     window.addEventListener('message', onCardFaceMessage);
@@ -3938,9 +4182,9 @@ function openCatgirlPanel(card, originEl) {
         switchBtn.className = 'card-panel-action-btn switch-btn';
         const isCurrentChara = (window._workshopCurrentCatgirl || '') === name;
         switchBtn.disabled = isCurrentChara;
-        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
+        switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
         switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-            + '<span>' + (window.t ? window.t('character.switchCard') : '切换') + '</span>';
+            + '<span>' + (window.t ? window.t('character.switchCard') : '切换该角色') + '</span>';
         switchBtn.onclick = function (e) {
             e.stopPropagation();
             workshopSwitchCatgirl(name);
@@ -4268,6 +4512,105 @@ function openNewCatgirlPanel() {
 }
 window.openNewCatgirlPanel = openNewCatgirlPanel;
 
+function buildCreatedCatgirlPanelActions(name) {
+    const actions = document.createElement('div');
+    actions.className = 'card-panel-actions';
+
+    const exportBtn = document.createElement('button');
+    exportBtn.type = 'button';
+    exportBtn.className = 'card-panel-action-btn export-btn';
+    exportBtn.title = window.t ? window.t('character.exportCardOnly') : '导出角色卡';
+    exportBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
+        + '<span>' + (window.t ? window.t('character.exportCardOnly') : '导出') + '</span>';
+    exportBtn.onclick = function (e) {
+        e.stopPropagation();
+        exportCharacterCard(name);
+    };
+    actions.appendChild(exportBtn);
+
+    const switchBtn = document.createElement('button');
+    switchBtn.type = 'button';
+    switchBtn.className = 'card-panel-action-btn switch-btn';
+    const isCurrentChara = (window._workshopCurrentCatgirl || '') === name;
+    switchBtn.disabled = isCurrentChara;
+    switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
+    switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
+        + '<span>' + (window.t ? window.t('character.switchCard') : '切换该角色') + '</span>';
+    switchBtn.onclick = function (e) {
+        e.stopPropagation();
+        workshopSwitchCatgirl(name);
+    };
+    actions.appendChild(switchBtn);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'card-panel-action-btn delete-btn' + (isCurrentChara ? ' disabled' : '');
+    deleteBtn.title = isCurrentChara
+        ? (window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡')
+        : (window.t ? window.t('character.deleteCard') : '删除角色卡');
+    deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
+        + '<span>' + (window.t ? window.t('character.deleteCard') : '删除') + '</span>';
+    deleteBtn.onclick = async function (e) {
+        e.stopPropagation();
+        const deleted = await workshopDeleteCatgirl(name);
+        if (deleted) {
+            closeCatgirlPanel();
+        }
+    };
+    actions.appendChild(deleteBtn);
+
+    return actions;
+}
+
+async function rollbackAutoCreatedCatgirl(form, targetName = '') {
+    if (!form) return;
+    const tempNames = Array.from(new Set(
+        (targetName
+            ? [targetName]
+            : [form._autoCreatedName, form._autoCreatedDetachedName]
+        ).filter(Boolean)
+    ));
+    if (!tempNames.length) return;
+    const deletedNames = [];
+    try {
+        for (const tempName of tempNames) {
+            const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(tempName), {
+                method: 'DELETE'
+            });
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                console.warn('[角色面板] 回滚临时角色失败:', tempName, errData.error || resp.statusText);
+                continue;
+            }
+            deletedNames.push(tempName);
+            if (window._cardFaceNames) window._cardFaceNames.delete(tempName);
+            if (window._cardMetas) delete window._cardMetas[tempName];
+        }
+        if (!deletedNames.length) return;
+        if (deletedNames.includes(form._autoCreatedName)) {
+            form._autoCreated = false;
+            form._autoCreatedName = '';
+        }
+        if (deletedNames.includes(form._autoCreatedDetachedName)) {
+            form._autoCreatedDetachedName = '';
+        }
+        if (!form._autoCreatedName && !form._autoCreatedDetachedName) {
+            form._autoCreatedRollbackWhenDependentCloses = false;
+            form._autoCreatedDependentPopupSaved = false;
+        }
+        if (typeof loadCharacterCards === 'function') {
+            loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
+        }
+    } catch (e) {
+        console.warn('[角色面板] 回滚临时角色请求失败:', tempNames.join(', '), e);
+    }
+}
+
+function hasOpenAutoCreatedDependentPopup(form) {
+    const popup = form && form._autoCreatedDependentPopup;
+    return !!(popup && !popup.closed);
+}
+
 async function closeCatgirlPanel() {
     const overlay = document.querySelector('.catgirl-panel-overlay');
     if (!overlay) return;
@@ -4278,6 +4621,18 @@ async function closeCatgirlPanel() {
     if (currentForm && currentForm._characterPersonalityUpdateHandler) {
         window.removeEventListener('neko:character-personality-updated', currentForm._characterPersonalityUpdateHandler);
         delete currentForm._characterPersonalityUpdateHandler;
+    }
+    // _autoCreatedDependentPopupSaved 由 500ms 轮询置位，存在 popup 已关到 timer 下次触发之间的窗口；
+    // 同时直接读 popup._modelManagerHasSaved 兜底，避免误把刚保存好的临时角色回滚掉
+    const dependentPopupForCheck = currentForm && currentForm._autoCreatedDependentPopup;
+    const dependentSaved = !!(currentForm && (
+        currentForm._autoCreatedDependentPopupSaved
+        || (dependentPopupForCheck && dependentPopupForCheck._modelManagerHasSaved)
+    ));
+    if (!dependentSaved && hasOpenAutoCreatedDependentPopup(currentForm)) {
+        currentForm._autoCreatedRollbackWhenDependentCloses = true;
+    } else if (!dependentSaved) {
+        await rollbackAutoCreatedCatgirl(currentForm);
     }
 
     // 取消所有预览加载：包括尚未完成的 Live2D/VRM/MMD 异步加载，避免清理后又把预览建回来
@@ -4332,6 +4687,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     form.id = name ? 'catgirl-form-' + name : 'catgirl-form-new';
     form.style.padding = '0';
     form._catgirlName = name;
+    form._isNew = !!isNew;
     form.onsubmit = function (e) { e.preventDefault(); };
 
     // 档案名
@@ -4356,6 +4712,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     if (isNew) {
         nameInput.addEventListener('change', function () {
             if (form._autoCreated && form._autoCreatedName !== nameInput.value.trim()) {
+                form._autoCreatedDetachedName = form._autoCreatedName;
                 form._autoCreated = false;
                 form._autoCreatedName = '';
             }
@@ -4411,7 +4768,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             } catch (e) {
                 console.error('重命名失败:', e);
                 if (typeof showAlert === 'function') {
-                    await showAlert(window.t ? window.t('character.renameError') : '重命名时发生错误');
+                    const errorMessage = e.message || String(e);
+                    await showAlert(window.t ? window.t('character.renameError', { error: errorMessage }) : '重命名失败: ' + errorMessage);
                 }
             }
         });
@@ -4566,13 +4924,25 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         const profile = override && typeof override.profile === 'object' ? override.profile : {};
         const presetId = override && typeof override === 'object' ? String(override.preset_id || '').trim() : '';
         const hasOverride = !!(override && presetId);
+        // 通过 i18n 键获取本地化显示名，回退到 profile 原始值
+        const fallbackName = String(profile['性格原型'] || presetId).trim();
+        const i18nKey = presetId ? 'memory.characterSelection.' + presetId + '.name' : '';
+        var displayName = '';
+        if (hasOverride) {
+            if (typeof window.t === 'function' && i18nKey) {
+                var translated = window.t(i18nKey, fallbackName);
+                displayName = (typeof translated === 'string' && translated && translated !== i18nKey)
+                    ? translated
+                    : fallbackName;
+            } else {
+                displayName = fallbackName;
+            }
+        }
         return {
             hasOverride,
             presetId,
             profile,
-            displayName: hasOverride
-                ? String(profile['性格原型'] || presetId).trim()
-                : '',
+            displayName: displayName,
         };
     }
 
@@ -4692,56 +5062,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     personalityWrapper.appendChild(personalityClearBtn);
     form.appendChild(personalityWrapper);
 
-    // 进阶设定折叠
-    const fold = document.createElement('div');
-    fold.className = 'fold open';
-
-    const foldToggle = document.createElement('div');
-    foldToggle.className = 'fold-toggle';
-    const arrowSpan = document.createElement('img');
-    arrowSpan.className = 'arrow';
-    arrowSpan.src = '/static/icons/dropdown_arrow.png';
-    arrowSpan.alt = '';
-    arrowSpan.style.width = '32px';
-    arrowSpan.style.height = '32px';
-    arrowSpan.style.verticalAlign = 'middle';
-    arrowSpan.style.transition = 'transform 0.2s';
-    arrowSpan.style.transform = 'rotate(0deg)';
-    foldToggle.appendChild(arrowSpan);
-    foldToggle.appendChild(document.createTextNode(' '));
-    const toggleText = document.createTextNode(window.t ? window.t('character.advancedSettings') : '进阶设定');
-    foldToggle.appendChild(toggleText);
-    foldToggle.onclick = function () {
-        fold.classList.toggle('open');
-        arrowSpan.style.transform = fold.classList.contains('open') ? 'rotate(0deg)' : 'rotate(-90deg)';
-        // localStorage 持久化折叠状态
-        if (name) {
-            localStorage.setItem('catgirl_advanced_' + name, fold.classList.contains('open'));
-        }
-    };
-    fold.appendChild(foldToggle);
-
-    const foldContent = document.createElement('div');
-    foldContent.className = 'fold-content';
-
-    // 模型设定
-    const modelWrapper = document.createElement('div');
-    modelWrapper.className = 'field-row-wrapper';
-    const modelLabel = document.createElement('label');
-    modelLabel.textContent = window.t ? window.t('character.modelSettings') : '模型设定';
-    modelLabel.style.fontSize = '1rem';
-    modelWrapper.appendChild(modelLabel);
-
-    const modelLink = document.createElement('span');
-    modelLink.className = 'live2d-link';
-    modelLink.title = window.t ? window.t('character.manageModel') : '点击管理模型';
-    modelLink.style.color = '#40C5F1';
-    modelLink.style.cursor = 'pointer';
-    modelLink.style.textDecoration = 'underline';
-    modelLink.style.display = 'flex';
-    modelLink.style.alignItems = 'center';
-
-    // 辅助函数：检查模型路径是否有效
+    // 模型信息仅用于保存时保留 Live2D 待机动作，模型管理入口已移到卡面按钮。
     function validateModelPath(path) {
         if (path === undefined || path === null) return '';
         if (typeof path !== 'string') path = String(path);
@@ -4753,128 +5074,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     const modelType = cat['model_type'] || 'live2d';
     const normalizedModelType = modelType === 'vrm' ? 'live3d' : modelType;
-    let modelDisplayText = '';
-
-    const mmdPath = validateModelPath(cat['mmd'])
-        || validateModelPath(cat['_reserved']?.avatar?.mmd?.model_path);
-    const vrmPath = validateModelPath(cat['vrm'])
-        || validateModelPath(cat['_reserved']?.avatar?.vrm?.model_path);
     const live2dPath = validateModelPath(cat['live2d']);
-
-    const live3dSubType = String(
-        cat['_reserved']?.avatar?.live3d_sub_type || cat['live3d_sub_type'] || ''
-    ).trim().toLowerCase();
-
-    if (normalizedModelType === 'live3d' && live3dSubType === 'mmd' && mmdPath) {
-        modelDisplayText = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
-    } else if (normalizedModelType === 'live3d' && live3dSubType === 'vrm' && vrmPath) {
-        modelDisplayText = (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '');
-    } else if (normalizedModelType === 'live3d' && mmdPath && !vrmPath) {
-        modelDisplayText = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
-    } else if (normalizedModelType === 'live3d' && vrmPath) {
-        modelDisplayText = (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '');
-    } else if (live2dPath) {
-        modelDisplayText = live2dPath;
-    } else {
-        modelDisplayText = window.t ? window.t('character.modelNotSet') : '未设置';
-    }
-
-    modelLink.textContent = modelDisplayText || (window.t ? window.t('character.modelNotSet') : '未设置');
-    modelWrapper.appendChild(modelLink);
-    foldContent.appendChild(modelWrapper);
-
-    // 模型设定弹窗逻辑
-    modelLink.onclick = async function () {
-        const catgirlName = form.querySelector('[name="档案名"]').value;
-        if (!catgirlName) {
-            if (typeof showAlert === 'function') {
-                await showAlert(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名，然后再设置模型');
-            }
-            return;
-        }
-        // 新建猫娘时，先临时保存（自动创建角色记录），确保模型管理器能正确关联
-        if (isNew && !form._autoCreated) {
-            try {
-                const tmpResp = await fetch('/api/characters/catgirl', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ '档案名': catgirlName })
-                });
-                if (tmpResp.ok) {
-                    form._autoCreated = true;
-                    form._autoCreatedName = catgirlName;
-                } else {
-                    const errData = await tmpResp.json().catch(() => ({}));
-                    showMessage((window.t ? window.t('character.tempSaveFailed', { error: errData.error || '' }) : '临时保存失败: ' + (errData.error || '')), 'error');
-                    return;
-                }
-            } catch (e) {
-                showMessage((window.t ? window.t('character.tempSaveFailed', { error: e.message }) : '临时保存失败: ' + e.message), 'error');
-                return;
-            }
-        }
-        const url = '/model_manager?lanlan_name=' + encodeURIComponent(catgirlName);
-        if (!window._openSettingsWindows) window._openSettingsWindows = {};
-        if (window._openSettingsWindows[url]) {
-            const existingWindow = window._openSettingsWindows[url];
-            if (existingWindow && !existingWindow.closed) {
-                existingWindow.focus();
-                return;
-            } else {
-                delete window._openSettingsWindows[url];
-            }
-        }
-        const popup = window.open(url, '_blank',
-            'toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=' + screen.availWidth + ',height=' + screen.availHeight + ',top=0,left=0');
-        if (!popup) {
-            if (typeof showAlert === 'function') await showAlert(window.t ? window.t('character.allowPopups') : '请允许弹窗！');
-            return;
-        }
-        window._openSettingsWindows[url] = popup;
-        popup.moveTo(0, 0);
-        popup.resizeTo(screen.availWidth, screen.availHeight);
-        const timer = setInterval(async () => {
-            if (popup.closed) {
-                clearInterval(timer);
-                if (window._openSettingsWindows[url] === popup) delete window._openSettingsWindows[url];
-                loadCharacterCards();
-                // 模型管理器关闭后，重新获取角色数据并更新模型显示名称
-                try {
-                    const resp = await fetch('/api/characters/');
-                    if (resp.ok) {
-                        const allData = await resp.json();
-                        const updatedCat = allData?.['猫娘']?.[catgirlName];
-                        if (!updatedCat) throw new Error('catgirl not found');
-                        const updModelType = updatedCat['model_type'] || 'live2d';
-                        const updNormType = updModelType === 'vrm' ? 'live3d' : updModelType;
-                        const updMmd = validateModelPath(updatedCat['mmd'])
-                            || validateModelPath(updatedCat['_reserved']?.avatar?.mmd?.model_path);
-                        const updVrm = validateModelPath(updatedCat['vrm'])
-                            || validateModelPath(updatedCat['_reserved']?.avatar?.vrm?.model_path);
-                        const updLive2d = validateModelPath(updatedCat['live2d']);
-                        const updSubType = String(
-                            updatedCat['_reserved']?.avatar?.live3d_sub_type || updatedCat['live3d_sub_type'] || ''
-                        ).trim().toLowerCase();
-                        let newDisplayText = '';
-                        if (updNormType === 'live3d' && updSubType === 'mmd' && updMmd) {
-                            newDisplayText = (updMmd.split(/[\\/]/).pop() || updMmd).replace(/\.(pmx|pmd)$/i, '');
-                        } else if (updNormType === 'live3d' && updSubType === 'vrm' && updVrm) {
-                            newDisplayText = (updVrm.split(/[\\/]/).pop() || updVrm).replace(/\.vrm$/i, '');
-                        } else if (updNormType === 'live3d' && updMmd && !updVrm) {
-                            newDisplayText = (updMmd.split(/[\\/]/).pop() || updMmd).replace(/\.(pmx|pmd)$/i, '');
-                        } else if (updNormType === 'live3d' && updVrm) {
-                            newDisplayText = (updVrm.split(/[\\/]/).pop() || updVrm).replace(/\.vrm$/i, '');
-                        } else if (updLive2d) {
-                            newDisplayText = updLive2d;
-                        }
-                        modelLink.textContent = newDisplayText || (window.t ? window.t('character.modelNotSet') : '未设置');
-                    }
-                } catch (e) {
-                    console.warn('[Panel] 更新模型显示名称失败:', e);
-                }
-            }
-        }, 500);
-    };
 
     // 音色设定
     const voiceWrapper = document.createElement('div');
@@ -4947,10 +5147,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         }
     });
     voiceWrapper.appendChild(registerVoiceBtn);
-    foldContent.appendChild(voiceWrapper);
-
-    fold.appendChild(foldContent);
-    form.appendChild(fold);
+    form.appendChild(voiceWrapper);
 
     // 操作按钮区
     const btnArea = document.createElement('div');
@@ -5061,17 +5258,6 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     form._previousVoiceId = String(cat['voice_id'] || '').trim();
     form._live2dModel = live2dPath;
     form._modelType = normalizedModelType;
-
-    // 恢复进阶设定折叠状态
-    if (name) {
-        setTimeout(() => {
-            const savedState = localStorage.getItem('catgirl_advanced_' + name);
-            if (savedState === 'false') {
-                fold.classList.remove('open');
-                arrowSpan.style.transform = 'rotate(-90deg)';
-            }
-        }, 0);
-    }
 
     // 初始化textarea自动调整
     setTimeout(() => {
@@ -5306,6 +5492,28 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
     }
 }
 
+async function rebuildSavedCatgirlPanel(form, catgirlName) {
+    const container = form?.parentNode;
+    if (!container || !catgirlName) return;
+    try {
+        const freshData = await loadCharacterData();
+        const rawData = freshData?.['猫娘']?.[catgirlName] || {};
+        const wrapper = container.closest('.catgirl-panel-wrapper');
+        const leftSection = wrapper?.querySelector('.catgirl-panel-left');
+        const metaBlock = leftSection?.querySelector('#card-meta-block');
+        if (metaBlock && typeof renderCardMetaBlock === 'function') {
+            renderCardMetaBlock(metaBlock, catgirlName, false, rawData);
+        }
+        if (leftSection) {
+            leftSection.querySelector('.card-panel-actions')?.remove();
+            leftSection.appendChild(buildCreatedCatgirlPanelActions(catgirlName));
+        }
+        buildCatgirlDetailForm(catgirlName, rawData, false, container);
+    } catch (e) {
+        console.warn('[角色面板] 切换到已创建角色状态失败:', e);
+    }
+}
+
 async function saveCatgirlFromPanel(form, originalName, isNew) {
     // 防止重复提交
     if (form.dataset.submitting === 'true') {
@@ -5325,7 +5533,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         // 收集表单数据
         const nameInput = form.querySelector('input[name="档案名"]');
         if (!nameInput || !nameInput.value.trim()) {
-            showMessage(window.t ? window.t('character.profileNameRequired') : '请输入档案名', 'error');
+            await showAlertDialog(window.t ? window.t('character.profileNameRequired') : '请输入档案名', { type: 'warning' });
             return;
         }
         data['档案名'] = nameInput.value.trim();
@@ -5359,7 +5567,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                 const errorJson = JSON.parse(errorText);
                 if (errorJson.error) errorMessage = errorJson.error;
             } catch (e) { /* keep original */ }
-            showMessage((window.t ? window.t('character.saveFailedWithError') : '保存失败: ') + errorMessage, 'error');
+            showMessage(window.t ? window.t('character.saveFailedWithError', { error: errorMessage }) : '保存失败: ' + errorMessage, 'error');
             return;
         }
 
@@ -5367,6 +5575,14 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         if (result.success === false) {
             showMessage(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'), 'error');
             return;
+        }
+        if (form._autoCreatedDetachedName) {
+            await rollbackAutoCreatedCatgirl(form, form._autoCreatedDetachedName);
+            form._autoCreated = false;
+            form._autoCreatedName = '';
+        } else if (form._autoCreated) {
+            form._autoCreated = false;
+            form._autoCreatedName = '';
         }
 
         // voice_id 通过专用接口更新
@@ -5382,13 +5598,13 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                     if (!voiceResp.ok || voiceResult.success === false) {
                         const detail = (voiceResult && voiceResult.error) || (voiceResp.status + ' ' + voiceResp.statusText);
                         showMessage(
-                            (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + detail,
+                            window.t ? window.t('character.partialSaveVoiceFailed', { error: detail }) : '角色已保存，但音色更新失败: ' + detail,
                             'error'
                         );
                     }
                 } catch (voiceErr) {
                     showMessage(
-                        (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + (voiceErr.message || String(voiceErr)),
+                        window.t ? window.t('character.partialSaveVoiceFailed', { error: voiceErr.message || String(voiceErr) }) : '角色已保存，但音色更新失败: ' + (voiceErr.message || String(voiceErr)),
                         'error'
                     );
                 }
@@ -5401,13 +5617,13 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                     if (!clearResp.ok || clearResult.success === false) {
                         const detail = (clearResult && clearResult.error) || (clearResp.status + ' ' + clearResp.statusText);
                         showMessage(
-                            (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + detail,
+                            window.t ? window.t('character.partialSaveVoiceFailed', { error: detail }) : '角色已保存，但音色更新失败: ' + detail,
                             'error'
                         );
                     }
                 } catch (clearErr) {
                     showMessage(
-                        (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + (clearErr.message || String(clearErr)),
+                        window.t ? window.t('character.partialSaveVoiceFailed', { error: clearErr.message || String(clearErr) }) : '角色已保存，但音色更新失败: ' + (clearErr.message || String(clearErr)),
                         'error'
                     );
                 }
@@ -5441,7 +5657,24 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
             : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
         if (isNew) {
-            closeCatgirlPanel();
+            const catgirlName = data['档案名'];
+            const hasCardFace = window._cardFaceNames && window._cardFaceNames.has(catgirlName);
+            if (!hasCardFace) {
+                const makerUrl = `/card_maker?name=${encodeURIComponent(catgirlName)}&mode=maker`;
+                const makerWindow = openManagedPopup(
+                    makerUrl,
+                    `card_maker_${encodeURIComponent(catgirlName)}`,
+                    'width=1200,height=800'
+                );
+                if (!makerWindow) {
+                    await showAlertDialog(window.t ? window.t('character.cardMakerPopupBlocked') : '卡面制作页面未能自动打开，请允许浏览器弹窗后重试，或点击卡面区域手动打开。', { type: 'warning' });
+                    await rebuildSavedCatgirlPanel(form, catgirlName);
+                } else {
+                    closeCatgirlPanel();
+                }
+            } else {
+                closeCatgirlPanel();
+            }
         } else {
             const container = form.parentNode;
             const saveBtn = form.querySelector('#save-button');
@@ -5460,7 +5693,8 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         await loadCharacterCards();
     } catch (error) {
         console.error('保存猫娘失败:', error);
-        showMessage(window.t ? window.t('character.saveError') : '保存时发生错误: ' + error.message, 'error');
+        const errorMessage = error.message || String(error);
+        showMessage(window.t ? window.t('character.saveError', { error: errorMessage }) : '保存时发生错误: ' + errorMessage, 'error');
     } finally {
         form.dataset.submitting = 'false';
     }
@@ -5550,7 +5784,7 @@ async function workshopDeleteCatgirl(name) {
 
     // 检查是否只剩一只猫娘
     try {
-        const resp = await fetch('/api/characters/', { cache: 'no-store' });
+        const resp = await fetch('/api/characters', { cache: 'no-store' });
         if (resp.ok) {
             const allData = await resp.json();
             const catgirls = allData?.['猫娘'] || {};
@@ -6116,6 +6350,8 @@ function expandCharacterCardSection(card) {
     window.currentCharacterCardModel = (effectiveModelType !== 'live2d' && effectiveModelPath) ? effectiveModelPath : live2d;
     window.currentCharacterCardModelType = effectiveModelType;
     window.currentCharacterCardModelPath = effectiveModelPath;
+    const currentLive2DModelInfo = effectiveModelType === 'live2d' ? getLive2DModelInfo(live2d) : null;
+    window.currentCharacterCardModelSource = currentLive2DModelInfo && currentLive2DModelInfo.source ? currentLive2DModelInfo.source : '';
     window._currentCardRawData = rawData;
 
     // 检查模型是否可上传（检查是否来自static目录）
@@ -6539,17 +6775,21 @@ async function handleUploadToWorkshop() {
             fullCharaData['voice_id'] = voiceId;
         }
 
-        // 设置默认模型（排除mao_pro）- 仅限 Live2D 模型类型
-        if (currentModelType === 'live2d' && (!selectedModelName || selectedModelName === 'mao_pro')) {
-            const validModels = availableModels.filter(model => model.name !== 'mao_pro');
+        // 设置默认模型（排除yui-origin）- 仅限 Live2D 模型类型
+        if (currentModelType === 'live2d' && (!selectedModelName || isStaticDefaultLive2DModel(selectedModelName, rawData))) {
+            const validModels = availableModels.filter(model =>
+                model
+                && model.name
+                && !hasStaticModelFlag(model)
+                && !hasStaticModelFlag(model.modelMetadata)
+            );
             if (validModels.length > 0) {
                 selectedModelName = validModels[0].name;
-            } else if (availableModels.length > 0) {
-                selectedModelName = availableModels[0].name;
             } else {
                 showMessage(window.t ? window.t('steam.noAvailableModelsError') : '没有可用的模型', 'error');
                 return;
             }
+            fullCharaData.live2d = selectedModelName;
         } else if ((currentModelType === 'vrm' || currentModelType === 'mmd') && !selectedModelName) {
             showMessage(window.t ? window.t('steam.noAvailableModelsError') : '没有可用的模型', 'error');
             return;
@@ -6750,7 +6990,7 @@ async function scanModels(loadSequence) {
         }
         const models = await live2dResponse.json();
 
-        // 过滤掉来自static目录的模型（如mao_pro），只保留用户文档目录中的模型
+        // 过滤掉来自static目录的模型（如默认/版权Live2D），只保留用户文档目录中的模型
         // 这是为了防止上传版权Live2D模型
         const uploadableModels = models.filter(model => model.source !== 'static');
 
@@ -9059,7 +9299,8 @@ async function renameMaster() {
             showMessage(result.error || (window.t ? window.t('character.renameFailed') : '重命名失败'), 'error');
         }
     } catch (e) {
-        showMessage(window.t ? window.t('character.renameError') : '重命名时发生错误', 'error');
+        const errorMessage = e.message || String(e);
+        showMessage(window.t ? window.t('character.renameError', { error: errorMessage }) : '重命名失败: ' + errorMessage, 'error');
     }
 }
 

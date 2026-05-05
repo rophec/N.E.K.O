@@ -9,6 +9,7 @@ import {
   type ComposerAttachment,
   type AvatarInteractionPayload,
   type AvatarToolStatePayload,
+  type GalgameOption,
 } from './message-schema';
 
 export type ChatWindowProps = ChatWindowSchemaProps & {
@@ -21,6 +22,8 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onAvatarToolStateChange?: (payload: AvatarToolStatePayload) => void;
   onJukeboxClick?: () => void;
   onTranslateToggle?: () => void;
+  onGalgameModeToggle?: () => void;
+  onGalgameOptionSelect?: (option: GalgameOption) => void;
 };
 
 const defaultMessages: ChatMessage[] = [];
@@ -556,6 +559,12 @@ export default function App({
   translateEnabled = false,
   translateButtonLabel = i18n('subtitle.enable', 'Subtitle Translation'),
   translateButtonAriaLabel,
+  galgameModeEnabled = false,
+  galgameOptions = [],
+  galgameOptionsLoading = false,
+  galgameToggleButtonLabel = i18n('chat.galgameToggle', 'GalGame Mode'),
+  galgameToggleButtonAriaLabel,
+  galgameLoadingLabel = i18n('chat.galgameLoading', '生成回复选项中…'),
   onMessageAction,
   onComposerImportImage,
   onComposerScreenshot,
@@ -565,14 +574,25 @@ export default function App({
   onAvatarToolStateChange,
   onJukeboxClick,
   onTranslateToggle,
+  onGalgameModeToggle,
+  onGalgameOptionSelect,
   rollbackDraft,
   _rollbackKey,
   _toolCursorResetKey,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
-  // 当 composer-bottom-bar 宽度 < 阈值时，把右侧 3 个工具按钮折叠成 ··· 菜单
-  const [isCompactComposer, setIsCompactComposer] = useState(false);
+  // 当 composer-bottom-bar 宽度 < 阈值时，把右侧 4 个工具按钮折叠成 ··· 菜单。
+  // 用四态机让进出过渡都跑完动画再切稳态：
+  //   expanded   → collapsing (右→左级联收起) → compact   (··· 入场)
+  //   compact    → expanding  (··· 退场)       → expanded  (左→右级联展开)
+  // 中途 resize 反向：collapsing↔expanded、expanding↔compact 直接跳回稳态。
+  type ComposerLayout = 'expanded' | 'collapsing' | 'compact' | 'expanding';
+  const [composerLayout, setComposerLayout] = useState<ComposerLayout>('expanded');
+  const showRightTools = composerLayout === 'expanded' || composerLayout === 'collapsing';
+  // 折叠瞬间记录右 4 按钮组的实际宽度，喂给 CSS keyframe 做 width 动画。
+  // 没这个 layout 不会跟着动画收缩，发送按钮就被"顶住"直到 scaleX 跑完。
+  const [collapseFromWidth, setCollapseFromWidth] = useState<number | null>(null);
   const [overflowMenuOpen, setOverflowMenuOpen] = useState(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
@@ -584,6 +604,9 @@ export default function App({
   const [isInnerHammerEasterEggActive, setIsInnerHammerEasterEggActive] = useState(false);
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
   const composerBottomBarRef = useRef<HTMLDivElement | null>(null);
+  const composerToolsRightRef = useRef<HTMLDivElement | null>(null);
+  // 镜像 composerLayout 到 ref，让 ResizeObserver 闭包能读到最新稳态
+  const composerLayoutRef = useRef<ComposerLayout>('expanded');
   const overflowMenuRef = useRef<HTMLDivElement | null>(null);
   const avatarCursorOverlayRef = useRef<HTMLDivElement | null>(null);
   const hammerCursorOverlayRef = useRef<HTMLDivElement | null>(null);
@@ -644,6 +667,11 @@ export default function App({
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
+  const resolvedGalgameAriaLabel = galgameToggleButtonAriaLabel || galgameToggleButtonLabel;
+  // 模式开启 ≠ 选项实际占位。光开开关、还没收到 AI 新一轮时 slot 不撑开；
+  // 选项到位（loading 占位也算）才让 slot 长出来，输入壳跟着自然变高。
+  const galgameOptionsVisible =
+    galgameModeEnabled && (galgameOptionsLoading || galgameOptions.length > 0);
   const emojiButtonAriaLabel = i18n('chat.emojiButtonAriaLabel', 'Emoji');
   const toolIconsAriaLabel = i18n('chat.toolIconsAriaLabel', 'Tool icons');
   const clearCursorToolAriaLabel = i18n('chat.clearCursorToolAriaLabel', '恢复鼠标');
@@ -925,26 +953,79 @@ export default function App({
     };
   }, [toolMenuOpen]);
 
-  // 监听 composer-bottom-bar 宽度，决定是否进入 compact 折叠模式
+  // 镜像 composerLayout 到 ref，给 ResizeObserver 闭包读
+  useEffect(() => {
+    composerLayoutRef.current = composerLayout;
+  }, [composerLayout]);
+
+  // 监听 composer-bottom-bar 宽度，决定是否进入 compact 折叠模式。
+  // 阈值：低于此宽度时把右侧 4 个工具按钮折叠成 ··· 菜单。
   useEffect(() => {
     const target = composerBottomBarRef.current;
     if (!target || typeof ResizeObserver === 'undefined') return;
-    // 阈值：低于此宽度时把右侧 3 个工具按钮折叠成 ··· 菜单。
-    // 5 按钮 + 4 分隔 + 发送按钮 + 间距，约 260px 起就开始拥挤。
-    const COMPACT_THRESHOLD = 250;
+    const COMPACT_THRESHOLD = 300;
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) {
-        setIsCompactComposer(entry.contentRect.width < COMPACT_THRESHOLD);
+        const wantCompact = entry.contentRect.width < COMPACT_THRESHOLD;
+        // 在 expanded → collapsing 这一刻抓一下右 4 按钮组的当前像素宽度，
+        // 同一批 setState 会和 layout 切换一起 commit，render 出来时
+        // .is-leaving 类和 --collapse-from-width 变量同时生效，
+        // CSS keyframe 就能从这个固定宽度插值到 0。
+        // 用 offsetWidth 而非 getBoundingClientRect().width：前者基于布局盒，
+        // 不受入场 scaleX 动画影响；如果 expand 动画还没跑完就又被压窄，
+        // bounding rect 会拿到被 scaleX 缩小后的视觉宽度导致 layout 抖动。
+        if (wantCompact && composerLayoutRef.current === 'expanded' && composerToolsRightRef.current) {
+          const node = composerToolsRightRef.current;
+          const w = Math.max(node.offsetWidth, node.scrollWidth);
+          if (w > 0) setCollapseFromWidth(w);
+        }
+        setComposerLayout(prev => {
+          if (wantCompact) {
+            if (prev === 'expanded') return 'collapsing';
+            // 展开过程中又被压窄：退场动画来不及跑完就反转，直接回到 compact 稳态。
+            if (prev === 'expanding') return 'compact';
+            return prev;
+          } else {
+            if (prev === 'compact') return 'expanding';
+            // 收起过程中又被拉宽：跳回 expanded 稳态。
+            if (prev === 'collapsing') return 'expanded';
+            return prev;
+          }
+        });
       }
     });
     observer.observe(target);
     return () => observer.disconnect();
   }, []);
 
-  // 退出折叠模式时关闭 ··· 菜单
+  // 收起/展开动画跑完后切到稳态。时长需与 styles.css 中的 keyframes 对齐。
+  // prefers-reduced-motion 下 styles.css 把动画设成 none，这时还等 270/220ms
+  // 会让工具区滞留在过渡态（控件视觉上提前到位但 layout state 没切），
+  // 直接 0ms 立刻切稳态。
   useEffect(() => {
-    if (!isCompactComposer) setOverflowMenuOpen(false);
-  }, [isCompactComposer]);
+    const prefersReducedMotion =
+      typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (composerLayout === 'collapsing') {
+      const timerId = window.setTimeout(() => {
+        setComposerLayout(prev => (prev === 'collapsing' ? 'compact' : prev));
+      }, prefersReducedMotion ? 0 : 270);
+      return () => window.clearTimeout(timerId);
+    }
+    if (composerLayout === 'expanding') {
+      const timerId = window.setTimeout(() => {
+        setComposerLayout(prev => (prev === 'expanding' ? 'expanded' : prev));
+      }, prefersReducedMotion ? 0 : 220);
+      return () => window.clearTimeout(timerId);
+    }
+    return undefined;
+  }, [composerLayout]);
+
+  // 离开 compact 稳态时关闭 ··· 弹窗（包括反向中断和 expanding 阶段）
+  useEffect(() => {
+    if (composerLayout !== 'compact') setOverflowMenuOpen(false);
+  }, [composerLayout]);
 
   // ··· 菜单的外部点击 / Esc 关闭
   useEffect(() => {
@@ -1353,16 +1434,35 @@ export default function App({
     </button>
   );
 
+  const galgameToggleButtonNode = (
+    <button
+      className={`composer-tool-btn composer-galgame-btn${galgameModeEnabled ? ' is-active' : ''}`}
+      type="button"
+      aria-label={resolvedGalgameAriaLabel}
+      aria-pressed={galgameModeEnabled}
+      title={galgameToggleButtonLabel}
+      onClick={() => onGalgameModeToggle?.()}
+    >
+      <span className="composer-galgame-btn-glyph" aria-hidden="true">G</span>
+    </button>
+  );
+
   const emojiToolMenuNode = (
     <div className="composer-tool-menu" ref={toolMenuRef}>
       <button
-        className={`composer-tool-btn composer-emoji-btn${toolMenuOpen ? ' is-active' : ''}`}
+        className={`composer-tool-btn composer-emoji-btn${toolMenuOpen || activeToolItem ? ' is-active' : ''}`}
         type="button"
         aria-label={selectedEmojiButtonAriaLabel}
         title={selectedEmojiButtonAriaLabel}
         aria-controls={toolMenuOpen ? 'composer-tool-popover' : undefined}
         aria-expanded={toolMenuOpen}
-        onClick={() => setToolMenuOpen(open => !open)}
+        onClick={() => {
+          if (activeToolItem) {
+            clearActiveCursorToolSelection();
+            return;
+          }
+          setToolMenuOpen(open => !open);
+        }}
       >
         <img
           src={activeToolMenuVisual?.imagePath || '/static/icons/emoji_icon.png'}
@@ -1569,7 +1669,10 @@ export default function App({
           />
         </section>
 
-        <footer className="composer-panel" style={composerHidden ? { display: 'none' } : undefined}>
+        <footer
+          className={`composer-panel${galgameModeEnabled ? ' is-galgame-mode' : ''}`}
+          style={composerHidden ? { display: 'none' } : undefined}
+        >
           <div id="music-player-mount" />
           {composerAttachments.length > 0 ? (
             <div className="composer-attachments" aria-label={composerAttachmentsAriaLabel}>
@@ -1613,6 +1716,59 @@ export default function App({
                   }
                 }}
               />
+              {galgameModeEnabled ? (
+                // Slot 始终挂在树上，开/关靠 is-open（max-height + opacity 过渡）。
+                // 这样选项进/出时输入壳跟着自然长/缩，bottom-bar 锚在 panel 底
+                // 不动，textarea 顶端跟着 shell-top 上抬，视觉上是从下往上展开。
+                <div
+                  className={`composer-galgame-slot${galgameOptionsVisible ? ' is-open' : ''}`}
+                  aria-hidden={!galgameOptionsVisible}
+                >
+                  <div
+                    className={`composer-galgame-options${galgameOptionsLoading ? ' is-loading' : ''}`}
+                    role="group"
+                    aria-label={galgameToggleButtonLabel}
+                  >
+                    {galgameOptions.length > 0
+                      ? galgameOptions.slice(0, 3).map((option, index) => (
+                          <button
+                            key={`${index}-${option.label}`}
+                            type="button"
+                            className="composer-galgame-option"
+                            title={option.text}
+                            disabled={galgameOptionsLoading}
+                            tabIndex={galgameOptionsVisible ? 0 : -1}
+                            onClick={() => {
+                              if (submittingRef.current) return;
+                              submittingRef.current = true;
+                              try {
+                                onGalgameOptionSelect?.(option);
+                              } finally {
+                                requestAnimationFrame(() => { submittingRef.current = false; });
+                              }
+                            }}
+                          >
+                            <span className="composer-galgame-option-label" aria-hidden="true">{option.label}.</span>
+                            <span className="composer-galgame-option-text">{option.text}</span>
+                          </button>
+                        ))
+                      : galgameOptionsLoading
+                        ? ['A', 'B', 'C'].map((label) => (
+                            <button
+                              key={label}
+                              type="button"
+                              className="composer-galgame-option is-placeholder"
+                              disabled
+                              tabIndex={-1}
+                            >
+                              <span className="composer-galgame-option-label" aria-hidden="true">{label}.</span>
+                              <span className="composer-galgame-option-text">{galgameLoadingLabel}</span>
+                            </button>
+                          ))
+                        : null}
+                  </div>
+                </div>
+              ) : null}
               <div className="composer-bottom-bar" ref={composerBottomBarRef}>
                 <div className="composer-bottom-tools" aria-label={composerToolsAriaLabel}>
                   <button
@@ -1634,8 +1790,21 @@ export default function App({
                   >
                     <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
                   </button>
-                  {!isCompactComposer ? (
-                    <div className="composer-tools-right" key="composer-tools-expanded">
+                  {/* 这条分隔符在 expanded / compact 两态下都常驻同一位置，
+                      避免切换时分隔符闪烁，让动画过渡更顺滑 */}
+                  <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  {showRightTools ? (
+                    <div
+                      ref={composerToolsRightRef}
+                      className={`composer-tools-right${composerLayout === 'collapsing' ? ' is-leaving' : ''}`}
+                      key="composer-tools-expanded"
+                      style={
+                        composerLayout === 'collapsing' && collapseFromWidth != null
+                          ? ({ '--collapse-from-width': `${collapseFromWidth}px` } as CSSProperties)
+                          : undefined
+                      }
+                    >
+                      {galgameToggleButtonNode}
                       <span className="composer-tool-divider" aria-hidden="true">|</span>
                       {translateButtonNode}
                       <span className="composer-tool-divider" aria-hidden="true">|</span>
@@ -1644,44 +1813,46 @@ export default function App({
                       {emojiToolMenuNode}
                     </div>
                   ) : (
-                    <>
-                      <span className="composer-tool-divider" aria-hidden="true">|</span>
-                      <div className="composer-overflow-menu" key="composer-tools-collapsed" ref={overflowMenuRef}>
-                        <button
-                          className={`composer-tool-btn composer-overflow-btn${overflowMenuOpen ? ' is-active' : ''}`}
-                          type="button"
-                          aria-label={overflowMenuAriaLabel}
-                          title={overflowMenuAriaLabel}
-                          aria-haspopup="true"
-                          aria-expanded={overflowMenuOpen}
-                          onClick={() => setOverflowMenuOpen(open => !open)}
+                    <div
+                      className={`composer-overflow-menu${composerLayout === 'expanding' ? ' is-leaving' : ''}`}
+                      key="composer-tools-collapsed"
+                      ref={overflowMenuRef}
+                    >
+                      <button
+                        className={`composer-tool-btn composer-overflow-btn${overflowMenuOpen ? ' is-active' : ''}`}
+                        type="button"
+                        aria-label={overflowMenuAriaLabel}
+                        title={overflowMenuAriaLabel}
+                        aria-haspopup="true"
+                        aria-expanded={overflowMenuOpen}
+                        onClick={() => setOverflowMenuOpen(open => !open)}
+                      >
+                        <svg
+                          width="20"
+                          height="20"
+                          viewBox="0 0 24 24"
+                          fill="currentColor"
+                          aria-hidden="true"
+                          focusable="false"
                         >
-                          <svg
-                            width="20"
-                            height="20"
-                            viewBox="0 0 24 24"
-                            fill="currentColor"
-                            aria-hidden="true"
-                            focusable="false"
-                          >
-                            <circle cx="6" cy="12" r="2" />
-                            <circle cx="12" cy="12" r="2" />
-                            <circle cx="18" cy="12" r="2" />
-                          </svg>
-                        </button>
-                        {overflowMenuOpen ? (
-                          <div
-                            className="composer-overflow-popover"
-                            role="group"
-                            aria-label={overflowMenuAriaLabel}
-                          >
-                            {translateButtonNode}
-                            {jukeboxButtonNode}
-                            {emojiToolMenuNode}
-                          </div>
-                        ) : null}
-                      </div>
-                    </>
+                          <circle cx="6" cy="12" r="2" />
+                          <circle cx="12" cy="12" r="2" />
+                          <circle cx="18" cy="12" r="2" />
+                        </svg>
+                      </button>
+                      {overflowMenuOpen ? (
+                        <div
+                          className="composer-overflow-popover"
+                          role="group"
+                          aria-label={overflowMenuAriaLabel}
+                        >
+                          {galgameToggleButtonNode}
+                          {translateButtonNode}
+                          {jukeboxButtonNode}
+                          {emojiToolMenuNode}
+                        </div>
+                      ) : null}
+                    </div>
                   )}
                 </div>
                 <button className="send-button-circle" type="submit" aria-label={sendButtonLabel} disabled={!canSubmit}>

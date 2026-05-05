@@ -3,6 +3,14 @@
 Pages Router
 
 Handles HTML page rendering endpoints.
+
+URL convention: routes declared WITHOUT trailing slash. The literal root
+``@router.get("/")`` is the only legitimate trailing-slash route in the entire
+codebase (it serves ``index.html``); the lint exempts it explicitly. Every
+other page route uses ``@router.get('/voice_clone')``, ``@router.get('/api_key')``,
+etc. See ``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import time
@@ -16,6 +24,16 @@ from .shared_state import get_templates
 router = APIRouter(tags=["pages"])
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_YUI_GUIDE_ASSET_VERSION_PATHS = (
+    _PROJECT_ROOT / "static/css/yui-guide.css",
+    _PROJECT_ROOT / "static/yui-guide-steps.js",
+    _PROJECT_ROOT / "static/yui-guide-overlay.js",
+    _PROJECT_ROOT / "static/yui-guide-page-handoff.js",
+    _PROJECT_ROOT / "static/yui-guide-wakeup.js",
+    _PROJECT_ROOT / "static/yui-guide-director.js",
+)
+_STATIC_ASSET_CACHE_TTL = 30.0
+_static_asset_version_cache: tuple[float, str] = (0.0, "0")
 _REACT_CHAT_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.css",
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.iife.js",
@@ -31,6 +49,28 @@ def _vrm_defaults_ctx() -> dict:
     """返回 VRM 光照默认值，供 Jinja2 模板注入到 <script> 中。"""
     from config import DEFAULT_VRM_LIGHTING
     return {"vrm_defaults": dict(DEFAULT_VRM_LIGHTING)}
+
+
+def _static_assets_ctx() -> dict:
+    """返回模板静态资源统一缓存版本号。"""
+    from config import APP_VERSION
+
+    global _static_asset_version_cache
+    now = time.monotonic()
+    cached_at, cached_version = _static_asset_version_cache
+    if now - cached_at < _STATIC_ASSET_CACHE_TTL:
+        return {"static_asset_version": cached_version}
+
+    latest_mtime = 0
+    for path in _YUI_GUIDE_ASSET_VERSION_PATHS:
+        try:
+            latest_mtime = max(latest_mtime, int(path.stat().st_mtime))
+        except OSError:
+            continue
+
+    version = f"{APP_VERSION}-{latest_mtime or 0}"
+    _static_asset_version_cache = (now, version)
+    return {"static_asset_version": version}
 
 
 def _react_chat_assets_ctx() -> dict:
@@ -59,6 +99,7 @@ async def get_default_index(request: Request):
     return templates.TemplateResponse("templates/index.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
         **_react_chat_assets_ctx(),
     })
 
@@ -141,7 +182,8 @@ async def api_key_settings(request: Request):
     """API Key 设置页面"""
     templates = get_templates()
     return templates.TemplateResponse("templates/api_key_settings.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
@@ -168,7 +210,10 @@ async def cloudsave_manager_page(request: Request, lanlan_name: str = ""):
 @router.get('/memory_browser', response_class=HTMLResponse)
 async def memory_browser(request: Request):
     templates = get_templates()
-    return templates.TemplateResponse('templates/memory_browser.html', {"request": request})
+    return templates.TemplateResponse('templates/memory_browser.html', {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get('/cookies_login', response_class=HTMLResponse)
@@ -186,6 +231,7 @@ async def get_chat_page(request: Request):
     return templates.TemplateResponse("templates/chat.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
         **_react_chat_assets_ctx(),
     })
 
@@ -243,5 +289,6 @@ async def get_index(request: Request, lanlan_name: str):
     return templates.TemplateResponse("templates/index.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
         **_react_chat_assets_ctx(),
     })

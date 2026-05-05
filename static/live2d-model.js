@@ -76,6 +76,15 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
         } catch (_) {}
     }
     this.initialParameters = {};
+    this.motionBaselineParameters = {};
+    this._activeExpressionParamIds = null;
+    this._activeMotionParamIds = null;
+    this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
+    if (typeof this._nextMotionTimerGeneration === 'function') {
+        this._nextMotionTimerGeneration();
+    } else {
+        this._motionTimerGeneration = (this._motionTimerGeneration || 0) + 1;
+    }
 
     if (activeModel) {
         try {
@@ -88,6 +97,7 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this._mouthOverrideInstalled = false;
     this._origCoreModelUpdate = null;
     this._coreModelRef = null;
+    this._temporaryPoseOverride = null;
 
     if (this._mouthTicker && ticker) {
         try {
@@ -228,10 +238,10 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         console.error('加载模型失败:', error);
         
         // 尝试回退到默认模型
-        if (modelPath !== '/static/mao_pro/mao_pro.model3.json') {
-            console.warn('模型加载失败，尝试回退到默认模型: mao_pro');
+        if (modelPath !== '/static/yui-origin/yui-origin.model3.json') {
+            console.warn('模型加载失败，尝试回退到默认模型: yui-origin');
             try {
-                const defaultModelPath = '/static/mao_pro/mao_pro.model3.json';
+                const defaultModelPath = '/static/yui-origin/yui-origin.model3.json';
                 // 主模型可能已在 _configureLoadedModel 中途写入派生状态；
                 // 回退加载前先清空，避免默认模型继承失败模型的元数据。
                 this._resetDerivedModelMetadata();
@@ -242,7 +252,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
                 // 使用统一的模型配置方法
                 await this._configureLoadedModel(model, defaultModelPath, options, loadToken);
 
-                console.log('成功回退到默认模型: mao_pro');
+                console.log('成功回退到默认模型: yui-origin');
                 return model;
             } catch (fallbackError) {
                 console.error('回退到默认模型也失败:', fallbackError);
@@ -279,6 +289,47 @@ Live2DManager.prototype.getCurrentModel = function() {
     return this.currentModel || null;
 };
 
+// 安装短期姿态覆盖槽。用于教程苏醒这类需要在渲染前最后写入的动作，
+// 避免被视线锁、眨眼、常驻表情或 motion update 覆盖。
+Live2DManager.prototype.setTemporaryPoseOverride = function(source, apply) {
+    if (typeof apply !== 'function') {
+        return false;
+    }
+    this._temporaryPoseOverride = {
+        source: String(source || 'temporary_pose'),
+        apply: apply
+    };
+    return true;
+};
+
+Live2DManager.prototype.clearTemporaryPoseOverride = function(source) {
+    const active = this._temporaryPoseOverride;
+    if (!active) {
+        return;
+    }
+    const normalizedSource = arguments.length === 0 ? '' : String(source);
+    if (normalizedSource === '' || active.source === normalizedSource) {
+        this._temporaryPoseOverride = null;
+    }
+};
+
+Live2DManager.prototype._applyTemporaryPoseOverride = function(coreModel) {
+    const active = this._temporaryPoseOverride;
+    if (!active || typeof active.apply !== 'function' || !coreModel) {
+        return;
+    }
+    try {
+        active.apply(coreModel, {
+            manager: this,
+            model: this.currentModel || null,
+            now: performance.now()
+        });
+    } catch (error) {
+        console.warn('[Live2D] 临时姿态覆盖执行失败，已清理:', error);
+        this._temporaryPoseOverride = null;
+    }
+};
+
 // 重置模型相关的派生元数据（用于加载新模型前清理旧状态）
 Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._randomLookAtAffectsHead = false; // 是否允许随机视线影响头部角度
@@ -305,6 +356,10 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._lookAtTargetY = 0;
     this._lookAtCurrentX = 0;
     this._lookAtCurrentY = 0;
+    this._temporaryPoseOverride = null;
+    this._temporaryMotionSuspendToken = null;
+    this._idleMotionFinishHandler = null;
+    this._idleMotionFinishModel = null;
     this._bubbleGeometryCache = null;
     this._bubbleGeometryModelReadyAt = 0;
     this._bubbleGeometryRefreshPass = 0;
@@ -603,9 +658,16 @@ Live2DManager.prototype._scanEyeBlinkParams = function(model) {
     const nonBlinkPatterns = [/eyeball/i, /angle/i, /look/i, /iris/i, /pupil/i];
     const found = [];
 
+    // Cubism 4/5 的 coreModel 没有 getParameterId(index)，参数 ID 列表存在
+    // coreModel._parameterIds[i] 或更底层的 coreModel._model.parameters.ids[i]。
+    // 旧 Cubism 2 的 coreModel 才有 getParameterId(index)，作为兜底。
     for (let i = 0; i < count; i++) {
         let paramId = null;
-        try { paramId = coreModel.getParameterId(i); } catch (_) {}
+        try {
+            paramId = coreModel._parameterIds?.[i]
+                ?? coreModel._model?.parameters?.ids?.[i]
+                ?? (typeof coreModel.getParameterId === 'function' ? coreModel.getParameterId(i) : null);
+        } catch (_) {}
         if (!paramId) continue;
         if (!nonBlinkPatterns.some(p => p.test(paramId)) &&
             blinkPatterns.some(p => p.test(paramId))) {
@@ -666,6 +728,19 @@ Live2DManager.prototype._updateEyeBlink = function(delta) {
 Live2DManager.prototype._updateRandomLookAt = function(delta) {
     const coreModel = this.currentModel?.internalModel?.coreModel;
     if (!coreModel) return;
+    if (window.nekoYuiGuideFaceForwardLock === true) {
+        this._lookAtTargetX = 0;
+        this._lookAtTargetY = 0;
+        this._lookAtCurrentX = 0;
+        this._lookAtCurrentY = 0;
+        try {
+            coreModel.setParameterValueById('ParamAngleX', 0);
+            coreModel.setParameterValueById('ParamAngleY', 0);
+            coreModel.setParameterValueById('ParamEyeBallX', 0);
+            coreModel.setParameterValueById('ParamEyeBallY', 0);
+        } catch (_) {}
+        return;
+    }
     if (this._mouseTrackingEnabled) return;
     if (this._lookAtTimer === undefined) {
         this._lookAtTimer = 0;
@@ -695,48 +770,197 @@ Live2DManager.prototype._updateRandomLookAt = function(delta) {
     } catch (_) {}
 };
 
+Live2DManager.prototype._clearIdleMotionLoopTimers = function() {
+    if (!(this._idleMotionLoopTimers instanceof Set)) {
+        this._idleMotionLoopTimers = new Set();
+        return;
+    }
+    this._idleMotionLoopTimers.forEach(timer => clearTimeout(timer));
+    this._idleMotionLoopTimers.clear();
+};
+
+Live2DManager.prototype.suspendTemporaryMotions = function(source, model) {
+    const activeModel = model || this.currentModel || null;
+    if (!activeModel || activeModel !== this.currentModel || !activeModel.internalModel) {
+        return false;
+    }
+
+    const token = String(source || 'temporary_motion_suspend');
+    this._temporaryMotionSuspendToken = token;
+    this._clearIdleMotionLoopTimers();
+
+    const motionManager = activeModel.internalModel.motionManager;
+    if (motionManager && typeof motionManager.stopAllMotions === 'function') {
+        try {
+            motionManager.stopAllMotions();
+        } catch (_) {}
+    }
+
+    return true;
+};
+
+Live2DManager.prototype.resumeTemporaryMotions = function(source) {
+    const token = String(source || 'temporary_motion_suspend');
+    if (this._temporaryMotionSuspendToken && this._temporaryMotionSuspendToken !== token) {
+        return false;
+    }
+
+    this._temporaryMotionSuspendToken = null;
+    if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.motionManager) {
+        this.setupIdleMotionLoop(this.currentModel);
+    }
+    return true;
+};
+
 // 设置待机动作循环（Idle Motion 无限循环）
 Live2DManager.prototype.setupIdleMotionLoop = function(model) {
     if (!model || !model.internalModel || !model.internalModel.motionManager) return;
     const motionManager = model.internalModel.motionManager;
+    if (this._temporaryMotionSuspendToken) return;
 
     // 初始化定时器集合，并在重新设置时清理旧定时器
-    if (this._idleMotionLoopTimers instanceof Set) {
-        this._idleMotionLoopTimers.forEach(timer => clearTimeout(timer));
-        this._idleMotionLoopTimers.clear();
-    } else {
-        this._idleMotionLoopTimers = new Set();
-    }
+    this._clearIdleMotionLoopTimers();
 
     // 生成一个调度器，自带当前模型有效性校验与定时器回收
     const scheduleIdleMotion = (delay) => {
         const timer = setTimeout(() => {
             this._idleMotionLoopTimers.delete(timer);
             // 如果模型已销毁，或当前挂载的模型已经不是传入的这个模型，则直接取消
-            if (this.currentModel !== model || model.destroyed || window._currentMotionPreviewId != null) {
+            if (this.currentModel !== model || model.destroyed || window._currentMotionPreviewId != null || this._temporaryMotionSuspendToken) {
                 return;
             }
             if (!motionManager.playing) {
-                this._playIdleMotion(motionManager);
+                Promise.resolve(this._playIdleMotion(motionManager)).catch((e) => {
+                    console.warn('[Live2D] 播放 Idle motion 失败:', e);
+                });
             }
         }, delay);
         this._idleMotionLoopTimers.add(timer);
     };
 
-    model.internalModel.events.on('motionFinish', () => {
+    try {
+        if (
+            this._idleMotionFinishHandler
+            && this._idleMotionFinishModel
+            && this._idleMotionFinishModel.internalModel
+            && this._idleMotionFinishModel.internalModel.events
+            && typeof this._idleMotionFinishModel.internalModel.events.removeListener === 'function'
+        ) {
+            this._idleMotionFinishModel.internalModel.events.removeListener('motionFinish', this._idleMotionFinishHandler);
+        }
+    } catch (_) {}
+
+    this._idleMotionFinishModel = model;
+    this._idleMotionFinishHandler = () => {
+        if (this._temporaryMotionSuspendToken) {
+            return;
+        }
         if (window._currentMotionPreviewId != null) {
             console.log('[Live2D] 预览模式中，忽略 motionFinish，不启动新 Idle');
             return;
         }
+        if (typeof this.clearEmotionEffects === 'function') {
+            try {
+                this.clearEmotionEffects();
+            } catch (e) {
+                console.warn('[Live2D] motionFinish 后清理 motion 参数失败:', e);
+            }
+        }
         const randomDelay = 1000 + Math.random() * 2000;
         scheduleIdleMotion(randomDelay);
-    });
+    };
+    model.internalModel.events.on('motionFinish', this._idleMotionFinishHandler);
 
     scheduleIdleMotion(2000);
 };
 
 // 播放待机动作（从用户保存的 Idle 动画或默认 Idle 随机选择）
-Live2DManager.prototype._playIdleMotion = function(motionManager) {
+Live2DManager.prototype._playIdleMotion = async function(motionManager) {
+    if (this._temporaryMotionSuspendToken) {
+        return;
+    }
+    const expectedModel = this.currentModel;
+    const isCurrentIdleRequest = () => (
+        this.currentModel === expectedModel
+        && expectedModel
+        && !expectedModel.destroyed
+        && window._currentMotionPreviewId == null
+        && !this._temporaryMotionSuspendToken
+    );
+    const getRandomizedIndexes = (length) => {
+        const indexes = [];
+        for (let i = 0; i < length; i++) indexes.push(i);
+        for (let i = indexes.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [indexes[i], indexes[j]] = [indexes[j], indexes[i]];
+        }
+        return indexes;
+    };
+    const getMotionFile = (motion) => motion && (motion.file || motion.File);
+    const getRegisteredMotionFile = (groupName, index) => {
+        if (!groupName || index == null || index < 0) return null;
+
+        const sources = [
+            motionManager.definitions,
+            motionManager._definitions,
+            motionManager.motionGroups,
+            motionManager._motionGroups
+        ].filter(Boolean);
+
+        for (const source of sources) {
+            const group = source[groupName];
+            if (!Array.isArray(group)) continue;
+            const file = getMotionFile(group[index]);
+            if (file) return file;
+        }
+
+        return null;
+    };
+    const trackMotionFile = (file) => {
+        if (!file || typeof this._trackActiveMotionParametersFromFile !== 'function') {
+            if (typeof this._clearActiveMotionParamIds === 'function') {
+                this._clearActiveMotionParamIds();
+            }
+            return;
+        }
+        this._trackActiveMotionParametersFromFile(file).catch(() => {});
+    };
+    const startTrackedMotion = async (groupName, index, file) => {
+        if (!isCurrentIdleRequest()) return false;
+        try {
+            const started = await motionManager.startMotion(groupName, index);
+            if (!isCurrentIdleRequest()) return false;
+            if (started === false) {
+                console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，尝试下一个 Idle 候选`);
+                return false;
+            }
+            trackMotionFile(file);
+            return true;
+        } catch (e) {
+            console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，尝试下一个 Idle 候选:`, e);
+            return false;
+        }
+    };
+    const startTrackedDefinitionMotion = async (groupName, definitions) => {
+        if (!Array.isArray(definitions) || definitions.length === 0) return false;
+        for (const idx of getRandomizedIndexes(definitions.length)) {
+            const definition = definitions[idx];
+            const file = definition && (definition.File || definition.file);
+            if (await startTrackedMotion(groupName, idx, file)) return true;
+        }
+        return false;
+    };
+    const startTrackedGroupMotion = async (groupName, group, filter) => {
+        if (!Array.isArray(group) || group.length === 0) return false;
+        const indexes = getRandomizedIndexes(group.length);
+        for (const idx of indexes) {
+            const motion = group[idx];
+            if (filter && !filter(motion)) continue;
+            const file = getMotionFile(motion);
+            if (await startTrackedMotion(groupName, idx, file)) return true;
+        }
+        return false;
+    };
     const idleAnimations = this._userIdleAnimations;
     if (idleAnimations && idleAnimations.length > 0) {
         // 兼容性获取 motionGroups，优先取公开属性，fallback 到私有属性
@@ -746,21 +970,50 @@ Live2DManager.prototype._playIdleMotion = function(motionManager) {
             console.warn('[Live2D] motionGroups 不可用或 PreviewAll 组不存在，跳过用户待机动作');
         } else {
             const group = motionGroups.PreviewAll;
-            if (group && group.length > 0) {
-                const available = group.filter(m => m.file && idleAnimations.includes(m.file.split('/').pop()));
+            const startedUserIdle = await startTrackedGroupMotion('PreviewAll', group, (motion) => {
+                const motionFile = getMotionFile(motion);
+                return motionFile && idleAnimations.includes(motionFile.split('/').pop());
+            });
+            if (startedUserIdle) {
+                return;
+            }
+            if (Array.isArray(group) && group.length > 0) {
+                const available = group.filter((motion) => {
+                    const motionFile = getMotionFile(motion);
+                    return motionFile && idleAnimations.includes(motionFile.split('/').pop());
+                });
                 if (available.length > 0) {
-                    const chosen = available[Math.floor(Math.random() * available.length)];
-                    const idx = group.indexOf(chosen);
-                    if (idx >= 0) {
-                        console.log(`[Live2D] 播放用户保存的待机动作: ${chosen.file}`);
-                        motionManager.startMotion('PreviewAll', idx);
-                        return;
-                    }
+                    console.warn('[Live2D] 用户保存的待机动作启动失败，回退到默认 Idle');
                 }
             }
         }
     }
-    motionManager.startRandomMotion('Idle');
+    const definitions = motionManager.definitions || motionManager._definitions || {};
+    if (await startTrackedDefinitionMotion('Idle', definitions.Idle)) {
+        return;
+    }
+
+    const motionGroups = motionManager.motionGroups || motionManager._motionGroups || {};
+    if (await startTrackedGroupMotion('Idle', motionGroups.Idle)) {
+        return;
+    }
+
+    if (!isCurrentIdleRequest()) return;
+    try {
+        const started = await motionManager.startRandomMotion('Idle');
+        if (!isCurrentIdleRequest()) return;
+        if (started === false) {
+            this._clearActiveMotionParamIds();
+            return;
+        }
+        const startedGroup = motionManager.state?.currentGroup || 'Idle';
+        const startedIndex = motionManager.state?.currentIndex;
+        const startedFile = getRegisteredMotionFile(startedGroup, startedIndex);
+        trackMotionFile(startedFile);
+    } catch (e) {
+        this._clearActiveMotionParamIds();
+        console.warn('[Live2D] 随机 Idle motion 启动失败:', e);
+    }
 };
 
 // 配置已加载的模型（私有方法，用于消除主路径和回退路径的重复代码）
@@ -785,7 +1038,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         const cleanPath = urlString.split('#')[0].split('?')[0];
         const lastSlash = cleanPath.lastIndexOf('/');
         const rootDir = lastSlash >= 0 ? cleanPath.substring(0, lastSlash) : '/static';
-        this.modelRootPath = rootDir; // e.g. /static/mao_pro or /static/some/deeper/dir
+        this.modelRootPath = rootDir; // e.g. /static/yui-origin or /static/some/deeper/dir
         const parts = rootDir.split('/').filter(Boolean);
         const rawName = parts.length > 0 ? parts[parts.length - 1] : null;
         try { this.modelName = rawName ? decodeURIComponent(rawName) : null; } catch (_) { this.modelName = rawName; }
@@ -1152,8 +1405,10 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         : Date.now();
     this._bubbleGeometryRefreshPass = 0;
 
+    const suppressInitialIdle = options.suppressInitialIdle === true;
+
     // 模型完全可见后播放 Idle 情绪（替代原来的独立 setTimeout）
-    if (hasIdleInEmotionMapping || hasIdleInFileReferences) {
+    if (!suppressInitialIdle && (hasIdleInEmotionMapping || hasIdleInFileReferences)) {
         try {
             console.log('[Live2D Model] 模型淡入完成，开始播放Idle情绪');
             this.setEmotion('Idle').catch(error => {
@@ -1165,9 +1420,11 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     }
 
     // 启动待机动作无限循环
-    try {
-        this.setupIdleMotionLoop(model);
-    } catch (_) {}
+    if (!suppressInitialIdle) {
+        try {
+            this.setupIdleMotionLoop(model);
+        } catch (_) {}
+    }
 
     // 调用回调函数
     if (this.onModelLoaded) {
@@ -1397,7 +1654,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             }
             
             // 先调用原始的 motionManager.update（添加错误处理）
-            if (origMotionManagerUpdate) {
+            if (!this._temporaryMotionSuspendToken && origMotionManagerUpdate) {
                 try {
                     origMotionManagerUpdate(...args);
                 } catch (e) {
@@ -1625,6 +1882,12 @@ Live2DManager.prototype.installMouthOverride = function() {
                         }
                     }
                 }
+            }
+
+            // 注入点 3（渲染前最后姿态覆盖）：教程苏醒等短期动作在这里写入，
+            // 确保不会被正脸锁、随机视线、眨眼或常驻表情在同一帧覆盖。
+            if (typeof this._applyTemporaryPoseOverride === 'function') {
+                this._applyTemporaryPoseOverride(currentCoreModel);
             }
         } catch (e) {
             console.error('口型覆盖参数写入失败:', e);

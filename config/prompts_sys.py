@@ -117,19 +117,19 @@ SESSION_INIT_PROMPT = {
 }
 
 SESSION_INIT_PROMPT_AGENT = {
-    'zh': '你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{name}）。当外部任务系统接管执行时，不要抢先声称自己已经开始执行或自行编造执行结果。',
-    'en': 'You are a role-playing expert and skilled at computer operations. Please play the following character ({name}) as instructed. When an external task system is responsible for execution, do not claim you have already started or fabricate execution results.',
-    'ja': 'あなたはロールプレイの達人で、コンピュータ操作も得意です。指示に従い、以下のキャラクター（{name}）を演じてください。外部タスクシステムが実行を担当する場合、自分がすでに着手したかのように主張したり、結果を捏造したりしないでください。',
-    'ko': '당신은 롤플레이 전문가이며 컴퓨터 조작에도 능숙합니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 외부 작업 시스템이 실행을 담당할 때는 이미 시작했다고 먼저 말하거나 실행 결과를 지어내지 마세요.',
-    'ru': 'Вы мастер ролевых игр и хорошо разбираетесь в управлении компьютером. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда выполнение поручено внешней системе задач, не утверждайте заранее, что уже начали выполнять запрос, и не выдумывайте результаты.',
+    'zh': '你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{name}）。当用户要求你执行对话外的实际操作（例如控制游戏、插件、设备、浏览器或电脑）时，除非本轮上下文已经给出系统/工具执行结果，否则只能简短说明会尝试处理，绝对不要声称已经开始、已经完成，或自行编造执行结果。',
+    'en': 'You are a role-playing expert and skilled at computer operations. Please play the following character ({name}) as instructed. When the user asks you to perform a real action outside the conversation, such as controlling a game, plugin, device, browser, or computer, unless this turn already contains a system/tool execution result, only briefly say you will attempt it. Never claim it has started or completed, and never fabricate execution results.',
+    'ja': 'あなたはロールプレイの達人で、コンピュータ操作も得意です。指示に従い、以下のキャラクター（{name}）を演じてください。ユーザーが会話外の実操作（ゲーム、プラグイン、デバイス、ブラウザ、PC操作など）を求めた場合、このターンの文脈にシステム/ツールの実行結果が既にない限り、対応を試みると簡潔に伝えてください。開始済み・完了済みと主張したり、実行結果を捏造したりしてはいけません。',
+    'ko': '당신은 롤플레이 전문가이며 컴퓨터 조작에도 능숙합니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 사용자가 게임, 플러그인, 기기, 브라우저, 컴퓨터 제어처럼 대화 밖의 실제 작업을 요청할 때, 이번 턴의 문맥에 시스템/도구 실행 결과가 이미 있지 않다면 처리해 보겠다고 짧게 말하세요. 이미 시작했거나 완료했다고 말하지 말고 실행 결과를 지어내지 마세요.',
+    'ru': 'Вы мастер ролевых игр и хорошо разбираетесь в управлении компьютером. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда пользователь просит выполнить реальное действие вне диалога — например управлять игрой, плагином, устройством, браузером или компьютером — если в текущем контексте ещё нет результата системы/инструмента, только кратко скажите, что попытаетесь это сделать. Никогда не утверждайте, что действие уже начато или завершено, и не выдумывайте результаты.',
 }
 
 SESSION_INIT_PROMPT_AGENT_DYNAMIC = {
-    'zh': '你是一个角色扮演大师，并且能够{capabilities}。请按要求扮演以下角色（{name}）。当外部任务系统接管执行时，不要抢先声称自己已经开始执行或自行编造执行结果。',
-    'en': 'You are a role-playing expert and can {capabilities}. Please play the following character ({name}) as instructed. When an external task system is responsible for execution, do not claim you have already started or fabricate execution results.',
-    'ja': 'あなたはロールプレイの達人で、{capabilities}ことができます。指示に従い、以下のキャラクター（{name}）を演じてください。外部タスクシステムが実行を担当する場合、自分がすでに着手したかのように主張したり、結果を捏造したりしないでください。',
-    'ko': '당신은 롤플레이 전문가이며 {capabilities} 수 있습니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 외부 작업 시스템이 실행을 담당할 때는 이미 시작했다고 먼저 말하거나 실행 결과를 지어내지 마세요.',
-    'ru': 'Вы мастер ролевых игр и можете {capabilities}. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда выполнение поручено внешней системе задач, не утверждайте заранее, что уже начали выполнять запрос, и не выдумывайте результаты.',
+    'zh': '你是一个角色扮演大师，并且能够{capabilities}。请按要求扮演以下角色（{name}）。当用户要求你执行对话外的实际操作（例如控制游戏、插件、设备、浏览器或电脑）时，除非本轮上下文已经给出系统/工具执行结果，否则只能简短说明会尝试处理，绝对不要声称已经开始、已经完成，或自行编造执行结果。',
+    'en': 'You are a role-playing expert and can {capabilities}. Please play the following character ({name}) as instructed. When the user asks you to perform a real action outside the conversation, such as controlling a game, plugin, device, browser, or computer, unless this turn already contains a system/tool execution result, only briefly say you will attempt it. Never claim it has started or completed, and never fabricate execution results.',
+    'ja': 'あなたはロールプレイの達人で、{capabilities}ことができます。指示に従い、以下のキャラクター（{name}）を演じてください。ユーザーが会話外の実操作（ゲーム、プラグイン、デバイス、ブラウザ、PC操作など）を求めた場合、このターンの文脈にシステム/ツールの実行結果が既にない限り、対応を試みると簡潔に伝えてください。開始済み・完了済みと主張したり、実行結果を捏造したりしてはいけません。',
+    'ko': '당신은 롤플레이 전문가이며 {capabilities} 수 있습니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 사용자가 게임, 플러그인, 기기, 브라우저, 컴퓨터 제어처럼 대화 밖의 실제 작업을 요청할 때, 이번 턴의 문맥에 시스템/도구 실행 결과가 이미 있지 않다면 처리해 보겠다고 짧게 말하세요. 이미 시작했거나 완료했다고 말하지 말고 실행 결과를 지어내지 마세요.',
+    'ru': 'Вы мастер ролевых игр и можете {capabilities}. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда пользователь просит выполнить реальное действие вне диалога — например управлять игрой, плагином, устройством, браузером или компьютером — если в текущем контексте ещё нет результата системы/инструмента, только кратко скажите, что попытаетесь это сделать. Никогда не утверждайте, что действие уже начато или завершено, и не выдумывайте результаты.',
 }
 
 AGENT_CAPABILITY_COMPUTER_USE = {
@@ -282,6 +282,10 @@ TASK_STATUS_PHRASES = {
         'zh': '部分完成', 'en': 'partially completed',
         'ja': '一部完了しました', 'ko': '부분 완료되었습니다', 'ru': 'частично завершена',
     },
+    'blocked': {
+        'zh': '未执行', 'en': 'was not executed',
+        'ja': '実行されませんでした', 'ko': '실행되지 않았습니다', 'ru': 'не была выполнена',
+    },
     'failed': {
         'zh': '执行失败', 'en': 'has failed',
         'ja': '失敗しました', 'ko': '실패했습니다', 'ru': 'не выполнена',
@@ -301,6 +305,10 @@ TASK_ACTION_PHRASES = {
     'partial': {
         'zh': '汇报情况', 'en': 'report the situation',
         'ja': '状況を報告', 'ko': '상황을 보고', 'ru': 'опишите ситуацию',
+    },
+    'blocked': {
+        'zh': '说明未执行原因', 'en': 'explain why it was not executed',
+        'ja': '実行されなかった理由を説明', 'ko': '실행되지 않은 이유를 설명', 'ru': 'объясните, почему она не была выполнена',
     },
     'failed': {
         'zh': '说明情况', 'en': 'explain what happened',
@@ -350,14 +358,32 @@ CONTEXT_SUMMARY_TASK_FOOTER = {
 
 # ---------- Vision: Avatar 截图注解（叠加在发给视觉模型的截图上，用户不可见） ----------
 AVATAR_ANNOTATION_TEXT = {
-    'zh':    ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及', '请{name}不要主动提及'),
-    'zh-CN': ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及', '请{name}不要主动提及'),
-    'zh-TW': ('這是{name}在桌面上的虛擬形象,', '請{name}不要主動提及', '請{name}不要主動提及'),
-    'en':    ("This is {name}'s virtual avatar on the desktop,", "Please don't mention it, {name}", "Please don't mention it, {name}"),
-    'ja':    ('これはデスクトップ上の{name}の仮想アバターです,', '{name}は自分から言及しないでください', '{name}は自分から言及しないでください'),
-    'ko':    ('이것은 바탕화면의 {name} 가상 아바타입니다,', '{name}은(는) 스스로 언급하지 마세요', '{name}은(는) 스스로 언급하지 마세요'),
-    'ru':    ('Это виртуальный аватар {name} на рабочем столе,', 'Пожалуйста, {name}, не упоминай это', 'Пожалуйста, {name}, не упоминай это'),
+    'zh':    ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及'),
+    'zh-CN': ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及'),
+    'zh-TW': ('這是{name}在桌面上的虛擬形象,', '請{name}不要主動提及'),
+    'en':    ("This is {name}'s virtual avatar on the desktop,", "Please don't mention it, {name}"),
+    'ja':    ('これはデスクトップ上の{name}の仮想アバターです,', '{name}は自分から言及しないでください'),
+    'ko':    ('이것은 바탕화면의 {name} 가상 아바타입니다,', '{name}은(는) 스스로 언급하지 마세요'),
+    'ru':    ('Это виртуальный аватар {name} на рабочем столе,', 'Пожалуйста, {name}, не упоминай это'),
 }
+
+# ⚠ 与 AVATAR_ANNOTATION_TEXT 同步维护：原文片段直接嵌进 hint，方便 LLM 视觉对模式后忽略。
+AVATAR_ANNOTATION_IGNORE_HINT = {
+    'zh':    '注：截图上可能叠加了一段小字「这是<角色名>在桌面上的虚拟形象, 请<角色名>不要主动提及」。这只是用来标记桌面虚拟形象位置的系统元数据，不是用户屏幕的内容，请忽略，不要复述也不要主动提及。',
+    'zh-CN': '注：截图上可能叠加了一段小字「这是<角色名>在桌面上的虚拟形象, 请<角色名>不要主动提及」。这只是用来标记桌面虚拟形象位置的系统元数据，不是用户屏幕的内容，请忽略，不要复述也不要主动提及。',
+    'zh-TW': '註：截圖上可能疊加了一段小字「這是<角色名>在桌面上的虛擬形象, 請<角色名>不要主動提及」。這只是用來標記桌面虛擬形象位置的系統元資料，不是使用者螢幕的內容，請忽略，不要複述也不要主動提及。',
+    'en':    'Note: the screenshot may carry a small overlaid annotation reading "This is <character>\'s virtual avatar on the desktop, Please don\'t mention it, <character>". It only marks the avatar position — system metadata, not part of the user\'s screen. Ignore it, do not repeat it, and do not bring it up.',
+    'ja':    '注：スクリーンショットには「これはデスクトップ上の<キャラクター名>の仮想アバターです, <キャラクター名>は自分から言及しないでください」という小さな注釈が重ねて描かれている場合があります。これはアバター位置を示すシステムメタデータであり、ユーザー画面の一部ではありません。無視し、復唱せず、自分から言及しないでください。',
+    'ko':    '주의: 스크린샷에는 "이것은 바탕화면의 <캐릭터명> 가상 아바타입니다, <캐릭터명>은(는) 스스로 언급하지 마세요" 라는 작은 주석이 겹쳐져 있을 수 있습니다. 아바타 위치를 표시하는 시스템 메타데이터일 뿐 사용자 화면의 내용이 아닙니다. 무시하고, 따라 말하거나 먼저 언급하지 마세요.',
+    'ru':    'Примечание: на скриншот может быть наложена небольшая надпись вида «Это виртуальный аватар <персонажа> на рабочем столе, Пожалуйста, <персонаж>, не упоминай это». Это только метка положения аватара — служебные метаданные, не часть экрана пользователя. Игнорируйте её, не пересказывайте и не упоминайте сами.',
+}
+
+
+def get_avatar_annotation_ignore_hint(lang: str = 'zh') -> str:
+    """Return the localized hint telling the LLM to ignore the avatar overlay on screenshots."""
+    return (AVATAR_ANNOTATION_IGNORE_HINT.get(lang)
+            or AVATAR_ANNOTATION_IGNORE_HINT.get(lang.split('-')[0])
+            or AVATAR_ANNOTATION_IGNORE_HINT['en'])
 
 # ---------- Vision 图像描述 prompt ----------
 # 安全水印前缀（所有语言固定不变，包括逗号和空格）

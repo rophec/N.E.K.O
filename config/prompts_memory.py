@@ -336,8 +336,8 @@ SETTINGS_EXTRACTOR_PROMPT = {
     'zh': """从以下对话中提取关于{LANLAN_NAME}和{MASTER_NAME}的重要个人信息，用于个人备忘录以及未来的角色扮演，以json格式返回。
 请以JSON格式返回，格式为:
 {{
-    "{LANLAN_NAME}": {{"属性1": "值", "属性2": "值", ...其他个人信息...}}
-    "{MASTER_NAME}": {{...个人信息...}},
+    "{LANLAN_NAME}": {{"属性1": "值", "属性2": "值", "其他个人信息": "..."}},
+    "{MASTER_NAME}": {{"属性1": "值", "属性2": "值", "其他个人信息": "..."}}
 }}
 
 ======以下为对话======
@@ -348,8 +348,8 @@ SETTINGS_EXTRACTOR_PROMPT = {
 
     'en': """Extract important personal information about {LANLAN_NAME} and {MASTER_NAME} from the following conversation. This is for a personal memo and future role-playing. Return in JSON format:
 {{
-    "{LANLAN_NAME}": {{"attribute1": "value", "attribute2": "value", ...other personal info...}}
-    "{MASTER_NAME}": {{...personal info...}},
+    "{LANLAN_NAME}": {{"attribute1": "value", "attribute2": "value", "other_info": "..."}},
+    "{MASTER_NAME}": {{"attribute1": "value", "attribute2": "value", "other_info": "..."}}
 }}
 
 ======以下为对话======
@@ -360,8 +360,8 @@ Now extract important personal information about {LANLAN_NAME} and {MASTER_NAME}
 
     'ja': """以下の会話から{LANLAN_NAME}と{MASTER_NAME}に関する重要な個人情報を抽出してください。個人メモおよび将来のロールプレイに使用します。JSON形式で返してください：
 {{
-    "{LANLAN_NAME}": {{"属性1": "値", "属性2": "値", ...その他の個人情報...}}
-    "{MASTER_NAME}": {{...個人情報...}},
+    "{LANLAN_NAME}": {{"属性1": "値", "属性2": "値", "その他の個人情報": "..."}},
+    "{MASTER_NAME}": {{"属性1": "値", "属性2": "値", "その他の個人情報": "..."}}
 }}
 
 ======以下为对话======
@@ -372,8 +372,8 @@ Now extract important personal information about {LANLAN_NAME} and {MASTER_NAME}
 
     'ko': """다음 대화에서 {LANLAN_NAME}과 {MASTER_NAME}에 대한 중요한 개인 정보를 추출해 주세요. 개인 메모 및 향후 역할극에 사용됩니다. JSON 형식으로 반환해 주세요:
 {{
-    "{LANLAN_NAME}": {{"속성1": "값", "속성2": "값", ...기타 개인 정보...}}
-    "{MASTER_NAME}": {{...개인 정보...}},
+    "{LANLAN_NAME}": {{"속성1": "값", "속성2": "값", "기타_개인_정보": "..."}},
+    "{MASTER_NAME}": {{"속성1": "값", "속성2": "값", "기타_개인_정보": "..."}}
 }}
 
 ======以下为对话======
@@ -384,8 +384,8 @@ Now extract important personal information about {LANLAN_NAME} and {MASTER_NAME}
 
     'ru': """Извлеките важную личную информацию о {LANLAN_NAME} и {MASTER_NAME} из следующей беседы. Это для личного блокнота и будущей ролевой игры. Верните в формате JSON:
 {{
-    "{LANLAN_NAME}": {{"атрибут1": "значение", "атрибут2": "значение", ...другая личная информация...}}
-    "{MASTER_NAME}": {{...личная информация...}},
+    "{LANLAN_NAME}": {{"атрибут1": "значение", "атрибут2": "значение", "другая_информация": "..."}},
+    "{MASTER_NAME}": {{"атрибут1": "значение", "атрибут2": "значение", "другая_информация": "..."}}
 }}
 
 ======以下为对话======
@@ -402,7 +402,6 @@ def get_settings_extractor_prompt(lang: str = 'zh') -> str:
 
 settings_extractor_prompt = SETTINGS_EXTRACTOR_PROMPT['zh']
 
-settings_verifier_prompt = ''
 
 # =====================================================================
 # ======= History review =============================================
@@ -426,6 +425,7 @@ HISTORY_REVIEW_PROMPT = {
 <要点2> 请以删除为主，除非不得已、不要直接修改内容。</要点2>
 <要点3> 如果对话历史中包含"先前对话的备忘录"，你可以修改它，但不允许删除它。你必须保留这一项。修改备忘录时，应该将其中过度重复的词汇替换为代词（如"它"、"其"、"该"等）以提高可读性和自然度。</要点3>
 <要点4> 请保留时间戳。 </要点4>
+<要点5> 如果对话历史中包含 "Game Module Memory Record" 或 "Game Module Postgame Record"，这是游戏模块写入的赛后记忆，不是普通聊天，也不是错误的系统消息。不同时间/会话的同一类游戏默认代表不同局，不要因为最终结果不同就判定互相矛盾；可以精简、合并到"先前对话的备忘录"，但不要整条删除，至少保留最终结果、重要互动/事件和最后对话。 </要点5>
 
 ======以下为对话历史======
 %s
@@ -465,6 +465,7 @@ Important notes:
 <Point2> Prefer deletion over direct modification unless absolutely necessary. </Point2>
 <Point3> If the history contains a "previous conversation memo", you may edit it but must NOT delete it. When editing, replace overused vocabulary with pronouns for readability. </Point3>
 <Point4> Preserve timestamps. </Point4>
+<Point5> If the history contains "Game Module Memory Record" or "Game Module Postgame Record", it is postgame memory written by the game module, not ordinary chat and not an erroneous system message. Different times/sessions of the same game module should be treated as separate plays by default, not contradictions just because the final results differ. You may condense or merge them into the "previous conversation memo", but do not delete the whole entry; keep at least the final result, important interactions/events, and the last dialogue. </Point5>
 
 ======以下为对话历史======
 %s
@@ -504,6 +505,7 @@ Notes:
 <要点2> 直接的な修正よりも削除を優先してください。</要点2>
 <要点3> 会話履歴に「以前の会話メモ」がある場合、編集可能ですが削除は禁止です。編集時は過度に繰り返される語彙を代名詞に置き換えてください。</要点3>
 <要点4> タイムスタンプは保持してください。</要点4>
+<要点5> 会話履歴に "Game Module Memory Record" または "Game Module Postgame Record" が含まれる場合、それはゲームモジュールが書き込んだ試合後の記憶であり、通常のチャットでも誤ったシステムメッセージでもありません。同じゲームモジュールの異なる時刻/セッションは既定で別々のプレイとして扱い、最終結果が違うだけで矛盾と判定しないでください。「以前の会話メモ」へ要約・統合しても構いませんが、項目全体を削除せず、少なくとも最終結果、重要なやり取り/出来事、最後の会話を残してください。</要点5>
 
 ======以下为对话历史======
 %s
@@ -535,6 +537,7 @@ Notes:
 <요점2> 직접 수정보다 삭제를 우선하세요.</요점2>
 <요점3> 대화 기록에 "이전 대화 메모"가 포함된 경우 편집은 가능하지만 삭제는 금지입니다. 편집 시 과도하게 반복되는 어휘를 대명사로 대체하세요.</요점3>
 <요점4> 타임스탬프를 보존하세요.</요점4>
+<요점5> 대화 기록에 "Game Module Memory Record" 또는 "Game Module Postgame Record"가 포함된 경우, 이는 게임 모듈이 작성한 게임 후 기억이며 일반 채팅도 잘못된 시스템 메시지도 아닙니다. 같은 게임 모듈의 서로 다른 시간/세션은 기본적으로 별개의 플레이로 취급하고, 최종 결과가 다르다는 이유만으로 모순으로 판단하지 마세요. "이전 대화 메모"로 요약하거나 병합할 수는 있지만 항목 전체를 삭제하지 말고, 최소한 최종 결과, 중요한 상호작용/사건, 마지막 대화는 보존하세요.</요점5>
 
 ======以下为对话历史======
 %s
@@ -566,6 +569,7 @@ Notes:
 <Пункт2> Предпочитайте удаление, а не прямое редактирование, если это не абсолютно необходимо.</Пункт2>
 <Пункт3> Если история содержит «заметки предыдущего разговора», их можно редактировать, но НЕЛЬЗЯ удалять. При редактировании замените чрезмерно повторяющуюся лексику местоимениями.</Пункт3>
 <Пункт4> Сохраняйте временные метки.</Пункт4>
+<Пункт5> Если история содержит "Game Module Memory Record" или "Game Module Postgame Record", это послеигровая память, записанная игровым модулем, а не обычный чат и не ошибочное системное сообщение. Разные моменты времени/сессии одного и того же игрового модуля по умолчанию относятся к разным заходам; не считайте их противоречием только из-за разного итогового результата. Запись можно сократить или объединить с «заметками предыдущего разговора», но нельзя удалять целиком: сохраните как минимум итоговый результат, важные взаимодействия/события и последний диалог.</Пункт5>
 
 ======以下为对话历史======
 %s
@@ -1250,120 +1254,130 @@ REFLECTION_PROMPT = {
 {FACTS}
 ======以上为事实======
 
-请基于这些事实，合成一段简短的反思洞察，总结你观察到的模式、趋势或关系动态。
-不要简单罗列事实，而是要提炼出更高层次的理解。
+请基于这些事实，提炼一条高层次的反思洞察。请按以下三步思考：
 
-请判断这段反思主要关于谁：
+第一步：判断该反思主要关于谁（entity）
 - "master": 主要关于 {MASTER_NAME} 的个人特征
 - "neko": 主要关于 {LANLAN_NAME} 的自我认知
 - "relationship": 关于两人之间的关系动态
 
-请同时给出该反思的语义类别 relation_type（必须与 entity 匹配），以及时间范围 temporal_scope：
+第二步：选定语义类别 relation_type（必须与 entity 匹配）与时间范围 temporal_scope
 - master 可用: preference(偏好) | trait(性格) | habit(习惯) | identity(身份) | emotional(情感) | boundary(边界)
 - neko 可用: self_awareness(自我认知) | learned(习得行为) | role_note(角色备注)
 - relationship 可用: dynamic(互动模式) | milestone(里程碑) | tension(摩擦) | shared_memory(共同记忆) | agreement(约定)
 - temporal_scope: current(当前) | past(过去) | ongoing(持续)
 
-要求：紧扣单一观察或模式，不要把多个无关事实混在一起；长度不得超过 150 字。
+第三步：围绕已选定的 entity / relation_type / temporal_scope 撰写 reflection
+要求：
+- 紧扣单一观察或模式，不要罗列事实，也不要把多个无关事实混在一起
+- 简洁清晰，不得超过 150 字
 
-请以 JSON 格式返回：
-{{"reflection": "你的反思洞察", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
+请以 JSON 格式返回，字段顺序保持如下：
+{{"entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current", "reflection": "你的反思洞察"}}""",
     'en': """Below are a series of extracted facts about {LANLAN_NAME} and {MASTER_NAME}:
 
 ======以下为事实======
 {FACTS}
 ======以上为事实======
 
-Based on these facts, synthesize a brief reflective insight summarizing the patterns, trends, or relationship dynamics you observe.
-Do not simply list the facts — distill a higher-level understanding.
+Based on these facts, distill one higher-level reflective insight. Follow these three steps:
 
-Determine which entity the reflection primarily concerns:
+Step 1: Determine which entity the reflection primarily concerns
 - "master": primarily about {MASTER_NAME}'s personal traits
 - "neko": primarily about {LANLAN_NAME}'s self-perception
 - "relationship": about the dynamics between them
 
-Also provide a semantic relation_type (must match the entity) and a temporal_scope:
+Step 2: Choose a semantic relation_type (must match the entity) and a temporal_scope
 - master: preference | trait | habit | identity | emotional | boundary
 - neko: self_awareness | learned | role_note
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-Requirements: stay focused on a single observation or pattern; do not mix unrelated facts. Keep the reflection under 150 words.
+Step 3: Write the reflection around the chosen entity / relation_type / temporal_scope
+Requirements:
+- Stay focused on a single observation or pattern; do not list facts, and do not mix unrelated facts
+- Be concise and clear; the reflection MUST NOT exceed 150 words
 
-Return in JSON format:
-{{"reflection": "your reflective insight", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
+Return JSON with fields in this exact order:
+{{"entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current", "reflection": "your reflective insight"}}""",
     'ja': """以下は {LANLAN_NAME} と {MASTER_NAME} に関する一連の抽出済み事実です：
 
 ======以下为事实======
 {FACTS}
 ======以上为事实======
 
-これらの事実に基づき、観察されたパターン、傾向、または関係の動態をまとめた簡潔な反省的洞察を合成してください。
-単に事実を列挙するのではなく、より高い次元の理解を抽出してください。
+これらの事実に基づき、より高次元の反省的洞察を 1 つ抽出してください。次の 3 ステップで進めてください：
 
-この反思が主に誰についてのものか判断してください：
+ステップ 1：この反省が主に誰についてのものか判断する（entity）
 - "master": 主に {MASTER_NAME} の個人的特徴について
 - "neko": 主に {LANLAN_NAME} の自己認識について
 - "relationship": 二人の関係の動態について
 
-さらに意味カテゴリ relation_type（entity と整合）と時間範囲 temporal_scope も付けてください：
+ステップ 2：意味カテゴリ relation_type（entity と整合）と時間範囲 temporal_scope を選定する
 - master: preference | trait | habit | identity | emotional | boundary
 - neko: self_awareness | learned | role_note
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-要件：単一の観察やパターンに集中し、無関係な事実を混ぜないこと。長さは 150 字を超えないこと。
+ステップ 3：選定した entity / relation_type / temporal_scope に沿って reflection を書く
+要件：
+- 単一の観察やパターンに集中し、事実を列挙したり、無関係な事実を混ぜたりしないこと
+- 簡潔かつ明瞭で、150 字を超えてはならない
 
-JSON形式で返してください：
-{{"reflection": "あなたの反省的洞察", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
+JSON 形式で返してください。フィールドの順序は以下の通り保ってください：
+{{"entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current", "reflection": "あなたの反省的洞察"}}""",
     'ko': """다음은 {LANLAN_NAME}과 {MASTER_NAME}에 대해 추출된 일련의 사실입니다:
 
 ======以下为事实======
 {FACTS}
 ======以上为事实======
 
-이 사실들을 바탕으로 관찰된 패턴, 추세 또는 관계 동태를 요약하는 간략한 반성적 통찰을 합성해 주세요.
-단순히 사실을 나열하지 말고 더 높은 차원의 이해를 도출해 주세요.
+이 사실들을 바탕으로 더 높은 차원의 반성적 통찰 하나를 도출해 주세요. 다음 세 단계를 따르세요:
 
-이 반성이 주로 누구에 대한 것인지 판단해 주세요:
+1단계: 이 반성이 주로 누구에 대한 것인지 판단합니다 (entity)
 - "master": 주로 {MASTER_NAME}의 개인적 특성에 대해
 - "neko": 주로 {LANLAN_NAME}의 자기 인식에 대해
 - "relationship": 두 사람 사이의 관계 동태에 대해
 
-또한 의미 범주 relation_type(entity와 일치해야 함)과 시간 범위 temporal_scope를 함께 제공해 주세요:
+2단계: 의미 범주 relation_type(entity와 일치해야 함)과 시간 범위 temporal_scope를 선택합니다
 - master: preference | trait | habit | identity | emotional | boundary
 - neko: self_awareness | learned | role_note
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-요구사항: 단일 관찰 또는 패턴에 집중하고 관련 없는 사실을 섞지 마세요. 길이는 150자를 초과하지 마세요.
+3단계: 선택한 entity / relation_type / temporal_scope를 중심으로 reflection을 작성합니다
+요구사항:
+- 단일 관찰 또는 패턴에 집중하고, 사실을 나열하거나 관련 없는 사실을 섞지 마세요
+- 간결하고 명확하게, 150자를 초과해서는 안 됩니다
 
-JSON 형식으로 반환해 주세요:
-{{"reflection": "당신의 반성적 통찰", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
+JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세요:
+{{"entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current", "reflection": "당신의 반성적 통찰"}}""",
     'ru': """Ниже представлена серия извлечённых фактов о {LANLAN_NAME} и {MASTER_NAME}:
 
 ======以下为事实======
 {FACTS}
 ======以上为事实======
 
-На основе этих фактов синтезируйте краткое рефлексивное наблюдение, обобщающее замеченные закономерности, тенденции или динамику отношений.
-Не просто перечисляйте факты — извлеките понимание более высокого уровня.
+На основе этих фактов выведите одно рефлексивное наблюдение более высокого уровня. Выполните три шага:
 
-Определите, к кому это наблюдение относится в первую очередь:
+Шаг 1: Определите, к кому это наблюдение относится в первую очередь (entity)
 - "master": в основном о личных качествах {MASTER_NAME}
 - "neko": в основном о самовосприятии {LANLAN_NAME}
 - "relationship": о динамике отношений между ними
 
-Также укажите семантическую категорию relation_type (должна соответствовать entity) и временной охват temporal_scope:
+Шаг 2: Выберите семантическую категорию relation_type (должна соответствовать entity) и временной охват temporal_scope
 - master: preference | trait | habit | identity | emotional | boundary
 - neko: self_awareness | learned | role_note
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-Требования: сосредоточьтесь на одном наблюдении или паттерне, не смешивайте не связанные факты. Длина — не более 150 слов.
+Шаг 3: Напишите reflection, опираясь на выбранные entity / relation_type / temporal_scope
+Требования:
+- Сосредоточьтесь на одном наблюдении или паттерне; не перечисляйте факты и не смешивайте несвязанные факты
+- Сжато и ясно; длина НЕ должна превышать 150 слов
 
-Верните в формате JSON:
-{{"reflection": "ваше рефлексивное наблюдение", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
+Верните в формате JSON, сохраняя порядок полей:
+{{"entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current", "reflection": "ваше рефлексивное наблюдение"}}""",
 }
 
 
