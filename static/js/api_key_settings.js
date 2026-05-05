@@ -23,6 +23,7 @@ const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision
 const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES;
 // 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
 let _loadedGptSovitsState = 'none';
+let _loadedLocalTtsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
 let _ttsConfigDirty = false;
 
@@ -300,6 +301,7 @@ function closeProviderSelectDropdown(wrapper) {
     if (!wrapper) return;
 
     wrapper.classList.remove('open');
+    wrapper.classList.remove('open-upward');
 
     const trigger = wrapper.querySelector('.api-provider-dropdown-trigger');
     if (trigger) {
@@ -319,9 +321,26 @@ function openProviderSelectDropdown(wrapper) {
     if (!wrapper || wrapper.classList.contains('disabled')) return;
 
     closeAllProviderSelectDropdowns(wrapper);
-    wrapper.classList.add('open');
+    wrapper.classList.remove('open-upward');
 
     const trigger = wrapper.querySelector('.api-provider-dropdown-trigger');
+    const menu = wrapper.querySelector('.api-provider-dropdown-menu');
+    const menuScroll = wrapper.querySelector('.api-provider-dropdown-menu-scroll');
+
+    if (trigger && menu) {
+        const triggerRect = trigger.getBoundingClientRect();
+        const estimatedMenuHeight = Math.min(
+            (menuScroll ? menuScroll.scrollHeight : 0) + 16,
+            320
+        );
+        const spaceBelow = window.innerHeight - triggerRect.bottom;
+        const spaceAbove = triggerRect.top;
+        if (spaceBelow < estimatedMenuHeight && spaceAbove > spaceBelow) {
+            wrapper.classList.add('open-upward');
+        }
+    }
+
+    wrapper.classList.add('open');
     if (trigger) {
         trigger.setAttribute('aria-expanded', 'true');
     }
@@ -1140,6 +1159,11 @@ async function loadCurrentApiKey() {
                 data.ttsModelApiKey,
                 data.gptsovitsEnabled,
             );
+            loadLocalTtsConfig(
+                data.ttsModelUrl,
+                data.ttsVoiceId,
+                data.gptsovitsEnabled,
+            );
 
             // 加载MCPR_TOKEN
             setInputValue('mcpTokenInput', data.mcpToken);
@@ -1262,6 +1286,260 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '', ttsModelA
  * 选中一个 GPT-SoVITS voice 卡片
  * @param {string} voiceId - 要选中的 voice_id
  */
+function isLocalTtsWebSocketUrl(url) {
+    const normalizedUrl = (url || '').trim().toLowerCase();
+    return normalizedUrl.startsWith('ws://') || normalizedUrl.startsWith('wss://');
+}
+
+function syncLocalTtsToLegacyFields() {
+    const legacyUrlInput = document.getElementById('ttsModelUrl');
+    const legacyVoiceInput = document.getElementById('ttsVoiceId');
+    const localUrlInput = document.getElementById('localTtsApiUrl');
+    const localVoiceSelect = document.getElementById('localTtsVoiceIdSelect');
+    const localEnabled = document.getElementById('localTtsEnabled')?.checked;
+
+    if (!localEnabled) return;
+    if (legacyUrlInput && localUrlInput) {
+        legacyUrlInput.value = localUrlInput.value.trim();
+    }
+    if (legacyVoiceInput && localVoiceSelect) {
+        legacyVoiceInput.value = localVoiceSelect.value || '';
+    }
+}
+
+function updateCustomTtsVoicePickerVisibility() {
+    const row = document.getElementById('custom-tts-voices-row');
+    const urlInput = document.getElementById('ttsModelUrl');
+    const enableCustomApi = document.getElementById('enableCustomApi');
+    const gptsovitsEnabled = document.getElementById('gptsovitsEnabled');
+    if (!row || !urlInput) return false;
+
+    const isVisible = Boolean(enableCustomApi?.checked)
+        && isLocalTtsWebSocketUrl(urlInput.value)
+        && !Boolean(gptsovitsEnabled?.checked);
+
+    row.style.display = isVisible ? 'block' : 'none';
+    return isVisible;
+}
+
+function selectCustomTtsVoice(voiceId) {
+    const voiceInput = document.getElementById('ttsVoiceId');
+    if (voiceInput) {
+        voiceInput.value = voiceId;
+    }
+
+    const grid = document.getElementById('custom-tts-voices-grid');
+    if (!grid) return;
+    grid.querySelectorAll('.gsv-voice-card').forEach(card => {
+        const isSelected = card.dataset.voiceId === voiceId;
+        card.classList.toggle('selected', isSelected);
+        card.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+        card.tabIndex = isSelected ? 0 : -1;
+    });
+}
+
+async function fetchCustomTtsVoices(silent = false) {
+    const urlInput = document.getElementById('ttsModelUrl');
+    const voiceInput = document.getElementById('ttsVoiceId');
+    const grid = document.getElementById('custom-tts-voices-grid');
+    if (!urlInput || !grid) return;
+
+    const apiUrl = urlInput.value.trim();
+    const currentValue = voiceInput ? voiceInput.value.trim() : '';
+
+    if (!updateCustomTtsVoicePickerVisibility()) {
+        grid.innerHTML = '<div class="gsv-voices-empty">-- Local voice picker is available for ws:// or wss:// custom TTS only --</div>';
+        return;
+    }
+
+    grid.innerHTML = '<div class="gsv-voices-loading">' + _escHtml(window.t ? window.t('api.loadingConfig') : 'Loading...') + '</div>';
+
+    try {
+        const resp = await fetch('/api/config/local_tts/list_voices', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_url: apiUrl })
+        });
+        const result = await resp.json();
+
+        if (result.success && Array.isArray(result.voices)) {
+            grid.innerHTML = '';
+
+            if (result.voices.length === 0) {
+                grid.innerHTML = '<div class="gsv-voices-empty">-- No voices returned --</div>';
+            } else {
+                let hasSelectedCard = false;
+                result.voices.forEach(v => {
+                    const voiceId = v.id || v.voice_id || '';
+                    if (!voiceId) return;
+
+                    const card = document.createElement('div');
+                    card.className = 'gsv-voice-card';
+                    card.dataset.voiceId = voiceId;
+                    const isSelected = voiceId === currentValue;
+                    if (isSelected) {
+                        card.classList.add('selected');
+                        hasSelectedCard = true;
+                    }
+                    card.setAttribute('role', 'radio');
+                    card.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+                    card.tabIndex = isSelected ? 0 : -1;
+
+                    let html = '';
+                    html += '<div class="gsv-card-name">' + _escHtml(v.name || voiceId) + '</div>';
+                    if ((v.name || '') !== voiceId) {
+                        html += '<div class="gsv-card-id">' + _escHtml(voiceId) + '</div>';
+                    }
+                    if (v.version) {
+                        html += '<div class="gsv-card-version">' + _escHtml(v.version) + '</div>';
+                    }
+                    if (v.description) {
+                        html += '<div class="gsv-card-desc" title="' + _escAttr(v.description) + '">' + _escHtml(v.description) + '</div>';
+                    }
+                    card.innerHTML = html;
+
+                    card.addEventListener('click', () => selectCustomTtsVoice(voiceId));
+                    card.addEventListener('keydown', (event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            selectCustomTtsVoice(voiceId);
+                        }
+                    });
+                    grid.appendChild(card);
+                });
+
+                if (!hasSelectedCard) {
+                    const firstCard = grid.querySelector('.gsv-voice-card');
+                    if (firstCard) firstCard.tabIndex = 0;
+                }
+            }
+
+            if (!silent) {
+                showStatus(`Loaded ${result.voices.length} local TTS voices`, 'success');
+            }
+            return;
+        }
+
+        const errMsg = result.error || 'Failed to fetch local TTS voices';
+        grid.innerHTML = '<div class="gsv-voices-empty">' + _escHtml(errMsg) + '</div>';
+        if (!silent) {
+            showStatus(errMsg, 'error');
+        }
+    } catch (error) {
+        grid.innerHTML = '<div class="gsv-voices-empty">' + _escHtml(error.message || 'Failed to fetch local TTS voices') + '</div>';
+        if (!silent) {
+            showStatus(error.message || 'Failed to fetch local TTS voices', 'error');
+        }
+    }
+}
+
+function loadLocalTtsConfig(ttsModelUrl, ttsVoiceId, gptsovitsEnabled = null) {
+    const enabledCheckbox = document.getElementById('localTtsEnabled');
+    const urlInput = document.getElementById('localTtsApiUrl');
+    const voiceSelect = document.getElementById('localTtsVoiceIdSelect');
+    if (!enabledCheckbox || !urlInput || !voiceSelect) return;
+
+    const hasExplicitGsvFlag = typeof gptsovitsEnabled === 'boolean' ? gptsovitsEnabled : false;
+    const isLocalTtsEnabled = isLocalTtsWebSocketUrl(ttsModelUrl) && !hasExplicitGsvFlag;
+    _loadedLocalTtsState = isLocalTtsEnabled ? 'enabled' : 'none';
+
+    enabledCheckbox.checked = isLocalTtsEnabled;
+    if (isLocalTtsEnabled) {
+        urlInput.value = ttsModelUrl || 'ws://127.0.0.1:50000';
+        if (ttsVoiceId) {
+            const existingOption = Array.from(voiceSelect.options).find(option => option.value === ttsVoiceId);
+            if (!existingOption) {
+                const option = document.createElement('option');
+                option.value = ttsVoiceId;
+                option.textContent = ttsVoiceId;
+                voiceSelect.appendChild(option);
+            }
+            voiceSelect.value = ttsVoiceId;
+        }
+    }
+
+    toggleLocalTtsConfig();
+    syncLocalTtsToLegacyFields();
+
+    if (isLocalTtsEnabled && urlInput.value.trim()) {
+        fetchLocalTtsVoices(true);
+    }
+}
+
+function getLocalTtsConfigForSave() {
+    const apiUrl = document.getElementById('localTtsApiUrl')?.value.trim() || '';
+    const voiceId = document.getElementById('localTtsVoiceIdSelect')?.value || '';
+    return {
+        url: apiUrl || 'ws://127.0.0.1:50000',
+        voiceId,
+    };
+}
+
+function toggleLocalTtsConfig() {
+    const enabled = document.getElementById('localTtsEnabled')?.checked;
+    const configFields = document.getElementById('localtts-config-fields');
+    if (configFields) {
+        configFields.style.display = enabled ? 'block' : 'none';
+    }
+    if (enabled) {
+        const gsvCheckbox = document.getElementById('gptsovitsEnabled');
+        if (gsvCheckbox && gsvCheckbox.checked) {
+            gsvCheckbox.checked = false;
+            toggleGptSovitsConfig();
+        }
+        syncLocalTtsToLegacyFields();
+    }
+}
+
+async function fetchLocalTtsVoices(silent = false) {
+    const apiUrl = document.getElementById('localTtsApiUrl')?.value.trim() || 'ws://127.0.0.1:50000';
+    const voiceSelect = document.getElementById('localTtsVoiceIdSelect');
+    if (!voiceSelect) return;
+
+    const currentValue = voiceSelect.value || '';
+    voiceSelect.innerHTML = '<option value="">Loading...</option>';
+
+    try {
+        const resp = await fetch('/api/config/local_tts/list_voices', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_url: apiUrl })
+        });
+        const result = await resp.json();
+
+        if (!(result.success && Array.isArray(result.voices))) {
+            throw new Error(result.error || 'Failed to fetch local TTS voices');
+        }
+
+        voiceSelect.innerHTML = '<option value="">-- 请选择音色 --</option>';
+        result.voices.forEach((voice) => {
+            const voiceId = voice.id || voice.voice_id || '';
+            if (!voiceId) return;
+            const option = document.createElement('option');
+            option.value = voiceId;
+            option.textContent = voice.name ? `${voice.name} (${voiceId})` : voiceId;
+            voiceSelect.appendChild(option);
+        });
+
+        if (currentValue && Array.from(voiceSelect.options).some(option => option.value === currentValue)) {
+            voiceSelect.value = currentValue;
+        } else if (result.voices[0]) {
+            voiceSelect.value = result.voices[0].id || result.voices[0].voice_id || '';
+        }
+
+        syncLocalTtsToLegacyFields();
+
+        if (!silent) {
+            showStatus(`Loaded ${result.voices.length} Kokoro / Local TTS voices`, 'success');
+        }
+    } catch (error) {
+        voiceSelect.innerHTML = '<option value="">-- 获取音色失败 --</option>';
+        if (!silent) {
+            showStatus(error.message || 'Failed to fetch local TTS voices', 'error');
+        }
+    }
+}
+
 function selectGsvVoice(voiceId) {
     const hiddenInput = document.getElementById('gptsovitsVoiceId');
     if (hiddenInput) hiddenInput.value = voiceId;
@@ -1433,6 +1711,13 @@ function toggleGptSovitsConfig() {
     if (configFields) {
         configFields.style.display = enabled ? 'block' : 'none';
     }
+    if (enabled) {
+        const localCheckbox = document.getElementById('localTtsEnabled');
+        if (localCheckbox && localCheckbox.checked) {
+            localCheckbox.checked = false;
+            toggleLocalTtsConfig();
+        }
+    }
 }
 
 // ==================== 结束 GPT-SoVITS v3 配置相关函数 ====================
@@ -1574,6 +1859,17 @@ function confirmClearCustomApi() {
     const gptsovitsVoiceIdEl = document.getElementById('gptsovitsVoiceId');
     if (gptsovitsVoiceIdEl) gptsovitsVoiceIdEl.value = '';
     _loadedGptSovitsState = 'none';
+
+    const localTtsEnabledEl = document.getElementById('localTtsEnabled');
+    if (localTtsEnabledEl && localTtsEnabledEl.checked) {
+        localTtsEnabledEl.checked = false;
+        toggleLocalTtsConfig();
+    }
+    const localTtsApiUrlEl = document.getElementById('localTtsApiUrl');
+    if (localTtsApiUrlEl) localTtsApiUrlEl.value = 'ws://127.0.0.1:50000';
+    const localTtsVoiceIdSelectEl = document.getElementById('localTtsVoiceIdSelect');
+    if (localTtsVoiceIdSelectEl) localTtsVoiceIdSelectEl.innerHTML = '<option value="">-- 请选择音色 --</option>';
+    _loadedLocalTtsState = 'none';
     _ttsConfigDirty = true;
 
     // 取消勾选自定义API开关（skipAutoFill=true 避免覆盖未保存的核心/辅助API输入）
@@ -1607,6 +1903,29 @@ document.addEventListener('DOMContentLoaded', function () {
             el.addEventListener('input', markTtsConfigDirty);
         }
     });
+    ['localTtsEnabled', 'localTtsApiUrl', 'localTtsVoiceIdSelect'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('change', markTtsConfigDirty);
+        if (el.tagName !== 'SELECT' && el.type !== 'checkbox') {
+            el.addEventListener('input', markTtsConfigDirty);
+        }
+    });
+    const localTtsApiUrlInput = document.getElementById('localTtsApiUrl');
+    if (localTtsApiUrlInput) {
+        localTtsApiUrlInput.addEventListener('input', syncLocalTtsToLegacyFields);
+        localTtsApiUrlInput.addEventListener('blur', () => {
+            if (document.getElementById('localTtsEnabled')?.checked) {
+                fetchLocalTtsVoices(true);
+            }
+        });
+    }
+    const localTtsVoiceIdSelect = document.getElementById('localTtsVoiceIdSelect');
+    if (localTtsVoiceIdSelect) {
+        localTtsVoiceIdSelect.addEventListener('change', () => {
+            syncLocalTtsToLegacyFields();
+        });
+    }
 
     // 拦截所有 target="_blank" 的外部链接，使用系统默认浏览器打开
     document.querySelectorAll('a[target="_blank"]').forEach(function (link) {
@@ -1732,8 +2051,18 @@ async function save_button_down(e) {
     let ttsVoiceId = getVal('ttsVoiceId');
 
     // 检查 GPT-SoVITS v3 配置
+    const localTtsEnabled = document.getElementById('localTtsEnabled')?.checked;
+    const localTtsConfigForSave = getLocalTtsConfigForSave();
     const gptsovitsEnabled = document.getElementById('gptsovitsEnabled')?.checked;
     const gptsovitsConfigForSave = getGptSovitsConfigForSave();
+
+    if (localTtsEnabled && localTtsConfigForSave) {
+        const url = localTtsConfigForSave.url || '';
+        if (!/^wss?:\/\//.test(url)) {
+            showStatus('请填写正确的 ws:// 或 wss:// WebSocket URL', 'error');
+            return;
+        }
+    }
 
     // 启用 GPT-SoVITS 时校验 URL 协议
     if (gptsovitsEnabled && gptsovitsConfigForSave) {
@@ -1744,9 +2073,14 @@ async function save_button_down(e) {
         }
     }
 
-    if (gptsovitsEnabled && gptsovitsConfigForSave) {
+    if (localTtsEnabled && localTtsConfigForSave) {
+        ttsModelUrl = localTtsConfigForSave.url;
+        ttsVoiceId = localTtsConfigForSave.voiceId;
+    } else if (gptsovitsEnabled && gptsovitsConfigForSave) {
         ttsModelUrl = gptsovitsConfigForSave.url;
         ttsVoiceId = gptsovitsConfigForSave.voiceId;
+    } else if (!localTtsEnabled && _loadedLocalTtsState !== 'none' && !_ttsConfigDirty) {
+        ttsModelUrl = '';
     } else if (!gptsovitsEnabled && _loadedGptSovitsState !== 'none' && !_ttsConfigDirty) {
         if (gptsovitsConfigForSave) {
             ttsVoiceId = `__gptsovits_disabled__|${gptsovitsConfigForSave.url}|${gptsovitsConfigForSave.voiceId}`;
@@ -1794,7 +2128,7 @@ async function save_button_down(e) {
         agentModelUrl, agentModelId, agentModelApiKey,
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
-        mcpToken, enableCustomApi, gptsovitsEnabled,
+        mcpToken, enableCustomApi, gptsovitsEnabled, localTtsEnabled,
         ...modelProviders
     };
 
@@ -2197,7 +2531,7 @@ function toggleModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ["conversation", 'summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts', 'gptsovits'];
+    const modelTypes = ["conversation", 'summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts', 'localtts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {
@@ -3352,6 +3686,88 @@ function initConnectivityLights() {
             );
         });
     });
+
+    // ===== Kokoro / Local TTS connectivity test button =====
+    const localTtsUrlInput = document.getElementById('localTtsApiUrl');
+    if (localTtsUrlInput) {
+        const localLight = document.createElement('span');
+        localLight.className = 'connectivity-light';
+        localLight.dataset.status = LightStatus.NOT_CONFIGURED;
+        localLight.title = 'Kokoro / Local TTS';
+
+        const localTestBtn = document.createElement('button');
+        localTestBtn.type = 'button';
+        localTestBtn.className = 'connectivity-mini-test-btn';
+        localTestBtn.textContent = window.t ? window.t('connectivity.testCore', '测试') : '测试';
+        localTestBtn.title = 'Kokoro / Local TTS 连通性测试';
+
+        const localRow = localTtsUrlInput.closest('.field-row');
+        if (localRow) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'connectivity-input-row';
+            localTtsUrlInput.parentNode.insertBefore(wrapper, localTtsUrlInput);
+            wrapper.appendChild(localLight);
+            wrapper.appendChild(localTtsUrlInput);
+            wrapper.appendChild(localTestBtn);
+        }
+
+        const localErrorMsg = document.createElement('span');
+        localErrorMsg.className = 'connectivity-error-msg';
+        localErrorMsg.style.display = 'none';
+        if (localRow) {
+            localRow.appendChild(localErrorMsg);
+        }
+
+        let localLastUrl = localTtsUrlInput.value.trim();
+        const updateLocalLightStatus = () => {
+            const url = localTtsUrlInput.value.trim();
+            if (!url) {
+                updateLightStatus(localLight, LightStatus.NOT_CONFIGURED);
+                updateErrorMessage(localErrorMsg, null, '');
+            } else if (url !== localLastUrl) {
+                updateLightStatus(localLight, LightStatus.UNTESTED);
+                updateErrorMessage(localErrorMsg, null, '');
+            } else if (localLight.dataset.status === LightStatus.NOT_CONFIGURED) {
+                updateLightStatus(localLight, LightStatus.UNTESTED);
+            }
+            localLastUrl = url;
+        };
+        updateLocalLightStatus();
+        localTtsUrlInput.addEventListener('input', updateLocalLightStatus);
+
+        localTestBtn.addEventListener('click', async () => {
+            const url = localTtsUrlInput.value.trim() || 'ws://127.0.0.1:50000';
+            const voiceId = document.getElementById('localTtsVoiceIdSelect')?.value || document.getElementById('ttsVoiceId')?.value || 'kokoro:zf_xiaobei';
+
+            localTestBtn.disabled = true;
+            localTestBtn.classList.add('testing');
+            updateLightStatus(localLight, LightStatus.TESTING);
+            updateErrorMessage(localErrorMsg, null, '');
+
+            try {
+                const resp = await fetch('/api/config/local_tts/test_connectivity', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_url: url, voice_id: voiceId, test_text: 'Local TTS test' }),
+                    signal: AbortSignal.timeout(15000),
+                });
+                const result = await resp.json();
+                if (result.success) {
+                    updateLightStatus(localLight, LightStatus.CONNECTED);
+                    updateErrorMessage(localErrorMsg, null, '');
+                } else {
+                    updateLightStatus(localLight, LightStatus.FAILED);
+                    updateErrorMessage(localErrorMsg, result.error_code || 'unknown', result.error || '连接失败');
+                }
+            } catch (error) {
+                updateLightStatus(localLight, LightStatus.FAILED);
+                updateErrorMessage(localErrorMsg, 'unknown', error.message || '连接失败');
+            } finally {
+                localTestBtn.disabled = false;
+                localTestBtn.classList.remove('testing');
+            }
+        });
+    }
 
     // ===== GPT-SoVITS connectivity test button =====
     const gsvUrlInput = document.getElementById('gptsovitsApiUrl');

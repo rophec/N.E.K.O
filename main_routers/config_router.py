@@ -858,6 +858,91 @@ async def get_api_providers_config():
         }
 
 
+def _is_loopback_host(host: str) -> bool:
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host in ("localhost",)
+
+
+@router.post("/local_tts/list_voices")
+async def list_local_tts_voices(request: Request):
+    from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
+    from urllib.parse import urlparse
+
+    try:
+        data = await request.json()
+        api_url = (data.get("api_url", "") or "").rstrip("/")
+        if not api_url:
+            return JSONResponse({"success": False, "error": "LOCAL_TTS_URL_REQUIRED"}, status_code=400)
+
+        parsed = urlparse(api_url)
+        if parsed.scheme not in ("ws", "wss", "http", "https") or not parsed.hostname:
+            return JSONResponse({"success": False, "error": "LOCAL_TTS_URL_INVALID"}, status_code=400)
+        if not _is_loopback_host(parsed.hostname):
+            return JSONResponse({"success": False, "error": "TTS_CUSTOM_URL_LOCALHOST_ONLY"}, status_code=400)
+
+        voices = await get_custom_tts_voices(api_url)
+        normalized = [
+            {
+                "id": item.get("voice_id") or item.get("raw_id") or "",
+                "name": item.get("name") or item.get("voice_id") or "",
+                "description": item.get("description") or "",
+                "version": item.get("version") or "local",
+            }
+            for item in voices
+            if (item.get("voice_id") or item.get("raw_id"))
+        ]
+        return {"success": True, "voices": normalized}
+    except CustomTTSVoiceFetchError as exc:
+        return {"success": False, "error": str(exc)[:200], "error_code": "TTS_CONNECTION_FAILED"}
+    except Exception as exc:
+        logger.error(f"获取 Local TTS 音色列表失败: {exc}")
+        return {"success": False, "error": str(exc)[:200], "error_code": "TTS_CONNECTION_FAILED"}
+
+
+@router.post("/local_tts/test_connectivity")
+async def test_local_tts_connectivity(request: Request):
+    import json as _json
+    from urllib.parse import urlparse
+    import websockets as _ws
+
+    try:
+        data = await request.json()
+        api_url = (data.get("api_url", "") or "ws://127.0.0.1:50000").rstrip("/")
+        voice_id = (data.get("voice_id", "") or "kokoro:zf_xiaobei").strip()
+        test_text = (data.get("test_text", "") or "连通性测试").strip()
+
+        parsed = urlparse(api_url)
+        if parsed.scheme not in ("ws", "wss") or not parsed.hostname:
+            return {"success": False, "error": "URL 格式无效", "error_code": "missing_params"}
+        if not _is_loopback_host(parsed.hostname):
+            return {"success": False, "error": "Local TTS 仅支持本地服务", "error_code": "connection_refused"}
+
+        ws_url = f"{api_url}/v1/audio/speech/stream"
+
+        async with asyncio.timeout(10):
+            async with _ws.connect(ws_url, ping_interval=None, max_size=10 * 1024 * 1024) as ws:
+                await ws.send(_json.dumps({"voice": voice_id, "speed": 1.0}))
+                await ws.send(_json.dumps({"text": test_text}))
+                await ws.send(_json.dumps({"event": "end"}))
+
+                first_response = await asyncio.wait_for(ws.recv(), timeout=10.0)
+                if isinstance(first_response, bytes) and len(first_response) > 0:
+                    return {"success": True}
+                return {"success": False, "error": "Local TTS 未返回音频数据", "error_code": "unknown"}
+
+    except (TimeoutError, asyncio.TimeoutError):
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except OSError as exc:
+        return {"success": False, "error": f"连接失败: {exc}", "error_code": "connection_refused"}
+    except Exception as exc:
+        logger.error(f"Local TTS 连通性测试失败: {exc}")
+        return {"success": False, "error": str(exc)[:200], "error_code": "unknown"}
+
+
 @router.post("/gptsovits/list_voices")
 async def list_gptsovits_voices(request: Request):
     """代理请求到 GPT-SoVITS v3 API 获取可用语音配置列表"""

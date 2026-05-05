@@ -71,6 +71,10 @@ async def get_custom_tts_voices(base_url: str, provider: str = 'gptsovits'):
         raise CustomTTSVoiceFetchError(f"Unsupported custom TTS provider: {provider}")
 
     base_url = (base_url or "").strip().rstrip("/")
+    if base_url.startswith(("ws://", "wss://")):
+        http_base = _custom_tts_http_base(base_url)
+        return await _get_local_tts_voices(http_base)
+
     timeout = aiohttp.ClientTimeout(total=5)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -106,6 +110,59 @@ async def get_custom_tts_voices(base_url: str, provider: str = 'gptsovits'):
             'version': v.get('version', ''),
         })
 
+    return voices
+
+
+def _custom_tts_http_base(base_url: str) -> str:
+    normalized = (base_url or "").strip().rstrip("/")
+    if normalized.startswith("ws://"):
+        return "http://" + normalized[5:]
+    if normalized.startswith("wss://"):
+        return "https://" + normalized[6:]
+    return normalized
+
+
+async def _get_local_tts_voices(http_base: str) -> list[dict]:
+    timeout = aiohttp.ClientTimeout(total=5)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"{http_base}/v1/models") as resp:
+                if resp.status >= 400:
+                    text = await resp.text()
+                    raise CustomTTSVoiceFetchError(f"HTTP {resp.status}: {text[:200]}")
+                payload = await resp.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
+        raise CustomTTSVoiceFetchError(str(e)) from e
+
+    rows = payload.get("data", []) if isinstance(payload, dict) else []
+    voices = []
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            logger.warning("Local TTS /v1/models 绗?%d 椤逛笉鏄璞★紝宸茶烦杩? %s", idx, type(row).__name__)
+            continue
+
+        raw_id = str(row.get("id") or "").strip()
+        if not raw_id or ":" not in raw_id:
+            continue
+
+        display_name = str(row.get("name") or raw_id.split(":", 1)[1]).strip() or raw_id
+        description = str(row.get("description") or "").strip()
+        voices.append({
+            "voice_id": raw_id,
+            "raw_id": raw_id,
+            "name": display_name,
+            "description": description,
+            "version": "local",
+        })
+
+    if not voices:
+        voices.append({
+            "voice_id": "kokoro:default",
+            "raw_id": "kokoro:default",
+            "name": "default",
+            "description": "Fallback Kokoro voice",
+            "version": "local",
+        })
     return voices
 
 
@@ -2882,13 +2939,17 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         tts_config = cm.get_model_api_config('tts_custom')
         if tts_config.get('is_custom'):
             base_url = tts_config.get('base_url') or ''
-            # GPT-SoVITS / local CosyVoice 需要用户显式启用 gptsovitsEnabled 开关，
-            # 仅 enableCustomApi + http URL 不应自动路由到 GPT-SoVITS。
+            # HTTP/HTTPS 自定义 TTS 仍要求用户显式启用 gptsovitsEnabled，
+            # 避免普通自定义 API URL 被误判成 GPT-SoVITS。
+            #
+            # 但本地 WebSocket TTS（如 local_tts_server / Kokoro）不应依赖
+            # GPT-SoVITS 开关；用户只要填写 ws/wss 地址，就应该直接路由到
+            # 本地双工流 worker。
             core_cfg = cm.get_core_config()
             gsv_enabled = core_cfg.get('GPTSOVITS_ENABLED', False)
             if gsv_enabled and (base_url.startswith('http://') or base_url.startswith('https://')):
                 return gptsovits_tts_worker, None, 'gptsovits'
-            if gsv_enabled and (base_url.startswith('ws://') or base_url.startswith('wss://')):
+            if base_url.startswith('ws://') or base_url.startswith('wss://'):
                 return local_cosyvoice_worker, None, 'local_cosyvoice'
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
@@ -2965,14 +3026,14 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     # OpenAI 兼容端点
     WS_URL = f'{ws_base}/v1/audio/speech/stream'
     
-    # 从 voice_id 解析 voice 和 speed（格式：voice 或 voice:speed）
-    voice_name = voice_id or "中文女"
+    # 从 voice_id 解析 voice 和 speed（格式：voice、voice:speed、model:voice、model:voice:speed）
+    voice_name = (voice_id or "").strip() or os.getenv("LOCAL_TTS_DEFAULT_VOICE", "kokoro:default")
     speech_speed = 1.0
-    if voice_id and ':' in voice_id:
-        parts = voice_id.split(':', 1)
-        voice_name = parts[0]
+    if ':' in voice_name:
+        parts = voice_name.rsplit(':', 1)
         try:
             speech_speed = float(parts[1])
+            voice_name = parts[0]
         except ValueError:
             pass
     
