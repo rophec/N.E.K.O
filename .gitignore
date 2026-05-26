@@ -96,6 +96,7 @@ dist/
 build/
 *.tsbuildinfo
 static/react/neko-chat/
+static/react/card-forge/
 
 # Python venvs and wheels
 *.egg-info/
@@ -118,6 +119,7 @@ static/neko/*
 static/kemomimi/*
 static/yui/*
 static/react/neko-chat/*
+static/react/card-forge/*
 打包说明.txt
 runtime_hook_inflect.py
 backup/

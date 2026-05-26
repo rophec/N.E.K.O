@@ -1,3 +1,8 @@
+// battle-arena 端是铸造卡的"只读消费者"。
+// 写入（createForgedBrawlCard）只在 frontend/card-forge 里发生；
+// 这里只保留组卡/战斗需要的 schema 常量、normalize 工具，以及把 inventory load/save/delete
+// 桥接到 forge_server (port 3002) 的 HTTP API。
+
 export const FORGED_BRAWL_CARDS_STORAGE_KEY = 'neko-brawl-forged-cards'
 
 export const BRAWL_ATTRS = [
@@ -25,56 +30,12 @@ export const BRAWL_CARD_EFFECT_POOL = [
   { code: 'C013', name: '完全⭐奇迹', attrId: 'passion', cost: 4, type: '控制', mainText: '对Boss造成3点伤害，并封锁boss下回合行动', comboText: '自身获得2点护盾', main: { damage: 3, skipBossNext: true }, combo: { shieldSelf: 2 } },
 ]
 
-// 临时事件池：真实 fact / 自身故事系统不可用时，先用硬编码事件引子占位。
-// 后续接入真实“自身故事”后，只需要替换传入 createForgedBrawlCard 的 event 来源。
-//
-// TODO: [真实奇遇铸卡接入]
-// 当前 Forged 卡是原型实现，不代表最终铸卡规则。
-// 真正版本中，奇遇事件应来自 NEKO 的 active facts / 自身故事 / 记忆系统，而不是本文件的临时事件池。
-// 注意 facts 的真实落盘位置和用户电脑、角色名、NEKO 配置强相关，不能在前端或卡牌逻辑里硬编码绝对路径。
-// 推荐由后端通过配置项、环境变量或 NEKO 既有设置解析 facts 位置，再把选中的事件 storyLead 传给 createForgedBrawlCard。
-// 当前暂定卡牌规则如下：
-// 1. 基础卡效果从 C001-C013 中选择；name、cost、type、主属性、主效果、Combo 效果跟随基础卡编号。
-// 2. Forged 卡名保留 "(Forged)" 后缀，便于在组卡页面和战斗日志中识别来源。
-// 3. Combo 属性目前随机；后续可改为由 facts 内容、LLM 评估或规则表决定。
-// 4. storyLead 是 fact 抽取出的“故事引子”；story 是卡牌专属小故事。
-//    storyLead 单独保存供鉴赏查看，不再把原始引子硬拼到故事正文里，避免破坏“第三人称叙事 + 末句第一人称台词”的格式。
-// 5. TODO: [LLM 卡牌故事生成]
-//    接入 LLM 后，只用 storyLead + 已 Roll 出的主属性作为提示词；
-//    卡名/羁绊名/事件标题/编号/费用/类型/效果/Combo 属性只用于规则和界面展示，不能参与故事生成。
-//    在不改变原有记忆基调的前提下生成卡牌专属小故事，再写入 story / summary。
-//    当前后端故事接口不可用时，前端只生成明确标注的临时占位故事，不能伪装为正式 LLM 故事。
-// 6. 持久化目前使用 localStorage，后续需要确认是否写入角色/账户级存储，以及是否允许同一 fact 重复铸造。
-const TEMP_FORGED_CARD_EVENTS = [
-  { name: '临时练习室事件', storyLead: '午后练习室里，猫娘把一次差点失败的配合记成了新的战斗灵感。' },
-  { name: '临时便利店事件', storyLead: '深夜便利店门口，一句没说出口的鼓励被锻造成了卡牌的底色。' },
-  { name: '临时屋檐事件', storyLead: '雨后的屋檐下，短暂的并肩等待让这张卡拥有了奇怪的默契。' },
-  { name: '临时贩卖机事件', storyLead: '自动贩卖机前的最后一罐饮料，被当作胜利前的小小约定保存下来。' },
-  { name: '临时地铁站事件', storyLead: '走错路的地铁站里，绕远的时间反而给了这张卡新的 Combo 方向。' },
-  { name: '临时手电光事件', storyLead: '停电时借来的手电光，把普通回忆照成了可以出牌的奇遇。' },
-]
-
 function pickRandom(list) {
   return list[Math.floor(Math.random() * list.length)]
 }
 
 function normalizeEffect(effect = {}) {
   return { ...effect }
-}
-
-function getEventStoryLead(event = {}) {
-  if (typeof event.storyLead === 'string' && event.storyLead.trim()) return event.storyLead.trim()
-  if (typeof event.factText === 'string' && event.factText.trim()) return event.factText.trim()
-  if (typeof event.text === 'string' && event.text.trim()) return event.text.trim()
-  if (typeof event.summary === 'string' && event.summary.trim()) return event.summary.trim()
-  return pickRandom(TEMP_FORGED_CARD_EVENTS).storyLead
-}
-
-function getEventName(event = {}, storyLead = '') {
-  if (typeof event.name === 'string' && event.name.trim()) return event.name.trim()
-  if (typeof event.sourceEventName === 'string' && event.sourceEventName.trim()) return event.sourceEventName.trim()
-  if (storyLead) return storyLead.length > 24 ? `${storyLead.slice(0, 24)}…` : storyLead
-  return pickRandom(TEMP_FORGED_CARD_EVENTS).name
 }
 
 function buildTemporaryForgedStory(storyLead, card = {}) {
@@ -93,47 +54,6 @@ export function composeForgedCardStory(storyLead, generatedStory, card = {}) {
   const story = typeof generatedStory === 'string' ? generatedStory.trim() : ''
   if (!story) return buildTemporaryForgedStory(lead, card)
   return story
-}
-
-export function createForgedBrawlCard(event = {}, options = {}) {
-  const base = options.baseCode
-    ? BRAWL_CARD_EFFECT_POOL.find(card => card.code === options.baseCode)
-    : pickRandom(BRAWL_CARD_EFFECT_POOL)
-  const source = base || pickRandom(BRAWL_CARD_EFFECT_POOL)
-  const comboAttr = pickRandom(BRAWL_ATTRS)
-  const id = `forged-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const storyLead = getEventStoryLead(event)
-  const sourceEventName = getEventName(event, storyLead)
-  const story = composeForgedCardStory(storyLead, event.story || event.generatedStory, source)
-
-  return {
-    id,
-    code: `${source.code}-F-${id.slice(-6)}`,
-    baseCode: source.code,
-    forged: true,
-    name: `${source.name}(Forged)`,
-    title: `${source.name}(Forged)`,
-    attrId: source.attrId,
-    attrName: attrNameById(source.attrId),
-    comboAttrId: comboAttr.id,
-    comboAttrName: comboAttr.name,
-    cost: source.cost,
-    type: source.type,
-    mainText: source.mainText,
-    comboText: source.comboText,
-    main: normalizeEffect(source.main),
-    combo: normalizeEffect(source.combo),
-    story,
-    summary: story,
-    storyLead,
-    sourceFactId: event.sourceFactId || event.factId || null,
-    sourceFactHash: event.sourceFactHash || event.factHash || null,
-    sourceCharacter: event.sourceCharacter || null,
-    sourceKind: event.sourceKind || (event.sourceFactId || event.factId ? 'fact' : 'temporary'),
-    sourceEventName,
-    storyGenerationStatus: event.story || event.generatedStory ? 'ready' : 'pending-llm',
-    forgedAt: Date.now(),
-  }
 }
 
 export function normalizeForgedBrawlCard(card) {
@@ -178,31 +98,44 @@ export function normalizeForgedBrawlCard(card) {
   }
 }
 
-export function loadForgedBrawlCards() {
-  if (typeof window === 'undefined') return []
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP 桥接：forge_server (port 3002)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const forgeBase = () => {
+  if (typeof window !== 'undefined' && window.NEKO_FORGE_API_BASE) {
+    return String(window.NEKO_FORGE_API_BASE).replace(/\/+$/, '')
+  }
+  // dev: vite proxy /forge → 3002（battle-arena vite.config.js 已配置）
+  return ''
+}
+
+/** 异步从 forge_server 拉当前猫娘的铸造卡仓库。 */
+export async function loadForgedBrawlCards(character) {
+  if (typeof window === 'undefined' || !character) return []
   try {
-    const raw = JSON.parse(window.localStorage.getItem(FORGED_BRAWL_CARDS_STORAGE_KEY) || '[]')
-    if (!Array.isArray(raw)) return []
-    return raw.map(normalizeForgedBrawlCard).filter(Boolean)
+    const res = await fetch(`${forgeBase()}/forge/inventory?character=${encodeURIComponent(character)}`)
+    if (!res.ok) return []
+    const data = await res.json().catch(() => ({}))
+    const cards = Array.isArray(data?.cards) ? data.cards : []
+    return cards.map(normalizeForgedBrawlCard).filter(Boolean)
   } catch {
     return []
   }
 }
 
-export function saveForgedBrawlCards(cards) {
-  if (typeof window === 'undefined') return
-  window.localStorage.setItem(
-    FORGED_BRAWL_CARDS_STORAGE_KEY,
-    JSON.stringify((Array.isArray(cards) ? cards : []).map(normalizeForgedBrawlCard).filter(Boolean))
-  )
-}
-
-export function deleteForgedBrawlCard(cardRef) {
-  if (!cardRef) return loadForgedBrawlCards()
-  const next = loadForgedBrawlCards().filter(card => (
-    card.id !== cardRef.id &&
-    card.code !== cardRef.code
-  ))
-  saveForgedBrawlCards(next)
-  return next
+/**
+ * 兼容旧调用：异步删除一张铸造卡并返回最新仓库。
+ * 调用方需要传入 character；不传时只本地过滤当前列表（不落盘）。
+ */
+export async function deleteForgedBrawlCard(cardRef, character) {
+  if (!cardRef?.id || !character) return loadForgedBrawlCards(character)
+  try {
+    await fetch(`${forgeBase()}/forge/inventory/${encodeURIComponent(cardRef.id)}?character=${encodeURIComponent(character)}`, {
+      method: 'DELETE',
+    })
+  } catch {
+    // 网络失败时仍重新拉一次仓库，UI 自洽
+  }
+  return loadForgedBrawlCards(character)
 }

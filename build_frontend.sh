@@ -76,5 +76,27 @@ if [ ! -f "$RC_DIST/neko-chat-window.iife.js" ]; then
 fi
 echo "[build_frontend] react-neko-chat done: $RC_DIST"
 
+# --- 3. Card Forge (React) ---
+CF_DIR="$SCRIPT_DIR/frontend/card-forge"
+CF_DIST="$SCRIPT_DIR/static/react/card-forge"
+
+if [ ! -d "$CF_DIR" ]; then
+  echo "[build_frontend] card-forge dir not found: $CF_DIR" >&2
+  exit 1
+fi
+
+echo "[build_frontend] building card-forge..."
+(
+  cd "$CF_DIR"
+  npm ci
+  npm run build
+)
+
+if [ ! -f "$CF_DIST/card-forge.iife.js" ]; then
+  echo "[build_frontend] card-forge build output missing: $CF_DIST/card-forge.iife.js" >&2
+  exit 1
+fi
+echo "[build_frontend] card-forge done: $CF_DIST"
+
 echo ""
 echo "[build_frontend] all frontend projects built successfully."

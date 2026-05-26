@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>N.E.K.O · 卡牌铸造</title>
+    <link rel="stylesheet" href="/static/react/card-forge/card-forge.css?v={{ card_forge_asset_version | default('0') }}">
+    <style>
+        html, body { margin: 0; padding: 0; min-height: 100vh; background: #0a0814; }
+        body { overflow-x: hidden; }
+    </style>
+</head>
+<body>
+    <div id="card-forge-root"></div>
+    <script>
+        // forge_server (port 3002) base URL；如果主应用同源反代了 /forge，可以改为空串。
+        window.NEKO_FORGE_API_BASE = "http://localhost:3002";
+    </script>
+    <script src="/static/react/card-forge/card-forge.iife.js?v={{ card_forge_asset_version | default('0') }}"></script>
+</body>
+</html>

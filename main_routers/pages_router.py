@@ -54,6 +54,12 @@ _REACT_CHAT_ASSET_VERSION_PATHS = (
 )
 _REACT_CHAT_ASSET_CACHE_TTL = 30.0
 _react_chat_asset_version_cache: tuple[float, str] = (0.0, "0")
+_CARD_FORGE_ASSET_VERSION_PATHS = (
+    _PROJECT_ROOT / "static/react/card-forge/card-forge.css",
+    _PROJECT_ROOT / "static/react/card-forge/card-forge.iife.js",
+)
+_CARD_FORGE_ASSET_CACHE_TTL = 30.0
+_card_forge_asset_version_cache: tuple[float, str] = (0.0, "0")
 
 
 def _vrm_defaults_ctx() -> dict:
@@ -102,6 +108,26 @@ def _react_chat_assets_ctx() -> dict:
     version = str(latest_mtime or 0)
     _react_chat_asset_version_cache = (now, version)
     return {"react_chat_asset_version": version}
+
+
+def _card_forge_assets_ctx() -> dict:
+    """返回 card-forge IIFE 资源的统一缓存版本号。"""
+    global _card_forge_asset_version_cache
+    now = time.monotonic()
+    cached_at, cached_version = _card_forge_asset_version_cache
+    if now - cached_at < _CARD_FORGE_ASSET_CACHE_TTL:
+        return {"card_forge_asset_version": cached_version}
+
+    latest_mtime = 0
+    for path in _CARD_FORGE_ASSET_VERSION_PATHS:
+        try:
+            latest_mtime = max(latest_mtime, int(path.stat().st_mtime))
+        except OSError:
+            continue
+
+    version = str(latest_mtime or 0)
+    _card_forge_asset_version_cache = (now, version)
+    return {"card_forge_asset_version": version}
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -281,6 +307,21 @@ async def get_card_maker_page(request: Request):
         "request": request,
         **_vrm_defaults_ctx(),
         **_static_assets_ctx(),
+    })
+
+
+@router.get("/card_forge", response_class=HTMLResponse)
+async def get_card_forge_page(request: Request):
+    """N.E.K.O 卡牌铸造独立页面（IIFE 加载 frontend/card-forge 编译产物）。
+
+    页面侧通过 ``window.NEKO_FORGE_API_BASE`` 找到 ``local_server/forge_server``
+    （默认 ``http://localhost:3002``）。后端 forge_server 必须独立启动；用户也可
+    跑 ``python start_card_forge.py`` 一次拉起。
+    """
+    templates = get_templates()
+    return templates.TemplateResponse("templates/card_forge.html", {
+        "request": request,
+        **_card_forge_assets_ctx(),
     })
 
 

@@ -2,7 +2,12 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Sparkles, Swords, Zap, Heart, Wind, Flame, Snowflake, Star, RotateCcw, SkipForward, X, Combine, ArrowLeft, Shield, Activity, Target, Timer, BookOpen, Layers } from 'lucide-react'
 import NewBattleDuelUI from './neko-brawl/NewBattleDuelUI'
-import { loadForgedBrawlCards } from '../data/forgedBrawlCards'
+import { normalizeForgedBrawlCard } from '../data/forgedBrawlCards'
+
+// 模块级别的 forged 卡牌池快照：CardGamePanel mount 时由 props 注入（来自 forge_server
+// 异步加载结果，BattleArena 顶层维护）。同步签名的 makeCard / getAvailableCardPool 通过
+// 闭包读这个变量，避免把"卡组生成"逻辑全部异步化的大型重构。
+let _forgedPoolSnapshot = []
 
 // ─────────────────────────────────────────────────────────────────
 // 卡牌属性定义
@@ -121,8 +126,7 @@ const SAVED_DECK_STORAGE_KEY = 'neko-brawl-deck'
 
 let cardIdCounter = 0
 function getAvailableCardPool() {
-  const forgedCards = loadForgedBrawlCards()
-  return [...CARD_POOL, ...forgedCards]
+  return [...CARD_POOL, ..._forgedPoolSnapshot]
 }
 
 function makeCardFromDefinition(def) {
@@ -452,8 +456,11 @@ function createInitialState() {
 // ─────────────────────────────────────────────────────────────────
 // 主组件
 // ─────────────────────────────────────────────────────────────────
-export default function CardGamePanel({ onClose, nekoName, nekoAvatar, temporaryBgmEnabled = true, onToggleTemporaryBgm }) {
-  const cardReferencePool = useMemo(() => getAvailableCardPool(), [])
+export default function CardGamePanel({ onClose, nekoName, nekoAvatar, forgedCards = [], temporaryBgmEnabled = true, onToggleTemporaryBgm }) {
+  // forgedCards 由 BattleArena 顶层从 forge_server 异步拉取后注入。
+  // mount 时同步进模块级 _forgedPoolSnapshot，让 makeCard 等同步签名能读到最新池。
+  _forgedPoolSnapshot = (forgedCards || []).map(normalizeForgedBrawlCard).filter(Boolean)
+  const cardReferencePool = useMemo(() => getAvailableCardPool(), [forgedCards])
   // 游戏配置
   const DRAW_COUNT = 5
   const HAND_LIMIT = 6
