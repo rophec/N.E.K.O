@@ -129,6 +129,82 @@ function New-MinimalVenv {
     return $venvPython
 }
 
+function Get-PythonBasePrefix {
+    param([Parameter(Mandatory = $true)][string]$PythonExe)
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & $PythonExe -c "import sys; print(sys.base_prefix)" 2>&1
+        if ($LASTEXITCODE -ne 0 -or -not $output) {
+            throw "Unable to query Python base prefix from $PythonExe`: $($output | Out-String)"
+        }
+        return (($output | Select-Object -Last 1) | Out-String).Trim()
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+}
+
+function Copy-PortablePythonRuntime {
+    param([Parameter(Mandatory = $true)][string]$VenvPython)
+
+    $runtimeRoot = Join-Path $packageRoot ".python-runtime"
+    if (Test-Path $runtimeRoot) {
+        Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
+
+    $sourceRoot = if ($env:LOCAL_TTS_PACKAGE_PYTHON_HOME) {
+        $env:LOCAL_TTS_PACKAGE_PYTHON_HOME
+    } else {
+        Get-PythonBasePrefix -PythonExe $VenvPython
+    }
+    if (-not (Test-Path (Join-Path $sourceRoot "python.exe"))) {
+        throw "Cannot package portable Python runtime; python.exe was not found under $sourceRoot"
+    }
+
+    foreach ($dirName in @("DLLs", "Lib", "libs")) {
+        $sourceDir = Join-Path $sourceRoot $dirName
+        if (Test-Path $sourceDir) {
+            Copy-Tree -Source $sourceDir -Destination (Join-Path $runtimeRoot $dirName) -Exclude @("__pycache__", "*.pyc", "*.pyo")
+        }
+    }
+
+    foreach ($filePattern in @("python.exe", "pythonw.exe", "python3.dll", "python311.dll", "vcruntime*.dll", "LICENSE.txt")) {
+        Get-ChildItem -LiteralPath $sourceRoot -Filter $filePattern -File -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                Copy-Item -LiteralPath $_.FullName -Destination $runtimeRoot -Force
+            }
+    }
+
+    if (-not (Test-Path (Join-Path $runtimeRoot "python.exe"))) {
+        throw "Portable Python runtime copy is incomplete: python.exe is missing."
+    }
+}
+
+function Repair-PackagedVenvTextPaths {
+    $venvRoot = Join-Path $packageRoot ".venv-local-tts"
+    $pyvenvCfg = Join-Path $venvRoot "pyvenv.cfg"
+    if (Test-Path $pyvenvCfg) {
+        $cfg = @(
+            "home = ..\.python-runtime",
+            "implementation = CPython",
+            "version_info = 3.11.9",
+            "include-system-site-packages = false"
+        ) -join "`r`n"
+        Set-Content -Path $pyvenvCfg -Value $cfg -Encoding ASCII
+    }
+
+    foreach ($activateScript in Get-ChildItem -LiteralPath (Join-Path $venvRoot "Scripts") -Filter "activate*" -File -ErrorAction SilentlyContinue) {
+        Remove-Item -LiteralPath $activateScript.FullName -Force
+    }
+
+    $num2WordsScript = Join-Path $venvRoot "Scripts\num2words"
+    if (Test-Path $num2WordsScript) {
+        Remove-Item -LiteralPath $num2WordsScript -Force
+    }
+}
+
 function Test-SupportedKokoroModelDir {
     param([Parameter(Mandatory = $true)][System.IO.DirectoryInfo]$Directory)
 
@@ -170,7 +246,9 @@ if (-not $SkipModels) {
 }
 
 if (-not $SkipEnv) {
-    New-MinimalVenv | Out-Null
+    $packagedVenvPython = New-MinimalVenv
+    Copy-PortablePythonRuntime -VenvPython $packagedVenvPython
+    Repair-PackagedVenvTextPaths
 }
 
 $rootBat = @'
@@ -188,6 +266,7 @@ $readme += ''
 $readme += 'This package contains a standalone Kokoro local TTS server.'
 if (-not $SkipEnv) {
     $readme += 'It includes a bundled Python environment for offline start.'
+    $readme += 'It also includes a portable Python runtime, so it does not depend on the build machine Python path.'
 } else {
     $readme += 'This build does not include a bundled Python environment.'
 }

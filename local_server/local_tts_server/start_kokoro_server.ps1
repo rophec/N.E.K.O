@@ -15,6 +15,29 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
 Set-Location $repoRoot
 
 $script:uvExe = $null
+$portablePythonRoot = Join-Path $repoRoot ".python-runtime"
+$portablePython = Join-Path $portablePythonRoot "python.exe"
+$localTtsVenv = if ($env:LOCAL_TTS_VENV_DIR) { $env:LOCAL_TTS_VENV_DIR } else { Join-Path $repoRoot ".venv-local-tts" }
+$venvPython = Join-Path $localTtsVenv "Scripts\python.exe"
+$venvSitePackages = Join-Path $localTtsVenv "Lib\site-packages"
+$serverPython = $venvPython
+
+if (Test-Path $portablePython) {
+    $serverPython = $portablePython
+    $runtimePathParts = @(
+        $portablePythonRoot,
+        (Join-Path $portablePythonRoot "DLLs"),
+        (Join-Path $localTtsVenv "Scripts")
+    )
+    $env:PATH = (($runtimePathParts | Where-Object { Test-Path $_ }) + @($env:PATH)) -join ";"
+    if (Test-Path $venvSitePackages) {
+        if ($env:PYTHONPATH) {
+            $env:PYTHONPATH = "$venvSitePackages;$env:PYTHONPATH"
+        } else {
+            $env:PYTHONPATH = $venvSitePackages
+        }
+    }
+}
 
 function Get-UvExe {
     if ($script:uvExe) {
@@ -192,8 +215,6 @@ if (-not $env:LOCAL_TTS_PORT) {
     $env:LOCAL_TTS_PORT = "50000"
 }
 
-$localTtsVenv = if ($env:LOCAL_TTS_VENV_DIR) { $env:LOCAL_TTS_VENV_DIR } else { Join-Path $repoRoot ".venv-local-tts" }
-$venvPython = Join-Path $localTtsVenv "Scripts\python.exe"
 $cudaInstallFailedMarker = Join-Path $localTtsVenv ".cuda_torch_install_failed"
 
 function Invoke-UvChecked {
@@ -217,14 +238,14 @@ function Invoke-UvChecked {
 function Test-VenvPython {
     param([string]$Code)
 
-    if (-not (Test-Path $venvPython)) {
-        return [pscustomobject]@{ Ok = $false; Text = "venv python missing" }
+    if (-not (Test-Path $serverPython)) {
+        return [pscustomobject]@{ Ok = $false; Text = "local TTS python missing" }
     }
 
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        $output = & $venvPython -c $Code 2>&1
+        $output = & $serverPython -c $Code 2>&1
         $exitCode = $LASTEXITCODE
         return [pscustomobject]@{
             Ok = ($exitCode -eq 0)
@@ -337,6 +358,9 @@ function Ensure-CudaTorchIfNeeded {
 }
 
 Ensure-LocalTtsVenv
+if ((Test-Path $portablePython) -and -not (Test-Path $venvSitePackages)) {
+    throw "Bundled portable Python exists, but .venv-local-tts\Lib\site-packages is missing. Rebuild the package environment or restore .venv-local-tts."
+}
 Ensure-CudaTorchIfNeeded
 Ensure-LocalTtsCommonDeps
 
@@ -499,7 +523,7 @@ Write-Host "Voice     : $env:LOCAL_TTS_DEFAULT_VOICE"
 Write-Host "Mode      : $env:LOCAL_TTS_SYNTHESIS_MODE"
 Write-Host "Device    : $env:LOCAL_TTS_KOKORO_DEVICE"
 Write-Host "Warmup    : on_connect=$env:LOCAL_TTS_WARMUP_ON_CONNECT startup=$env:LOCAL_TTS_STARTUP_WARMUP"
-Write-Host "Runtime   : uv isolated venv at $localTtsVenv"
+Write-Host "Runtime   : $serverPython"
 Write-Host "Launcher  : $launcherPython"
 Write-Host "UV Cache  : $env:UV_CACHE_DIR"
 Write-Host "WS URL    : $wsUrl"
@@ -520,7 +544,7 @@ if ($RunServer) {
         "--host", $env:LOCAL_TTS_HOST,
         "--port", $env:LOCAL_TTS_PORT
     )
-    & $venvPython @serverRunArgs
+    & $serverPython @serverRunArgs
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0 -and -not (Test-UserInterruptExitCode $exitCode)) {
         Write-Host ""
@@ -543,7 +567,7 @@ if ($ServerOnly) {
         "--host", $env:LOCAL_TTS_HOST,
         "--port", $env:LOCAL_TTS_PORT
     )
-    & $venvPython @serverOnlyRunArgs
+    & $serverPython @serverOnlyRunArgs
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0 -and -not (Test-UserInterruptExitCode $exitCode)) {
         Write-Host ""
