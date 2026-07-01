@@ -17,9 +17,10 @@ from main_logic import tts_client
 
 
 class _FakeConfigManager:
-    def __init__(self, core_config, *, is_custom=False):
+    def __init__(self, core_config, *, is_custom=False, base_url=""):
         self._core_config = core_config
         self._is_custom = is_custom
+        self._base_url = base_url
 
     def get_core_config(self):
         return self._core_config
@@ -30,7 +31,7 @@ class _FakeConfigManager:
         return default if default is not None else {}
 
     def get_model_api_config(self, model_type):
-        return {"is_custom": self._is_custom, "base_url": "", "model": "", "api_key": ""}
+        return {"is_custom": self._is_custom, "base_url": self._base_url, "model": "", "api_key": ""}
 
     def get_voices_for_current_api(self, for_listing=False):
         return {}
@@ -114,3 +115,23 @@ def test_string_falsey_enabled_not_misread_as_truthy(monkeypatch):
     )
 
     assert provider_key != "gptsovits"
+
+
+def test_custom_ws_tts_selects_local_cosyvoice(monkeypatch):
+    """Custom TTS with a ws:// endpoint is the local lightweight TTS path
+    (Kokoro/MeloTTS/ChatTTS via the local OpenAI-compatible WebSocket server),
+    not GPT-SoVITS and not the remote CosyVoice clone fallback."""
+    cm = _FakeConfigManager(
+        core_config=_base_core_config(GPTSOVITS_ENABLED=False),
+        is_custom=True,
+        base_url="ws://127.0.0.1:50000",
+    )
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
+
+    worker, api_key_override, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen", has_custom_voice=False, voice_id="kokoro:zf_001",
+    )
+
+    assert worker is tts_client.local_cosyvoice_worker
+    assert api_key_override is None
+    assert provider_key == "local_cosyvoice"

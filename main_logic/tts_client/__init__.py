@@ -332,6 +332,13 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     # GPT-SoVITS（is_custom + GPTSOVITS_ENABLED）已由顶部 tts_provider_registry
     # 以相同 gate 优先返回，此处不再重复判定（原 fallthrough 分支已并入注册表）。
+    try:
+        tts_config = cm.get_model_api_config('tts_custom')
+        base_url = (tts_config.get('base_url') or '').strip()
+        if tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://')):
+            return local_cosyvoice_worker, None, 'local_cosyvoice'
+    except Exception as e:
+        logger.warning(f'TTS调度器检查报告:{e}')
 
     # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
     # 必须同时有有效的 voice_id 且不是免费预设音色，否则 fallthrough 到默认 TTS
