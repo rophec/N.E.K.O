@@ -38,6 +38,9 @@ PROVIDER_TO_KEY_FIELD: dict[str, str] = {
     "silicon": "assistApiKeySilicon",
     "gemini": "assistApiKeyGemini",
     "kimi": "assistApiKeyKimi",
+    "kimi_code": "assistApiKeyKimiCode",
+    "mimo": "assistApiKeyMimo",
+    "mimo_token_plan": "assistApiKeyMimoTokenPlan",
 }
 
 # Canonical set of key fields the UI surfaces — any field in api_keys.json that

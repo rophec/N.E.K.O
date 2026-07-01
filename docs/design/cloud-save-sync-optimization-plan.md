@@ -85,16 +85,30 @@
 
 执行顺序：
 
-1. `bootstrap_local_cloudsave_environment()`。
-2. `CloudSaveManager.import_if_needed(reason="launcher_phase0_prelaunch_import")`。
-3. root mode 切回 `normal`。
-4. 发送 `cloudsave_bootstrap_ready` 事件。
+1. launcher 先在 fence 外校验本机 `state/` 目录可创建/可写。
+2. 进入 `cloud_apply_fence(mode="bootstrap_importing")`。
+3. `bootstrap_local_cloudsave_environment()` 创建/校验 `state/` 与 `cloudsave/` 基础骨架，并执行 legacy/recovery 启动逻辑。
+4. `CloudSaveManager.import_if_needed(reason="launcher_phase0_prelaunch_import")`，真正应用快照仍在 fence 内执行。
+5. root mode 切回 `normal`。
+6. 发送 `cloudsave_bootstrap_ready` 事件。
 
 事件脱敏契约：`import_result` 只允许：
 
 - `success`
 - `action`
 - `requested_reason`
+
+若本机 `state/` 初始化失败（例如 `%LOCALAPPDATA%/N.E.K.O`、其 `state/` 或 state JSON 被同名文件/目录占用、不可写或被安全软件拦截），launcher 不得再尝试写入 `maintenance_readonly`，因为这会再次依赖同一个不可用的 `state/`。
+
+当前降级口径：
+
+- 设置 `NEKO_CLOUDSAVE_DISABLED=local_state_unavailable`，本次会话禁用 cloudsave bootstrap/import/export 与 write fence。
+- main_server / memory_server 继续按本地运行时真源启动，不自动应用 Steam `cloudsave/` 快照。
+- 云存档接口与页面应显示 provider unavailable / disabled，不再读取坏的本机 state。
+- 普通角色、配置、记忆等本地运行时写入不应被 cloudsave state 问题拖垮。
+- 存储位置只读状态接口可继续返回 disabled 诊断；需要写 `root_state` / migration checkpoint 的存储迁移动作必须拒绝执行，避免坏 `state/` 再污染迁移控制面。
+
+关闭 Steam Cloud 不会影响该本机状态目录初始化；降级只是保证用户能先启动应用，仍应提示用户修复 `anchor_root` / `local_state_dir` / `failed_path` 指向的本机路径。
 
 ### 4.2 main_server 直启兜底
 
@@ -178,9 +192,9 @@
 
 ## 6. source/frozen 与 bundle helper 边界
 
-- `download_cloudsave_bundle_from_steam()` / `upload_cloudsave_bundle_to_steam()` 在非 source launch 下直接返回 `reason = "not_source_launch"`。
-- source launch 且平台支持时，才走 RemoteStorage bundle helper。
-- 打包运行主路径仍然是 Steam Auto-Cloud 同步 `cloudsave/`。
+- `download_cloudsave_bundle_from_steam()` / `upload_cloudsave_bundle_to_steam()` 在 source launch 或 frozen/packaged launch 下都可走 RemoteStorage bundle helper。
+- 非 source 且非 packaged 的普通 Python 进程仍直接返回 `reason = "not_source_launch"`，避免测试、脚本和非发行态误初始化 Steam。
+- 打包运行保留 Steam Auto-Cloud 同步 `cloudsave/`，同时使用 RemoteStorage bundle 作为跨设备兜底；当 Auto-Cloud 路径配置失配或用户存储位置与 anchor 分叉时，bundle 仍能把同一份快照同步到另一台设备。
 
 ---
 
@@ -194,7 +208,7 @@
 
 `cloudsave/` 目录：
 
-- 三平台统一为运行时根目录下 `cloudsave/`。
+- 三平台统一为固定 anchor root 下 `cloudsave/`。默认情况下 anchor root 等于平台标准应用数据目录；当用户把运行时数据迁移到其他位置时，`cloudsave/` 仍留在 anchor root，避免 Steam 云目录随用户自选路径漂移。
 
 Steam Auto-Cloud 推荐规则：
 

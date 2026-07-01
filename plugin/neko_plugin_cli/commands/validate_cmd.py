@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import math
 import re
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
+_PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 
 
 def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple[str, str]]:
@@ -425,8 +427,10 @@ def _check_ui_surface(plugin_dir: Path, value: object, label: str, issues: list[
     if open_in is not None:
         _check_enum(open_in, f"{label}.open_in", {"iframe", "new_tab", "same_tab"}, issues)
     context = value.get("context")
-    if context is not None:
-        _check_enum(context, f"{label}.context", {"dashboard", "chat", "settings", "plugin_detail"}, issues)
+    if context is not None and (not isinstance(context, str) or not context.strip()):
+        # context is the plugin-defined @ui.context provider id resolved via
+        # host.get_ui_context(), not a placement enum
+        issues.append(("error", f"{label}.context must be a non-empty string"))
     permissions = value.get("permissions")
     if permissions is not None:
         _check_string_list(permissions, f"{label}.permissions", issues, required=False)
@@ -444,11 +448,22 @@ def _check_runtime_table(value: object, issues: list[tuple[str, str]]) -> None:
     if not isinstance(value, dict):
         issues.append(("error", "[plugin_runtime] must be a table"))
         return
-    _warn_unknown_keys(value, {"enabled", "auto_start", "priority", "timeout"}, "[plugin_runtime]", issues)
+    _warn_unknown_keys(value, {"enabled", "auto_start", "priority", "timeout", "startup_failure"}, "[plugin_runtime]", issues)
     _check_optional_bool(value, "enabled", "[plugin_runtime].enabled", issues)
     _check_optional_bool(value, "auto_start", "[plugin_runtime].auto_start", issues)
     _check_optional_number(value, "priority", "[plugin_runtime].priority", issues, integer=True)
-    _check_optional_number(value, "timeout", "[plugin_runtime].timeout", issues, minimum=0)
+    _check_optional_number(value, "timeout", "[plugin_runtime].timeout", issues)
+    timeout = value.get("timeout")
+    if isinstance(timeout, (int, float)) and not isinstance(timeout, bool):
+        if not math.isfinite(float(timeout)):
+            issues.append(("error", "[plugin_runtime].timeout must be finite"))
+        elif timeout <= 0:
+            issues.append(("error", "[plugin_runtime].timeout must be > 0"))
+        elif timeout > _PLUGIN_RUNTIME_TIMEOUT_MAX:
+            issues.append(("error", "[plugin_runtime].timeout must be <= 300"))
+    startup_failure = value.get("startup_failure")
+    if startup_failure is not None:
+        _check_enum(startup_failure, "[plugin_runtime].startup_failure", {"warn", "fail", "ignore"}, issues)
 
 
 def _check_plugin_state_table(value: object, issues: list[tuple[str, str]]) -> None:

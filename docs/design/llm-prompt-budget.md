@@ -3,8 +3,30 @@
 **Owner**: Wave-of-Budget 重构（PR #976 起）
 **对应代码**: `config/__init__.py` §3.7 LLM Context & Output Budget
 **调试工具**: `NEKO_LLM_PROMPT_AUDIT=1` → `logs/llm_prompt_audit/YYYY-MM-DD.jsonl`
+**CI 守门**: `scripts/check_llm_budget.py`（`.github/workflows/analyze.yml` → python-lint job）
 
 ---
+
+## 0. 硬性要求（全仓 CI 守门）
+
+> 每个 LLM 调用都必须被"框死"。`scripts/check_llm_budget.py` 全仓强制（除 `plugin/` `tests/` `frontend/` `config/` 等，见脚本 `EXCLUDE_DIRS`），违规 CI 直接 fail。
+
+| 维度 | 要求 | lint code | 强制点 |
+|---|---|---|---|
+| **输出 budget** | 每个 `create_chat_llm()` / `ChatOpenAI()` 构造必须带 `max_completion_tokens=` 或 `max_tokens=` | `LLM_OUTPUT_BUDGET` | 构造点 |
+| **输出 timeout** | 同一构造必须带 `timeout=`（或 `request_timeout=`） | `LLM_OUTPUT_BUDGET` | 构造点 |
+| **输入 budget** | 每个带动态输入的 LLM 调用所在函数必须有 token-budget 痕迹（`truncate_to_tokens` / `truncate_head_tail_tokens` / `*_MAX_TOKENS` 常量） | `LLM_INPUT_BUDGET` | 调用点（启发式） |
+
+**为什么放在构造点**：`ChatOpenAI._params(**overrides)` 允许同一 client 在 **调用时** 逐次设 budget/timeout（避免并发踩 instance 属性）。这类站点构造行可以不带，用 `# noqa: LLM_OUTPUT_BUDGET` + 一行理由放行。同理裸 `_client.chat.completions.create(...)`（CUA engine）、`asyncio.timeout()/wait_for()` 包裹（llm_enrichment / proactive）也走 noqa。
+
+**输入 budget 是启发式**：它只能判断"函数里有没有 budget 痕迹"，不能证明某条字符串真被截。故意保守 → 会有误报。确实不该 cap 的（§6 "咎由自取"清单：用户原话 / 用户配置 / OS 窗口标题等）用 `# noqa: LLM_INPUT_BUDGET` + 理由放行。
+
+**抑制写法**：`# noqa: LLM_OUTPUT_BUDGET` / `# noqa: LLM_INPUT_BUDGET`，可加 `# noqa: CODE  # 理由` 把理由写在第二个 `#` 之后（解析器在第二个 `#` 处停止读 code）。
+
+**变量级共识**：
+- 变长结构化 JSON 输出（memory reflection/recall/persona/facts/refine、deduper、card-assist、window-title 关键词等）没有紧的 task-specific budget——硬 cap 会在 thinking 模型上把 reasoning token 一起算进去、截断 JSON 中段导致 `robust_json_loads` 静默失败。这类站点统一用 **`LLM_OUTPUT_GUARD_MAX_TOKENS`（4096，runaway guard）** 作 `max_completion_tokens`：取值刻意大，正常输出不会被截，只挡模型失控；靠 guard + timeout + 输入 budget 三层兜底。
+- 真正在 **调用时** 设 budget 的站点用 `# noqa: LLM_OUTPUT_BUDGET`：CUA engine（裸 `_client.chat.completions.create(max_completion_tokens=...)`）、`computer_use`（`invoke_raw(max_completion_tokens=...)`，ping vs 主调用预算不同）。
+- 主对话流式 client（`OmniOfflineClient`）的 `timeout` 用 `DIALOG_LLM_STREAM_TIMEOUT_SECONDS`（180s，取大只作 hang-guard，不误截正常长回复）。
 
 ## 1. 背景
 
@@ -33,7 +55,7 @@ PR #967 之前，全仓字符长度限制散落在各模块的 magic number 里�
 | `*_MAX_TOKENS` | tiktoken `o200k_base` token 数（CJK ≈ 1.3-1.5 token/char，EN ≈ 0.25 token/char） |
 | `*_TRIGGER_TOKENS` | 触发某个动作的阈值（不是硬上限） |
 | `*_MAX_ITEMS` / `*_MAX` | 条数（消息条 / deque maxlen / list[-N:]） |
-| `*_MAX_CHARS` | 字符数（仅遗留 char-based 流程） |
+| `*_MAX_CHARS` | 字符数（仅非 prompt-facing 的 UI / payload 防爆流程使用，不作为 LLM input budget 证据） |
 | `*_BYTES` | 字节 |
 | `*_MS` | 毫秒 |
 
@@ -101,12 +123,12 @@ PR #967 之前，全仓字符长度限制散落在各模块的 magic number 里�
 
 | Component | 常量 | 默认 |
 |---|---|---|
-| 渲染主对话 prompt 的 persona 预算 | `PERSONA_RENDER_TOKEN_BUDGET` | 2000 |
-| 渲染主对话 prompt 的 reflection 预算 | `REFLECTION_RENDER_TOKEN_BUDGET` | 2000 |
+| 渲染主对话 prompt 的 persona 预算 | `PERSONA_RENDER_MAX_TOKENS` | 2000 |
+| 渲染主对话 prompt 的 reflection 预算 | `REFLECTION_RENDER_MAX_TOKENS` | 2000 |
 | promote-merge LLM 输入的同 entity 池 | `PERSONA_MERGE_POOL_MAX_TOKENS` | 4000 |
 | corrections 单次 batch | `PERSONA_CORRECTION_BATCH_LIMIT` | 10 |
 
-> **`PERSONA_RENDER_TOKEN_BUDGET` ≠ `PERSONA_MERGE_POOL_MAX_TOKENS`**：
+> **`PERSONA_RENDER_MAX_TOKENS` ≠ `PERSONA_MERGE_POOL_MAX_TOKENS`**：
 > 前者是渲染给主对话用的（要省 token 给历史/任务），后者是 promotion-merge LLM 看的（要尽量看全才能合并判断）。
 
 #### 4.2.4 Recall
@@ -148,6 +170,18 @@ PR #967 之前，全仓字符长度限制散落在各模块的 magic number 里�
 | 任务 error | `TASK_ERROR_MAX_TOKENS` | 350 |
 | AgentTaskTracker 记录数 | `AGENT_TASK_TRACKER_MAX_RECORDS` | 50 |
 
+#### 4.3.1.1 Agent callback 注入（task_result + push_message/proactive 事件流）
+
+callback（`enqueue_agent_callback`）会经 `_build_callback_instruction`（文本轮 system_prefix）和 `_render_pending_extra_replies_by_origin`（语音 hot-swap final_prime_text）拼进**本轮对话** LLM。task_result 类已被 `TASK_*_MAX_TOKENS` 截过，但 **push_message / proactive_message** 这条 plugin 事件流（proactive_bridge 聚合 text parts → summary/detail）此前完全裸奔，是真正的漏口。
+
+| Component | 常量 | 默认 |
+|---|---|---|
+| 单条 callback summary/detail | `AGENT_CALLBACK_TEXT_MAX_TOKENS` | 1000 |
+| 一次注入的 callback 指令总和 | `AGENT_CALLBACK_TOTAL_MAX_TOKENS` | 3000 |
+| pending callback 队列长度 | `AGENT_CALLBACK_QUEUE_MAX_ITEMS` | 50 |
+
+三层一致（per-item / total / 队列容量），在 `enqueue_agent_callback`（per-item + 队列）和两个 render helper（total）落实。
+
 #### 4.3.2 Recent context buffer
 
 | Component | 常量 | 默认 |
@@ -186,8 +220,8 @@ PR #967 之前，全仓字符长度限制散落在各模块的 magic number 里�
 
 | Component | 常量 | 默认 |
 |---|---|---|
-| 翻译短文本 chunk | `TRANSLATION_CHUNK_MAX_CHARS_SHORT` | 5000 chars |
-| 翻译长文本 chunk | `TRANSLATION_CHUNK_MAX_CHARS_LONG` | 15000 chars |
+| 翻译短文本 chunk | `TRANSLATION_CHUNK_MAX_TOKENS_SHORT` | 2000 |
+| 翻译长文本 chunk | `TRANSLATION_CHUNK_MAX_TOKENS_LONG` | 5000 |
 
 ## 5. 输出侧 `max_completion_tokens` 索引
 
@@ -209,6 +243,19 @@ PR #967 之前，全仓字符长度限制散落在各模块的 magic number 里�
 | Proactive Phase 2 SDK 端 | `PROACTIVE_PHASE2_GENERATE_MAX_TOKENS` | 450 (=abort fence × 1.5) |
 | 翻译输出 | `TRANSLATION_OUTPUT_MAX_TOKENS` | 1000 |
 | ComputerUse 主调用 | `COMPUTER_USE_MAX_TOKENS` | 6000 |
+| 变长输出 runaway guard | `LLM_OUTPUT_GUARD_MAX_TOKENS` | 4096 |
+| 凝神 thinking 额外头寸（叠加，非上限） | `FOCUS_THINKING_EXTRA_TOKENS` | 800 |
+
+> 注：变长结构化 JSON 输出（memory reflection/recall/persona/facts/refine、deduper、card-assist 等）没有紧的 task-specific budget，统一用 `LLM_OUTPUT_GUARD_MAX_TOKENS`（generous runaway guard，不会误截）作上限。见 §0。
+>
+> 注：`FOCUS_THINKING_EXTRA_TOKENS` 不是一个独立 cap，而是**叠加值**——仅在凝神**且该 provider 真正被翻开思考**的轮次，把主对话当前的 `max_completion_tokens`（`max_response_length + slack`，含 summary-mode 抬升）再 +800，给 reasoning 链单独留头寸。thinking 模型（Qwen / GLM / Kimi / Doubao / OpenRouter）的 reasoning token 与正式回复共用同一预算池（见 §0），不留头寸会把回复挤短。是否"真正开思考"用 `focus_extra_body(model) != get_extra_body(model)` 判：相等即 focus 形态与常规（关思考）形态一致（Claude 保持 disabled、未知模型为 None、非 thinking provider 只是保留自身非思考 extra），此时**不加** +800（避免给没有 reasoning 的轮次白抬上限、逼近 provider 输出上限）。作为 per-call override 经 `_focus_stream_overrides` → `astream` → `_params` 透传（与 `extra_body` 同一条路），不改 `self.llm` 实例属性；base 为 `None`（无限制预算）时省略字段。Python-side 长度 guard 仍按 `max_response_length` 收口可见回复。原生 Gemini（genai SDK 路径）的 `thinking_budget` 是独立字段、不占 `max_output_tokens`，没有"共享池挤占"问题，故该路径不参与本叠加（且 focus extra_body 在 genai 路径本就被忽略，是另一独立话题）。
+
+**timeout 索引（部分）**：
+
+| 调用 | 常量 / 值 | 默认 |
+|---|---|---|
+| memory 后台 LLM 硬上限 | `MEMORY_LLM_HARD_TIMEOUT_SECONDS` | 110 |
+| 主对话流式 client（hang-guard） | `DIALOG_LLM_STREAM_TIMEOUT_SECONDS` | 180 |
 
 ## 6. 已知不 cap 项（NOT capped by design）
 
@@ -262,7 +309,8 @@ NEKO_LLM_PROMPT_AUDIT=1 ./run.sh   # 启用
    - 在调用点用 `truncate_to_tokens` / `truncate_head_tail_tokens` 真去截
    - 更新本文档 §4 / §5
 3. 跑 `uv run pytest tests/unit -q` 确认现有测试通过。
-4. 用 `NEKO_LLM_PROMPT_AUDIT=1` 跑一次冒烟，确认实际 prompt 没破。
+4. 跑 `python scripts/check_llm_budget.py` 确认没有新的 `LLM_OUTPUT_BUDGET` / `LLM_INPUT_BUDGET` 违规（§0 硬性要求）。
+5. 用 `NEKO_LLM_PROMPT_AUDIT=1` 跑一次冒烟，确认实际 prompt 没破。
 
 ## 9. 历史变更
 
@@ -281,7 +329,7 @@ NEKO_LLM_PROMPT_AUDIT=1 ./run.sh   # 启用
   - Stage-2 摘要 prompt 字数 500 → 800；新增 `max_completion_tokens = RECENT_SUMMARY_MAX_TOKENS + 100 = 1100` SDK 端硬限；输出后用 `truncate_to_last_sentence_end` 句末标点回溯防止中段截断
   - `REFLECTION_SURFACE_TOP_K` 2 → 3
   - `REFLECTION_SYNTHESIS_FACTS_MAX` 30 → 20
-  - `REFLECTION_RENDER_TOKEN_BUDGET` 1000 → 2000（与 `PERSONA_RENDER_TOKEN_BUDGET` 持平）
+  - `REFLECTION_RENDER_MAX_TOKENS` 1000 → 2000（与 `PERSONA_RENDER_MAX_TOKENS` 持平）
   - `EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS` 200 → 30（recall 后 LLM 看到的最终 budget）
   - `RECALL_CANDIDATES_TOTAL_MAX_TOKENS` 25000 → 15000；`EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS` 25000 → 15000
   - `TRANSLATION_OUTPUT_MAX_TOKENS` 2000 → 1000

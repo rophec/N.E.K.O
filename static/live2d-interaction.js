@@ -296,9 +296,47 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     let clickStartTime = 0;
     let clickStartX = 0;
     let clickStartY = 0;
+    let dragHintStartPointer = null;
+    let dragHintLastPointer = null;
+    let dragHintApproachShown = false;
     let hasMoved = false;
     const CLICK_THRESHOLD_DISTANCE = 10; // 移动距离阈值（像素）
     const CLICK_THRESHOLD_TIME = 300; // 时间阈值（毫秒）
+
+    const captureDragHintPointer = (event) => {
+        const screenX = Number(event?.screenX);
+        const screenY = Number(event?.screenY);
+        if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+        return { screenX, screenY };
+    };
+
+    const recordDragHintPointerEdgeRelease = async () => {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeRelease !== 'function') return false;
+        if (!dragHintStartPointer || !dragHintLastPointer) return false;
+        return await helper.recordPointerEdgeRelease('live2d', {
+            startedAt: dragHintStartPointer.startedAt,
+            startScreenX: dragHintStartPointer.screenX,
+            startScreenY: dragHintStartPointer.screenY,
+            screenX: dragHintLastPointer.screenX,
+            screenY: dragHintLastPointer.screenY
+        });
+    };
+
+    const recordDragHintPointerEdgeApproach = async () => {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeApproach !== 'function') return false;
+        if (dragHintApproachShown || !dragHintStartPointer || !dragHintLastPointer) return false;
+        const shown = await helper.recordPointerEdgeApproach('live2d', {
+            startedAt: dragHintStartPointer.startedAt,
+            startScreenX: dragHintStartPointer.screenX,
+            startScreenY: dragHintStartPointer.screenY,
+            screenX: dragHintLastPointer.screenX,
+            screenY: dragHintLastPointer.screenY
+        });
+        if (shown) dragHintApproachShown = true;
+        return shown;
+    };
 
     // 使用 avatar-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
     const disableButtonPointerEvents = () => {
@@ -316,7 +354,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     const isYuiGuideDragLocked = () => {
         const body = document.body;
         return !!(body && (
-            body.classList.contains('yui-guide-home-driver-hidden')
+            body.classList.contains('yui-guide-home-ui-suppressed')
             || body.classList.contains('yui-taking-over')
         ));
     };
@@ -353,6 +391,12 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         clickStartTime = Date.now();
         clickStartX = globalPos.x;
         clickStartY = globalPos.y;
+        dragHintStartPointer = captureDragHintPointer(originalEvent);
+        if (dragHintStartPointer) {
+            dragHintStartPointer.startedAt = Date.now();
+        }
+        dragHintLastPointer = dragHintStartPointer;
+        dragHintApproachShown = false;
         hasMoved = false;
         this._touchSetPointerSeq = (this._touchSetPointerSeq || 0) + 1;
         this._lastTouchPointer = { x: clickStartX, y: clickStartY, time: clickStartTime, seq: this._touchSetPointerSeq };
@@ -368,11 +412,12 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         disableButtonPointerEvents();
     });
 
-    const onDragEnd = async () => {
+    const onDragEnd = async (event) => {
         if (this._isDraggingModel) {
             this._isDraggingModel = false;
             document.getElementById('live2d-canvas').style.cursor = '';
             restoreButtonPointerEvents();
+            dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;
 
             if (!this._isModelReadyForInteraction) return;
 
@@ -412,15 +457,13 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
             // 如果没有发生屏幕切换，检测并执行自动吸附
             if (!displaySwitched) {
+                await recordDragHintPointerEdgeRelease();
                 // 执行自动吸附检测和动画
                 const snapped = await this._checkAndPerformSnap(model);
 
                 // 如果没有执行吸附，则正常保存位置
                 if (!snapped) {
                     await this._savePositionAfterInteraction();
-                } else if (window.NekoAvatarMultiScreenDragHint &&
-                    typeof window.NekoAvatarMultiScreenDragHint.recordEdgeBounce === 'function') {
-                    window.NekoAvatarMultiScreenDragHint.recordEdgeBounce('live2d');
                 }
                 // 如果执行了吸附，_checkAndPerformSnap 内部会保存位置
             }
@@ -455,6 +498,8 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             // 这里假设 canvas 是全屏覆盖的
             const x = event.clientX;
             const y = event.clientY;
+            dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;
+            void recordDragHintPointerEdgeApproach();
 
             // 检测是否移动超过阈值
             const moveDistance = Math.sqrt(
@@ -490,8 +535,69 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
 // 设置滚轮缩放
 Live2DManager.prototype.setupWheelZoom = function (model) {
+    const isWheelPointOnCurrentModel = (event) => {
+        const activeModel = this.currentModel || model;
+        if (!activeModel || !event) return false;
+
+        try {
+            const view = this.pixi_app && this.pixi_app.view;
+            const canvasRect = view && typeof view.getBoundingClientRect === 'function'
+                ? view.getBoundingClientRect()
+                : null;
+            const rendererScreen = this.pixi_app && this.pixi_app.renderer
+                ? this.pixi_app.renderer.screen
+                : null;
+            const rendererWidth = rendererScreen && Number.isFinite(rendererScreen.width)
+                ? rendererScreen.width
+                : 0;
+            const rendererHeight = rendererScreen && Number.isFinite(rendererScreen.height)
+                ? rendererScreen.height
+                : 0;
+            const scaleX = canvasRect && canvasRect.width > 0 && rendererWidth > 0
+                ? rendererWidth / canvasRect.width
+                : 1;
+            const scaleY = canvasRect && canvasRect.height > 0 && rendererHeight > 0
+                ? rendererHeight / canvasRect.height
+                : 1;
+            const x = canvasRect
+                ? (event.clientX - canvasRect.left) * scaleX
+                : event.clientX;
+            const y = canvasRect
+                ? (event.clientY - canvasRect.top) * scaleY
+                : event.clientY;
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+
+            const bounds = activeModel.getBounds();
+            const left = Number.isFinite(bounds.left) ? bounds.left : bounds.x;
+            const top = Number.isFinite(bounds.top) ? bounds.top : bounds.y;
+            const width = Number.isFinite(bounds.width) ? bounds.width : (bounds.right - bounds.left);
+            const height = Number.isFinite(bounds.height) ? bounds.height : (bounds.bottom - bounds.top);
+            if (!Number.isFinite(left) || !Number.isFinite(top) || width <= 0 || height <= 0) return false;
+            if (x < left || x > left + width || y < top || y > top + height) return false;
+
+            try {
+                if (typeof activeModel.hitTest === 'function') {
+                    const hitAreas = activeModel.hitTest(x, y);
+                    if (hitAreas && hitAreas.length > 0) return true;
+                }
+            } catch (_) {}
+
+            const cx = left + width / 2;
+            const cy = top + height / 2;
+            const rx = width * 0.3;
+            const ry = height * 0.45;
+            if (rx <= 0 || ry <= 0) return false;
+            const nx = (x - cx) / rx;
+            const ny = (y - cy) / ry;
+            return (nx * nx + ny * ny) <= 1;
+        } catch (_) {
+            return false;
+        }
+    };
+
     const onWheelScroll = (event) => {
         if (this.isLocked || !this.currentModel) return;
+        if (!isWheelPointOnCurrentModel(event)) return;
         event.preventDefault();
 
         // 根据 deltaY 大小动态计算缩放因子，避免固定倍率导致缩放过快
@@ -959,6 +1065,26 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             applyFade();
 
             const canvasEl = document.getElementById('live2d-canvas');
+            const isYuiGuideFaceForwardLocked = window.nekoYuiGuideFaceForwardLock === true
+                && window.nekoYuiGuideIntroVoiceLookAtActive !== true;
+            const centerYuiGuideLookAt = () => {
+                if (model.internalModel && model.internalModel.focusController) {
+                    const fc = model.internalModel.focusController;
+                    fc.targetX = 0;
+                    fc.targetY = 0;
+                    if (Number.isFinite(Number(fc.x))) fc.x = 0;
+                    if (Number.isFinite(Number(fc.y))) fc.y = 0;
+                }
+                const coreModel = model.internalModel && model.internalModel.coreModel;
+                if (coreModel && typeof coreModel.setParameterValueById === 'function') {
+                    try {
+                        coreModel.setParameterValueById('ParamAngleX', 0);
+                        coreModel.setParameterValueById('ParamAngleY', 0);
+                        coreModel.setParameterValueById('ParamEyeBallX', 0);
+                        coreModel.setParameterValueById('ParamEyeBallY', 0);
+                    } catch (_) {}
+                }
+            };
 
             if (distance < threshold) {
                 if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
@@ -977,7 +1103,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 }
                 const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
                 if (this.isFocusing) {
-                    if (isMouseTrackingEnabled) {
+                    if (isYuiGuideFaceForwardLocked) {
+                        centerYuiGuideLookAt();
+                    } else if (isMouseTrackingEnabled) {
                         model.focus(pointer.x, pointer.y);
                     } else {
                         if (model.internalModel && model.internalModel.focusController) {
@@ -995,7 +1123,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                     canvasEl.style.cursor = 'grab';
                 }
                 const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
-                if (isMouseTrackingEnabled) {
+                if (isYuiGuideFaceForwardLocked) {
+                    centerYuiGuideLookAt();
+                } else if (isMouseTrackingEnabled) {
                     model.focus(pointer.x, pointer.y);
                 } else {
                     if (model.internalModel && model.internalModel.focusController) {
@@ -1369,6 +1499,14 @@ Live2DManager.prototype._savePositionAfterInteraction = async function () {
         return;
     }
 
+    if (typeof this.recoverRendererFromReturnBallViewport === 'function') {
+        try {
+            this.recoverRendererFromReturnBallViewport('save-position-before');
+        } catch (error) {
+            console.warn('[Live2D Interaction] 恢复 return-ball viewport 失败，继续保存位置:', error);
+        }
+    }
+
     const position = { x: this.currentModel.x, y: this.currentModel.y };
     const scale = { x: this.currentModel.scale.x, y: this.currentModel.scale.y };
 
@@ -1423,7 +1561,6 @@ Live2DManager.prototype._savePositionAfterInteraction = async function () {
             viewportInfo = { width: rw, height: rh };
         }
     }
-
     // 异步保存，不阻塞交互
     this.saveUserPreferences(this._lastLoadedModelPath, position, scale, null, displayInfo, viewportInfo)
         .then(success => {
@@ -1788,8 +1925,9 @@ Live2DManager.prototype.setupUnloadCleanup = function () {
 Live2DManager.prototype.destroy = function () {
     console.log('[Live2D] 正在销毁 Live2DManager 实例...');
 
-    // 首先清理所有事件监听器
+    // 首先清理所有事件监听器与自适应帧率守护
     this.cleanupEventListeners();
+    this._stopIdleFpsGovernor();
 
     // 销毁当前模型
     if (this.currentModel) {

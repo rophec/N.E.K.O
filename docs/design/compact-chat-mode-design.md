@@ -8,7 +8,7 @@
 
 本文覆盖当前分支已经落地的紧凑聊天框长期事实和维护边界，包括：
 
-1. `compact / minimized` 两态聊天形态。
+1. `compact / minimized` 两态聊天形态（活跃形态；被复活的 `full` 是冻结 legacy、与之严格隔离，见「已确认事实」第 2 条与 `FullChatSurface.tsx` 文件头，不在本文范围）。
 2. `default / options / input` 紧凑态内部三态。
 3. 紧凑 surface、最小化 ball、选项层、工具转轮、内联历史、历史气泡拖拽与发送链路。
 4. Web、独立 `/chat`、NEKO-PC 桌面壳三端的样式、geometry、命中、bounds 和拖拽边界。
@@ -79,23 +79,27 @@
 已确认事实：
 
 1. 当前聊天 UI 以 React chat 为准；旧 `#chat-container` 只作为兼容 DOM 存在。
-2. 宿主形态是 `chatSurfaceMode: 'compact' | 'minimized'`（localStorage 里遗留的 `'full'` 读入时迁移为 `'compact'`）。
+2. 宿主形态是 `chatSurfaceMode: 'full' | 'compact' | 'minimized'`。`full` 是被复活的**冻结 legacy** 完整聊天窗口，由 `App.tsx` 顶层无 hooks 的 dispatcher 路由到自包含的 `FullChatSurface.tsx`（删除前那版 App 的冻结快照），与本文覆盖的 `compact / minimized` **严格代码隔离**：两子树互斥挂载，hooks/state 不共享，full 不再迭代——本文只描述活跃的 compact/minimized，full 见 `FullChatSurface.tsx` 文件头。`full` 不进 `CHAT_SURFACE_MODE_SEQUENCE`（compact↔minimized 的 cycle），只由显式 `setChatSurfaceMode('full')`（如 NEKO-PC 托盘切换）进入。
 3. compact 内部状态是 `compactChatState: 'default' | 'options' | 'input'`。
 4. `effectiveCompactChatState` 会在存在 ChoicePrompt / GalGame options 时把 compact 推到 `options`，不需要业务层另造状态。
 5. compact 主体 DOM 已统一为：
    - `.compact-chat-surface-shell`
    - `.compact-chat-surface-frame`
    - `data-compact-geometry-owner="surface"`
-   - `data-compact-geometry-item="capsule" | "input" | "dragHandle" | "resizeHandle" | "toolFan" | "history" | "historyHandle" | "choice"`
+   - `data-compact-geometry-item="capsule" | "input" | "resizeHandle" | "toolFan" | "history" | "historyHandle" | "choice"`
    - `data-compact-geometry-part="capsuleBody" | "inputBody"`
+   - `data-compact-drag-surface="true"` 声明 compact 对话框本体 surface；整体拖拽只指这个本体，不包含历史、工具轮盘、选项层等浮层。
+   - `data-compact-no-drag="true"` 声明 textarea、工具按钮、resize、历史、选项等真实控件和浮层排除拖拽。
+   - 工具轮盘 toggle / fan 原点仍是 `data-compact-no-drag`（宿主命中判定不自动起拖），但 App.tsx 在原点按下并移动超阈值时额外派发 `neko:compact-surface-drag-grab`（带按下点 client/screen 坐标），让宿主以该点为锚启动本体拖拽——使轮盘中心兼作「按住拖动文本框」把手；点按仍展开/关闭轮盘、悬停展开保留、轮盘边缘拖动仍旋转。拖动后补发的 click 用独立的 origin suppress 标志吞掉（不能复用 wheel suppress，轮盘关闭 effect 会清它）。Wayland 走原生 app-region 拖拽，事件式起拖不适用。
 6. 早期 `.compact-chat-capsule-shell` / `.compact-chat-input-shell` 已不是当前主体事实，后续文档和实现不要再按这两个旧类名设计。
 7. `.compact-chat-surface-frame` 是同一个 54px 高的本体：`default/options` 内放 capsule button，`input` 内放 textarea 和右侧工具/发送按钮。
-8. 蓝线拖拽手柄是 `.compact-chat-drag-handle`，带 `data-compact-drag-handle="true"`，必须保留。
+8. 旧蓝线拖拽手柄 `.compact-chat-drag-handle` / `data-compact-drag-handle="true"` 已删除，不应恢复；对话框本体拖拽走 `data-compact-drag-surface` / `data-compact-no-drag`。
 9. 左右缩放手柄是 `.compact-chat-resize-handle-left/right`，通过 `neko:compact-surface-resize-request` 与宿主同步宽度。
 10. 工具转轮通过 portal 挂到 `document.body`，并以 `data-compact-geometry-item="toolFan"` 进入 geometry。
 11. 历史层由 `CompactExportHistoryPanel` 挂载到 `app-shell` 内，锚点是 `.compact-export-history-anchor`，并以 `data-compact-geometry-item="history"` 进入 geometry。
 12. 历史显隐由常驻 `.compact-history-visibility-handle` 控制，使用 `data-compact-geometry-item="historyHandle"` 进入 geometry。
-13. ChoicePrompt 和 GalGame options 共享 compact choice layer；ChoicePrompt 优先，GalGame 在无 ChoicePrompt 时显示。
+13. 历史关闭时，`CompactExportHistoryPanel` 只在 closing 动画期间短暂保留挂载；`COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS` 到期后必须卸载，避免关闭态继续接收新 `messages` 并闪现历史气泡。
+14. ChoicePrompt 和 GalGame options 共享 compact choice layer；ChoicePrompt 优先，GalGame 在无 ChoicePrompt 时显示。
 
 ### NEKO 宿主与静态桥
 
@@ -119,8 +123,10 @@
    - surface geometry 收集、union、hit rect、native rect 输出。
    - 最小化 ball 的独立定位和 geometry。
    - resize session、desktop resize active 和 layout-change 事件。
+   - 监听 `neko:compact-surface-drag-grab`（来自 React 工具轮盘原点拖拽），非 Electron 时以事件坐标为锚启动 compact surface 本体拖拽（复用既有 startDrag/全局 mousemove/mouseup 与落点 click 守卫）。Electron 由 `preload-chat-react.js` 监听同一事件改走原生窗口拖拽。
 5. `static/app-buttons.js` 是发送桥之一。compact history 文本发送必须带清晰 session / request 语义，不能让已有 composer 附件在 deferred send 中被误带上。
 6. 语音模式 / `composerHidden` 下的 history drop 只保留前端拖拽、命中和收束动效；真实发送必须在 `sendCompactHistoryDropPayload` 边界跳过，不能通过改 React 拖拽 phase 或样式来伪装。
+7. `static/music_ui.js` 的音乐播放器在 compact 模式下优先挂到常驻 `.compact-music-player-mount#music-player-mount`；历史关闭或卸载不能把播放器挪回 composer fallback，但播放器视觉显隐必须跟随历史打开、closing、closed 状态，也不能被通用 `#music-player-mount` 样式撑成超过 compact surface 的横向尺寸；音量弹层展开/收起时必须刷新 compact geometry，避免浮出播放器原生矩形的滑块看得见但不可点。
 
 ### NEKO-PC 桌面壳
 
@@ -142,7 +148,7 @@
    - `window.__nekoDesktopCompactExternalBall`
 3. 桌面 compact surface 的 BrowserWindow bounds 由页面 surface geometry、history drag carrier bounds 和 workArea 共同派生。
 4. 最小化 ball 按外部 ball window 思路承载，不应和 surface 绑在同一个大透明窗口里。
-5. Native Wayland 下 `[data-compact-drag-handle="true"]` 需要走 `-webkit-app-region: drag`，不能强行走全局 cursor polling。
+5. Native Wayland 下 compact 对话框本体拖拽需要让 `[data-compact-drag-surface="true"]` 走 `-webkit-app-region: drag`，并用 `[data-compact-no-drag="true"]` 排除真实控件和浮层；不能强行走全局 cursor polling。
 6. 桌面历史拖拽已有桥接状态：
    - `window.__nekoDesktopCompactHistoryDragState`
    - `window.__nekoDesktopCompactHistoryPointerPassthrough`
@@ -171,6 +177,46 @@
 3. 切换形态不能清空会话、重置选项或破坏输入状态恢复。
 4. compact surface 的用户拖动位置只影响 surface，不影响 ball。
 5. 从 compact 切到 minimized 时，桌面端必须同步 native ball 窗口；从 minimized 恢复 compact 时，必须走 compact carrier bounds 而非旧 full 面板尺寸。
+
+> 复活的 `full`（冻结 legacy 完整聊天窗口）不在上述活跃形态链内，由顶层 dispatcher 路由到自包含的 `FullChatSurface.tsx`，与 compact/minimized 严格隔离；它的最小化走独立的「左下角呼吸灯球」支路（见下方「形态切换与本地测试」）。
+
+## 形态切换与本地测试（full / compact / minimized）
+
+`chatSurfaceMode` 有三态：`full`（完整聊天窗口）/ `compact`（悬浮对话条，默认活跃形态）/ `minimized`（折叠球）。
+
+### 默认形态来源
+
+宿主 `static/app-react-chat-window.js` 的 `getDefaultChatSurfaceMode()`（用户无持久化偏好时）：
+
+- **Web / 浏览器** → `full`。
+- **Electron 桌面壳** → `compact`：chat.html（electron chat body class）与 index.html 宠物窗（`window.__LANLAN_IS_ELECTRON_PET__`）都识别为 compact。
+- **显式覆盖**：`window.__NEKO_CHAT_DEFAULT_COMPACT__ = true/false` 优先于上面的运行时识别，强制 compact / full。
+
+用户的显式选择持久化在 `localStorage['neko.reactChatWindow.chatSurfaceMode']`（值只会是 `'full'` 或 `'compact'`；`minimized` 不持久化，恢复时回到 `lastRestorableChatSurfaceMode`）。
+
+### 本地切换 / 测试配方（浏览器控制台，硬刷新生效）
+
+```js
+// 进 full
+localStorage.setItem('neko.reactChatWindow.chatSurfaceMode','full'); location.reload();
+// 进 compact
+localStorage.setItem('neko.reactChatWindow.chatSurfaceMode','compact'); location.reload();
+// 看「默认」形态（清掉显式偏好）
+localStorage.removeItem('neko.reactChatWindow.chatSurfaceMode'); location.reload();
+// 在浏览器里模拟 Electron 的 compact 默认
+window.__NEKO_CHAT_DEFAULT_COMPACT__ = true;
+localStorage.removeItem('neko.reactChatWindow.chatSurfaceMode'); location.reload();
+```
+
+### 各形态自测点
+
+- **full**：渲染完整历史列表 + 完整 composer（底部工具条：导入图片 / 截图 / GalGame / 翻译 / 点歌 / 表情工具 + 发送圆钮；窗口变窄时工具折叠进溢出菜单 `⋯`）。点最小化 → 折向**左下角的蓝色呼吸灯球**（不贴角色、不折出屏幕、不走 idle dock）；点球展开 → **优先恢复上次拖拽/缩放后的记忆位置，仅在无记忆时居中**（不再回左中）。full 是冻结快照，行为对齐删除前的 full。
+- **compact**：悬浮对话条 / 字幕胶囊 / 输入态 / 工具轮盘 / 内联历史。点最小化 → **毛线球就地折叠**到自身底左锚点附近（不再强制贴角色/猫）。注：CAT2/CAT3 视觉层级（idle tier）下 compact 仍会自动贴猫的 idle dock，那是层级自动触发的特性，不是手动点最小化的行为。
+- **minimized**：折叠球；点球恢复回 `lastRestorableChatSurfaceMode`（full 回 full、compact 回 compact）。
+
+### 三端必测（react-neko-chat 改动通用）
+
+`index.html` 宽屏 / `index.html` 窄宽（<768px 纯 CSS 手机版）/ `chat.html`（Electron，Chromium fork，部分 Web API 行为与浏览器不同）。
 
 ## Compact 内部三态
 
@@ -220,13 +266,14 @@
 
 Surface island 包含：
 
-1. `.compact-chat-surface-frame` 本体。
-2. 蓝线拖拽手柄。
-3. 左右 resize 手柄。
-4. ChoicePrompt / GalGame options。
-5. 工具转轮。
-6. 内联历史 / 导出历史层。
-7. 历史拖拽视觉层。
+1. `.compact-chat-surface-frame` 本体，同时也是 compact 对话框本体拖拽 surface。
+2. 左右 resize 手柄。
+3. ChoicePrompt / GalGame options。
+4. 工具转轮。
+5. 内联历史 / 导出历史层。
+6. 历史拖拽视觉层。
+
+旧蓝线拖拽手柄不再属于 surface island；compact 对话框本体拖拽由 `.compact-chat-surface-frame` 声明承担。
 
 定位：
 
@@ -238,7 +285,7 @@ Surface island 包含：
 
 命中：
 
-1. 只有可见本体、输入、选项、工具、历史滚动区、历史控件、拖拽层、蓝线和 resize 手柄可命中。
+1. 只有可见本体、输入、选项、工具、历史滚动区、历史控件、拖拽层和 resize 手柄可命中。
 2. 透明包裹层必须穿透。
 3. 关闭态、空态、未加载态不能留下透明但吃事件的大矩形。
 4. 历史气泡之间、气泡左右留白等非对话透明区应尽量 passthrough，尤其是桌面端。
@@ -249,7 +296,7 @@ Surface island 包含：
 2. ChoicePrompt / GalGame 选项应在历史层上方。
 3. 工具转轮在输入器上方。
 4. 历史拖拽视觉层在 history/source 之上，但不应污染普通命中。
-5. 蓝线在 surface 本体上方，但不能扩大成大命中面。
+5. 旧蓝线不再参与层级；本体拖拽命中不能扩大成大透明面。
 
 ## Compact Ball Island
 
@@ -260,7 +307,7 @@ Ball island 包含最小化小球视觉与点击区域。
 1. ball 基于模型 bounds 位于模型左侧。
 2. ball 使用 viewport/workArea clamp，不能出屏。
 3. 没有模型 bounds 时才使用 fallback，并视为降级路径。
-4. ball 不随蓝线拖拽移动。
+4. ball 不随 compact surface 本体拖拽移动。
 5. ball 不读取 compact surface localStorage。
 6. ball 不参与 surface bounds 计算。
 7. 桌面端优先由独立 ball window 承载，不和 surface 之间生成大透明命中区域。
@@ -288,9 +335,8 @@ Compact Interaction Geometry 是紧凑态的根合同。所有可见、可点、
 4. `history`
 5. `historyHandle`
 6. `toolFan`
-7. `dragHandle`
-8. `resizeHandle`
-9. `ball`
+7. `resizeHandle`
+8. `ball`
 
 规则：
 
@@ -299,7 +345,7 @@ Compact Interaction Geometry 是紧凑态的根合同。所有可见、可点、
 3. surface 和 ball 之间不能通过一个大透明矩形相连。
 4. 子组件允许视觉浮出父 DOM，但浮出的可见区域必须注册进 geometry。
 5. 新增 compact 浮层时，同步补 DOM 身份、geometry item、hit 策略、native bounds 和验证项。
-6. `resizeHandle` / `dragHandle` 这类 aria-hidden 控件只有在 collector 明确允许时才能进入 geometry。
+6. `resizeHandle` 这类 aria-hidden 控件只有在 collector 明确允许时才能进入 geometry；旧 `dragHandle` 不再进入 geometry。
 
 ### 页面 Geometry 来源
 
@@ -361,13 +407,16 @@ Compact 历史默认在初次启动时显示。历史列表本身由常驻展开
 7. 没有 `neko.reactChatWindow.compactExportHistoryOpen` 持久化记录时，历史默认打开；用户显式收起后持久化为 `false`。
 8. 常驻 `.compact-history-visibility-handle` 只控制历史列表显隐；它关闭历史时不清除操作栏打开状态。
 9. 工具转轮历史/导出按钮控制操作栏显示；如果历史关闭时点击该按钮，应先打开历史并显示操作栏。
-10. 操作栏显示期间进入选择模式：气泡点击 / 键盘 Enter / Space 可以选中或取消选中历史消息。
-11. 操作栏隐藏时退出选择模式：必须清空当前选中项，并禁止继续通过点击或键盘选择；拖拽源识别和拖拽发送不受这个选择模式限制。
-12. 操作栏包含选择和导出动作，如计数、全选、取消/清空、反选、导出预览等；操作栏自身进入 history hit region。
-13. 选择状态、导出预览和操作栏显示状态由 React state 管理；操作栏状态可以跨历史显隐保留，但只在历史实际打开时算作可见。
-14. 预览关闭时要清理 stale export error 和必要 preview lifecycle 状态，避免重新打开显示旧错误。
-15. 历史透明区域不能长期遮挡后方；可见气泡、按钮、预览控件和必要滚动区域可命中，气泡间透明区应尽量穿透。
-16. GalGame / ChoicePrompt 出现时，选项层在历史层上方。
+10. 历史关闭后可以播放 closing 动画；动画结束后历史面板必须卸载。关闭期间新增的文字/语音消息不得进入历史面板 DOM，也不得在历史区域短暂闪现；重新打开历史时再按最新 `messages` 完整渲染。
+11. closing 期间历史气泡、操作栏和预览控件都不进入 history hit region，不保留按钮语义、键盘焦点或透明命中区。
+12. 操作栏显示期间进入选择模式：气泡点击 / 键盘 Enter / Space 可以选中或取消选中历史消息。
+13. 操作栏隐藏时退出选择模式：必须清空当前选中项，并禁止继续通过点击或键盘选择；拖拽源识别和拖拽发送不受这个选择模式限制。
+14. 操作栏包含选择和导出动作，如计数、全选、取消/清空、反选、导出预览等；操作栏自身进入 history hit region。
+15. 选择状态、导出预览和操作栏显示状态由 React state 管理；操作栏状态可以跨历史显隐保留，但只在历史实际打开时算作可见。
+16. 音乐播放器有独立 `.compact-music-player-mount#music-player-mount`，它与历史消息面板分离并作为 `musicPlayer` 几何项进入 compact surface；历史关闭/卸载后播放器必须继续停留在该独立挂载点，但视觉上要随历史一起收起和展开；横向尺寸必须限制在 compact surface 宽度内；历史记录底部必须为播放器高度和阴影预留间距，不能与播放器重叠；音量滑块展开到播放器外侧时要触发 geometry refresh。
+17. 预览关闭时要清理 stale export error 和必要 preview lifecycle 状态，避免重新打开显示旧错误。
+18. 历史透明区域不能长期遮挡后方；可见气泡、按钮、预览控件和必要滚动区域可命中，气泡间透明区应尽量穿透。
+19. GalGame / ChoicePrompt 出现时，选项层在历史层上方。
 
 ## 历史气泡拖拽与发送合同
 
@@ -446,7 +495,7 @@ Compact 当前文字是“当前轮轻提示”，不是完整历史记录、字
 5. 桌面端 compact resize / relayout 只影响 compact carrier，不再维护 full 模式窗口快照。
 6. 从 minimized 恢复 compact 时，必须恢复 compact bounds、shape、ignore-mouse-events、external ball 和 resizable 状态。
 7. Windows 展开 fallback 需要真实 resizable style toggle，不能把 `setResizable(false)` 到 `setResizable(false)` 当成 cache busting。
-8. Native Wayland compact drag handle 应保留原生 drag 策略，不走不可用的全局 cursor/window polling。
+8. Native Wayland compact 对话框本体拖拽应保留原生 drag 策略，不走不可用的全局 cursor/window polling。
 9. ReactChat 紧凑窗口必须保持在模型上方，并由 window manager / top coordinator 维护层级。
 
 ## 修改指导
@@ -480,7 +529,7 @@ Compact 当前文字是“当前轮轻提示”，不是完整历史记录、字
 3. 修改 ball 时，确认：
    - 只看模型 bounds。
    - 不读 surface position。
-   - 不被蓝线拖拽影响。
+   - 不被 compact surface 本体拖拽影响。
 4. 修改选项层时，确认：
    - 不塞回胶囊。
    - 下方不足能转到上方。
@@ -540,7 +589,7 @@ Surface：
 命中：
 
 1. compact 周围透明区域不挡后方内容点击。
-2. 可见胶囊、输入、选项、工具、历史、拖拽层、蓝线和 resize 手柄都能稳定点击。
+2. 可见胶囊、输入、选项、工具、历史、拖拽层和 resize 手柄都能稳定点击。
 3. 选项/历史关闭后不留透明命中区。
 4. 桌面端 BrowserWindow bounds / setShape / passthrough 与页面 geometry 一致。
 
@@ -570,7 +619,10 @@ Surface：
 5. 操作栏隐藏后再次打开，选择、全选、反选、清空、导出预览可用。
 6. 历史列表收起再展开时，操作栏显示状态可保留，但按钮高亮只反映当前实际可见状态。
 7. 历史透明区不遮挡后方。
-8. 预览关闭不会保留旧 error。
+8. 历史关闭动画结束后，历史面板卸载；关闭期间继续发生文字/语音对话时，历史区域不出现新气泡闪现。
+9. 历史重新展开后，关闭期间产生的新消息会按最新 `messages` 正常出现在历史中。
+10. 播放中的音乐栏在 compact 模式下停留在独立播放器挂载点；历史打开时显示，历史 closing / closed 时同步收起且不再命中；历史打开、关闭或卸载都不能把它挪回 composer，横向宽度不能突破 compact surface，历史记录不能贴住或覆盖播放器；音量滑块展开后可以点击和拖拽。
+11. 预览关闭不会保留旧 error。
 
 历史拖拽：
 
@@ -589,23 +641,23 @@ Surface：
 3. 模型移动不会强行覆盖用户保存的 surface 位置。
 4. compact window 在模型上方。
 5. 从 minimized 恢复 compact 后窗口 bounds、shape、resizable 和 ball 状态恢复正确。
-6. Native Wayland 拖拽仍使用可工作的原生拖拽路径。
+6. Native Wayland 对话框本体拖拽仍使用可工作的原生拖拽路径。
 
 ## 禁止方案
 
 1. 禁止用 `HEAD` 覆盖当前工作区紧凑态改动。
-2. 禁止删除 `.compact-chat-drag-handle` 或 `data-compact-drag-handle="true"` 链路。
+2. 禁止恢复 `.compact-chat-drag-handle` 或 `data-compact-drag-handle="true"` 作为 compact 主拖拽入口；同时禁止误删历史显隐按钮和桌面壳折叠球链路。
 3. 禁止把 compact 背景加到 `#react-chat-window-shell` 这类外层透明窗口壳上。
 4. 禁止把 ball 固定到视口左下角当作模型左侧定位。
 5. 禁止让 compact surface 的持久化位置影响 ball 位置。
 6. 禁止让 ball 和 surface 共用一个大透明矩形作为桌面端最终方案。
-7. 禁止用全局粗暴 `pointer-events: none` 破坏输入、选项、工具、蓝线、历史或 ball。
+7. 禁止用全局粗暴 `pointer-events: none` 破坏输入、选项、工具、历史、历史显隐按钮或 ball。
 8. 禁止只给 textarea 加固定高度就宣称解决输入态撑高。
 9. 禁止只提高局部 `z-index` 就宣称解决模型上方层级问题。
 10. 禁止把 GalGame / ChoicePrompt 选项塞回胶囊内部来绕过裁切。
 11. 禁止选项或历史关闭后仍保留透明命中区域。
 12. 禁止为未来功能预留透明但吃事件的大空区域。
-13. 禁止让历史滚动误触发蓝线拖拽。
+13. 禁止让历史滚动误触发 compact surface 本体拖拽。
 14. 禁止让历史、选项或工具层参与 ball 定位。
 15. 禁止让视觉浮层依赖未登记的 `overflow: visible` 逃逸父容器。
 16. 禁止把 NEKO-PC 的实现限制反向改成网页端产品目标。

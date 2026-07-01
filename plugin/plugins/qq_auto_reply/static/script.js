@@ -42,10 +42,12 @@ const pluginId = 'qq_auto_reply';
                 token: '',
                 path: '',
                 showOnboarding: false,
+                guideStepNapcatDone: false,
                 guideStepConfigDone: false,
                 guideStepRuntimeDone: false,
                 normalRelayProbability: 0.1,
                 truthReplyProbability: 0.1,
+                replyMode: 'text',
             },
             users: [],
             groups: [],
@@ -105,6 +107,25 @@ const pluginId = 'qq_auto_reply';
             document.getElementById('onboarding').classList.remove('hidden');
             document.getElementById('onboarding').style.display = 'flex';
             nextStep(1);
+        }
+
+        function openStep1GuideModal() {
+            document.getElementById('step1-guide-modal-overlay')?.classList.add('show');
+        }
+
+        function closeStep1GuideModal() {
+            document.getElementById('step1-guide-modal-overlay')?.classList.remove('show');
+        }
+
+        async function confirmStep1GuideModal() {
+            try {
+                await callPlugin('save_settings', { guide_step_napcat_done: true });
+                await reloadDashboard();
+                closeStep1GuideModal();
+                showToast(t('ui.toast.saved', '设置已保存'));
+            } catch (error) {
+                showToast(error.message || t('ui.toast.save_failed', '保存失败'));
+            }
         }
 
         function uiT(key, fallback) {
@@ -171,10 +192,12 @@ const pluginId = 'qq_auto_reply';
             state.config.url = String(settings.onebot_url || '');
             state.config.path = String(settings.napcat_directory || '');
             state.config.showOnboarding = Boolean(settings.show_onboarding ?? true);
+            state.config.guideStepNapcatDone = Boolean(settings.guide_step_napcat_done ?? false);
             state.config.guideStepConfigDone = Boolean(settings.guide_step_config_done ?? false);
             state.config.guideStepRuntimeDone = Boolean(settings.guide_step_runtime_done ?? false);
             state.config.normalRelayProbability = Number(settings.normal_relay_probability ?? 0.1);
             state.config.truthReplyProbability = Number(settings.truth_reply_probability ?? 0.1);
+            state.config.replyMode = ['text', 'voice', 'both'].includes(settings.reply_mode) ? settings.reply_mode : 'text';
             state.backlogLabels = Array.isArray(settings.backlog_labels) ? settings.backlog_labels.map(normalizeBacklogLabelDraft) : [];
             state.backlogLabelDrafts = state.backlogLabels.map((item) => ({ ...item }));
             state.backlogItems = Array.isArray(data.backlog_items) ? data.backlog_items : [];
@@ -186,6 +209,7 @@ const pluginId = 'qq_auto_reply';
             console.log('[qq_auto_reply debug] cfg-token after set =', document.getElementById('cfg-token').value);
             document.getElementById('cfg-path').value = state.config.path;
             document.getElementById('cfg-show-napcat-window').checked = Boolean(settings.show_napcat_window ?? true);
+            document.getElementById('cfg-reply-mode').value = state.config.replyMode;
             console.log('[qq_auto_reply debug] cfg-path after set =', document.getElementById('cfg-path').value);
             document.getElementById('cfg-normal-probability').value = Number.isFinite(state.config.normalRelayProbability) ? String(state.config.normalRelayProbability) : '0.1';
             document.getElementById('cfg-truth-probability').value = Number.isFinite(state.config.truthReplyProbability) ? String(state.config.truthReplyProbability) : '0.1';
@@ -962,6 +986,7 @@ const pluginId = 'qq_auto_reply';
                         token: document.getElementById('cfg-token').value,
                         napcat_directory: document.getElementById('cfg-path').value.trim(),
                         show_napcat_window: document.getElementById('cfg-show-napcat-window').checked,
+                        reply_mode: document.getElementById('cfg-reply-mode').value,
                         normal_relay_probability: normalRelayProbability,
                         truth_reply_probability: truthReplyProbability,
                         backlog_labels: buildBacklogLabelsPayload(),
@@ -1166,7 +1191,7 @@ const pluginId = 'qq_auto_reply';
         window.reopenOnboarding = reopenOnboarding;
 
         document.getElementById('guide-step-napcat').addEventListener('click', () => {
-            showToast(t('ui.toast.start_napcat_manual', '请先手动启动 NapCat，再回到这里继续配置。'));
+            openStep1GuideModal();
         });
         document.getElementById('guide-step-settings').addEventListener('click', () => {
             scrollToConfigSection();
@@ -1194,6 +1219,13 @@ const pluginId = 'qq_auto_reply';
         });
         document.getElementById('backlog-refresh').addEventListener('click', loadBacklogSummary);
         document.getElementById('backlog-review-button').addEventListener('click', () => markBacklogGroupReviewed());
+        document.getElementById('step1-guide-confirm').addEventListener('click', confirmStep1GuideModal);
+        document.getElementById('step1-guide-cancel').addEventListener('click', closeStep1GuideModal);
+        document.getElementById('step1-guide-modal-overlay').addEventListener('click', (event) => {
+            if (event.target === event.currentTarget) {
+                closeStep1GuideModal();
+            }
+        });
         document.getElementById('backlog-label-add').addEventListener('click', addBacklogLabelDraft);
         document.getElementById('backlog-label-modal-save').addEventListener('click', confirmBacklogLabelModal);
         document.getElementById('backlog-label-modal-delete').addEventListener('click', deleteBacklogLabelFromModal);

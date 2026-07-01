@@ -119,14 +119,10 @@ jobs:
         run: |
           python -c "
           import json, os
+          # 本地化角色种子在 config/characters/<locale>.json（已入库的目录，PR #1282），
+          # 不需在此生成；只补 git 不跟踪的运行时文件，让构建有可读的基准配置。
           configs = {
             'config/characters.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.en.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.ja.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.ko.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.ru.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.zh-CN.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.zh-TW.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
             'config/core_config.json': {},
             'config/user_preferences.json': [],
           }
@@ -178,6 +174,16 @@ jobs:
       # anonymous profile folder so the bundled app can run vector memory
       # offline. The runtime (memory/embeddings.py) auto-falls back to bundled
       # assets when the user's app-data profile is incomplete.
+      # Cache the weights by revision so huggingface.co is hit at most once per
+      # pin (per OS) instead of every build — the same per-IP HTTP 429 throttle
+      # that broke the Docker build can bite here too. Cache hit -> the next step
+      # is a no-op ("keep existing"); only a cold cache actually downloads.
+      - name: Cache embedding model weights
+        uses: actions/cache@v4
+        with:
+          path: data/embedding_models
+          key: embedding-model-${{ runner.os }}-${{ env.EMBEDDING_MODEL_REVISION }}-both
+
       - name: Prepare embedding model assets
         shell: bash
         run: |
@@ -226,14 +232,17 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/__init__.py=config/__init__.py"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/api_providers.json=config/api_providers.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.json=config/characters.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.en.json=config/characters.en.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ja.json=config/characters.ja.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ko.json=config/characters.ko.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ru.json=config/characters.ru.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-CN.json=config/characters.zh-CN.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json"
+          # 本地化角色种子在 config/characters/<locale>.json（PR #1282 后），ConfigManager.
+          # _get_localized_characters_source 按 locale 读该目录；打整个目录，别再引用已不存在的
+          # 根级 config/characters.<locale>.json（旧路径，会静默丢失全部本地化种子）。
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config/characters=config/characters"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/core_config.json=config/core_config.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/user_preferences.json=config/user_preferences.json"
+          # changelog/.md 与 survey/.json 是纯数据文件，--include-package=config 只编 .py
+          # 不带它们，必须显式 include-data-dir，否则打包后 /api/changelog 与 /api/survey
+          # 读不到内容（survey 是 Steam-only，正是只在打包构建里跑）。
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config/changelog=config/changelog"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config/surveys=config/surveys"
 
           # Data directories
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"
@@ -256,6 +265,9 @@ jobs:
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/embedding_models=data/embedding_models"
           fi
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
+          # 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
+          # 是纯数据目录，--include-package 不带，漏了引导页内容/图片打包后 404。
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=docs/zh-CN/guide=docs/zh-CN/guide"
 
           # Packages
           NUITKA_OPTS="$NUITKA_OPTS --include-package=uvicorn"
@@ -278,6 +290,12 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken_ext"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=onnxruntime"
+          # onnxruntime.transformers/ is a benchmark + model-conversion toolbox
+          # nothing at runtime imports (rapidocr uses only the core InferenceSession).
+          # --include-package=onnxruntime would recurse and compile the whole subtree,
+          # including a 130k+ line gpt2 benchmark C unit that crashes the C backend.
+          # Mirrors build-desktop.yml.
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=onnxruntime.transformers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tokenizers"
 
           # Package data

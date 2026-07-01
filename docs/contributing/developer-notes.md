@@ -14,11 +14,11 @@ All Python commands must go through `uv`:
 
 ```bash
 # ✅ Correct
-uv run python main_server.py
+uv run python app/main_server.py
 uv run pytest tests/
 
 # ❌ Wrong
-python main_server.py
+python app/main_server.py
 pytest tests/
 ```
 
@@ -60,6 +60,41 @@ Once a Steam achievement is unlocked, it **cannot be revoked** via code. Always 
 await window.unlockAchievement('ACH_NAME');
 window.getAchievementStats();
 ```
+
+### 6. Privacy mode gates SCREEN/APP visibility only — never user understanding
+
+Privacy mode (`ais_privacy_mode_enabled()` / `is_privacy_mode_active()`) has **exactly one** job: deciding whether the AI may **see the user's screen and program/app state**. It must NOT be used to gate any feature that helps the AI *understand the user*.
+
+N.E.K.O. is an AI companion. Reading the user's emotional/conversational state from **what they type or say** is core to the product and is **always allowed**, privacy mode or not. The user's *messages* are not "screen data".
+
+```python
+# ❌ WRONG — do NOT gate companion/understanding logic on privacy mode
+if await ais_privacy_mode_enabled():
+    return  # skip emotion scoring / focus / memory reflection ...
+
+# ✅ RIGHT — only gate things that literally read the screen / app state
+if not await ais_privacy_mode_enabled():
+    screenshot = capture_screen()      # vision input
+    app_state = read_foreground_app()  # activity tracker enrichment
+```
+
+Rule of thumb: if a feature's input is the **conversation** (text/voice the user directed at the AI), it is privacy-independent. If its input is the **screen or OS/app state** the user did not explicitly send, that single source is what privacy mode governs.
+
+Concretely:
+- ✅ Focus (凝神) scores the user's *message* (vulnerability keywords, reply cadence) — privacy-independent by construction; it must not fetch a screen snapshot or check privacy on the inline path.
+- ✅ Memory reflection / persona / emotional-episode synthesis run on the conversation — privacy-independent.
+- ✅ The activity-tracker *snapshot* (screen genre, foreground app, open windows) is correctly nulled under privacy — that is the legitimate boundary. Features that consume it degrade gracefully when it is `None`, but they must not add their *own* extra privacy check on top.
+
+If you find code that disables an understanding feature based on privacy mode, it is a bug — remove the gate.
+
+### 7. Minigame prompts keep two locale schemes on purpose
+
+`config/prompts` deliberately runs **two different locale normalizers** for minigame prompts, and they must not be unified:
+
+- **Badminton quick-lines** use `normalize_badminton_prompt_locale` (in `prompts_badminton.py`), a **full-locale** scheme that keeps `zh-CN` and `zh-TW` apart. The tables `BADMINTON_QUICK_LINES_PROMPTS` / `BADMINTON_QUICK_LINES_FALLBACKS` are keyed by full locale so the Traditional-Chinese fallback lines survive.
+- **Everything else** (soccer, plus every system / pregame prompt, including `BADMINTON_SYSTEM_PROMPTS`) uses `_normalize_prompt_lang` (in `prompts_minigame_common.py`), a **short-locale** scheme that collapses every Chinese variant down to `zh`.
+
+Collapsing the badminton quick-lines onto the short scheme would fold `zh-TW` back into `zh-CN` and regress the Traditional-Chinese fallback fix from PR #2000. Each normalizer owns its own tables; do not "tidy up" by merging them.
 
 ## Frontend gotchas
 

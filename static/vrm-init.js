@@ -414,6 +414,14 @@ async function initVRMModel() {
         if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
             await window.__nekoStorageLocationStartupBarrier;
         }
+        if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot === 'function'
+            && window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()) {
+            if (typeof window.NekoAvatarFloatingBoot.markUserModelBootSkipped === 'function') {
+                window.NekoAvatarFloatingBoot.markUserModelBootSkipped('vrm-init');
+            }
+            console.log('[VRM Init] 新手教程启动预测命中，跳过用户 VRM 模型加载');
+            return;
+        }
         // 1. 等待配置加载完成
         if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
             await window.pageConfigReady;
@@ -468,6 +476,11 @@ async function initVRMModel() {
         // 如果是模型管理页面，不自动加载模型，直接返回
         if (isModelManagerPage()) {
             console.log('[VRM Init] 模型管理页面，跳过自动模型加载');
+            return;
+        }
+
+        if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber') {
+            console.log('[VRM Init] PNGTuber 模式，跳过 VRM 加载');
             return;
         }
 
@@ -619,6 +632,8 @@ async function initVRMModel() {
         window._isVRMLoading = false;
     }
 }
+
+window.initVRMModel = initVRMModel;
 
 // ── 主页面 VRM 待机动作轮换 ──────────────────────────────
 // 策略：优先在动画一轮播完（loop 事件）时切换，避免动作中途跳变；

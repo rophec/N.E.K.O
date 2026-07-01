@@ -1,21 +1,58 @@
 # -- coding: utf-8 --
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 
 import asyncio
 import json
 import re
 import time
 from typing import Optional, Callable, Dict, Any, Awaitable, List
-from utils.llm_client import SystemMessage, HumanMessage, AIMessage, create_chat_llm
+from utils.llm_client import (
+    SystemMessage,
+    HumanMessage,
+    AIMessage,
+    LLMStreamChunk,
+    ThinkingStreamStripper,
+    anthropic_retry_error_types,
+    strip_thinking_segments,
+    create_chat_llm,
+    create_chat_llm_async,
+)
 from openai import APIConnectionError, AuthenticationError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
-from config import OMNI_RECENT_RESPONSES_MAX
+from config import (
+    OMNI_RECENT_RESPONSES_MAX,
+    DIALOG_LLM_STREAM_TIMEOUT_SECONDS,
+    FOCUS_THINKING_EXTRA_TOKENS,
+)
 from main_logic.tool_calling import (
     OnToolCallCallback,
     ToolCall,
     ToolDefinition,
     ToolResult,
     parse_arguments_json,
+)
+from utils.llm_tool_leak_filter import ToolLeakFilter, log_tool_leak_filtered
+
+_LLM_RETRY_ERROR_TYPES = (
+    APIConnectionError,
+    AuthenticationError,
+    InternalServerError,
+    RateLimitError,
+    *anthropic_retry_error_types(),
 )
 
 # google-genai 懒加载。该 SDK import 很重（~0.6s），且在 import 时会捎带 mcp
@@ -28,10 +65,10 @@ _GENAI_AVAILABLE: bool | None = None  # None = 尚未尝试导入
 
 
 def _ensure_genai() -> bool:
-    """首次调用时 import google-genai，并缓存结果（成功或失败）。
+    """Import google-genai on first call and cache the result (success or failure).
 
-    返回 SDK 是否可用。并发竞态下最坏只是重复 import 一次，Python 的模块缓存
-    让其幂等，无副作用。
+    Returns whether the SDK is available. Under a concurrent race the worst case is one
+    duplicate import; Python's module cache makes it idempotent with no side effects.
     """
     global _genai, _genai_types, _GENAI_AVAILABLE
     # 显式强制不可用优先级最高（测试用它当强制降级开关）→ 即便对象已塞进全局也降级。
@@ -125,6 +162,24 @@ _API_KEY_REJECTED_KEYWORDS = (
     "invalid key",
     "api key is invalid",
 )
+_SAFETY_VIOLATION_KEYWORDS = (
+    "safety",
+    "content_filter",
+    "content filter",
+    "policy violation",
+    "policy_violation",
+    "blocklist",
+    "prohibited",
+    "prohibited_content",
+    "recitation",
+    "spii",
+    "language",
+    "image_safety",
+    "image_prohibited_content",
+    "image_recitation",
+    "responsibleaipolicyviolation",
+    "responsible ai policy",
+)
 
 
 def _is_api_key_rejected_error(error: BaseException | str) -> bool:
@@ -146,6 +201,14 @@ def _is_api_key_rejected_error(error: BaseException | str) -> bool:
         ("authenticationerror" in text or "authentication" in text or "unauthorized" in text)
         and "api key" in text
     )
+
+
+def _is_safety_violation_signal(*values: object) -> bool:
+    """Return True when provider diagnostics point to safety/policy blocking."""
+    text = " ".join(str(value) for value in values if value).lower()
+    if not text:
+        return False
+    return any(keyword in text for keyword in _SAFETY_VIOLATION_KEYWORDS)
 
 
 def _truncate_to_last_sentence_end(text: str) -> str:
@@ -180,6 +243,10 @@ _GIBBERISH_PS_RATIO_CEIL = 0.25    # > 25% punct/symbol → emoji/mark spam
 # matter without bloating cost.
 _MAX_TOKENS_SLACK = 20
 _UNLIMITED_BUDGET = 999999  # sentinel set when user picks the slider's "无限制"
+
+# 主动搭话遗留截图的存活上限：暂存后超过这个时长就视为过期、不再注入用户回复
+# （屏幕早变了，旧图反而误导模型）。在注入点惰性判定，无需后台定时器。
+_PROACTIVE_SCREENSHOT_TTL_SECONDS = 120.0
 
 
 def _budget_to_max_tokens(budget: int, summary_mode: bool = False) -> int | None:
@@ -510,9 +577,12 @@ class OmniOfflineClient:
         vision_model: str = "",
         vision_base_url: str = "",  # 独立的视觉模型 API URL
         vision_api_key: str = "",   # 独立的视觉模型 API Key
+        provider_type: str | None = None,
+        vision_provider_type: str | None = None,
         voice: str = "",  # Unused for text mode but kept for compatibility
         turn_detection_mode = None,  # Unused for text mode
         on_text_delta: Optional[Callable[[str, bool], Awaitable[None]]] = None,
+        on_thinking_active: Optional[Callable[[bool], Awaitable[None]]] = None,
         on_audio_delta: Optional[Callable[[bytes], Awaitable[None]]] = None,  # Unused
         on_interrupt: Optional[Callable[[], Awaitable[None]]] = None,  # Unused
         on_input_transcript: Optional[Callable[[str], Awaitable[None]]] = None,
@@ -539,7 +609,35 @@ class OmniOfflineClient:
         # 视觉模型独立配置（如果未指定则回退到主配置）
         self.vision_base_url = vision_base_url if vision_base_url else base_url
         self.vision_api_key = vision_api_key if vision_api_key else api_key
+        self.provider_type = provider_type
+        self.vision_provider_type = vision_provider_type or provider_type
+        self._model_switch_lock = asyncio.Lock()
         self.on_text_delta = on_text_delta
+        # Called with True the first time a stream emits a reasoning / thinking
+        # chunk (the text itself is filtered out before it reaches text/TTS —
+        # only the "is thinking" boolean is surfaced), and with False to clear
+        # when that stream ends without an external unconditional clear (see
+        # _notify_reasoning_done). Drives the chat thinking-dots bubble for ANY
+        # turn that actually reasons, decoupled from Focus mode.
+        self.on_thinking_active = on_thinking_active
+        # Reasoning-pulse ownership. A proactive prompt_ephemeral turn can
+        # interleave with a user stream_text on this SAME client (core drops stale
+        # proactive chunks via the expected-sid guard rather than awaiting the
+        # prompt). Ownership is tracked by a single source of truth — NOT a shared
+        # boolean, which _begin_reasoning_stream would reset out from under an
+        # older still-running stream (Codex P2):
+        #   _reasoning_stream_seq      — monotonic counter, bumped per stream entry
+        #                                (stream_text / prompt_ephemeral) so each
+        #                                stream has a distinct token.
+        #   _reasoning_active_pulse_seq — the seq that currently owns an un-cleared
+        #                                True pulse (None = bubble not lit by us).
+        #                                A pulse stamps it; a clear only fires for
+        #                                the owning seq. Because it is NOT reset on
+        #                                stream entry, a preempted proactive turn
+        #                                still clears its OWN pulse, yet cannot
+        #                                clear a newer stream that already re-pulsed.
+        self._reasoning_stream_seq = 0
+        self._reasoning_active_pulse_seq: Optional[int] = None
         self.on_input_transcript = on_input_transcript
         self.on_output_transcript = on_output_transcript
         self.handle_connection_error = on_connection_error
@@ -587,6 +685,8 @@ class OmniOfflineClient:
             self.model, self.base_url, self.api_key,
             streaming=True, max_retries=0,
             max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
+            timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
+            provider_type=self.provider_type,
         )
 
         # ── Tool calling state ────────────────────────────────────────
@@ -606,6 +706,18 @@ class OmniOfflineClient:
         self._instructions = ""
         self._stream_task = None
         self._pending_images = []  # Store pending images to send with next text
+        # 主动搭话以「屏幕」为素材投递后遗留的那张截图，待下一条用户 text 回复
+        # 时作为前导视觉背景注入（让对话模型「看到」刚才搭话评论的屏幕）。刻意
+        # 与 _pending_images（用户自己的下一帧）隔离：共用会偷走用户的待发帧，
+        # 见 core.py proactive media 注释（Codex P2）。单张、一次性消费、带 TTL
+        # （_proactive_image_staged_at = 暂存时刻的 monotonic 秒，0.0 = 无暂存）。
+        # _proactive_image_history_len = 暂存那一刻的历史长度：截图只对「紧接它的
+        # 下一条用户回复」有效，若中途又来了别的 AI 轮（greeting / agent 回调走
+        # prompt_ephemeral，不过 finish_proactive_delivery）使历史变长，这张就过时
+        # 了、注入时丢弃——把截图钉死在「最后一条 AI 轮」上（Codex P2）。
+        self._proactive_image_to_inject = None
+        self._proactive_image_staged_at = 0.0
+        self._proactive_image_history_len = 0
 
         # ── Empty-completion 诊断（finish_reason / prompt_tokens / block_reason）──
         # Gemini 在 SAFETY / RECITATION / MAX_TOKENS 等场景会返回 finish_reason
@@ -641,12 +753,14 @@ class OmniOfflineClient:
         ``stream_text`` / ``prompt_ephemeral`` call. Pass ``None`` or
         ``[]`` to disable tools entirely.
 
-        ⚠️ 顺手清掉 ``_genai_tools_unsupported``：这个旗标一旦因为旧工具集
-        触发 ``GenerateContentConfig rejected`` / 类似 unsupported 异常被
-        flip 成 ``True``，整条 session 后续永远不再尝试 native genai 路径。
-        既然 caller 把工具列表换了（典型场景：热卸载坏 schema 工具），就该
-        给 genai 路径一次重新尝试的机会，否则只能等到下次 ``connect()``
-        / ``switch_model()`` 重置才能恢复。
+        ⚠️ Also clears ``_genai_tools_unsupported``: once that flag is
+        flipped to ``True`` because the old tool set triggered a
+        ``GenerateContentConfig rejected`` / similar unsupported exception,
+        the rest of the session would never try the native genai path
+        again. Since the caller has swapped the tool list (typical case:
+        hot-unloading a tool with a broken schema), the genai path deserves
+        a fresh chance — otherwise it could only recover at the next
+        ``connect()`` / ``switch_model()`` reset.
         """
         self._tool_definitions = list(tool_definitions or [])
         self._genai_tools_unsupported = False
@@ -679,17 +793,23 @@ class OmniOfflineClient:
         result JSON. Both shapes follow the OpenAI Chat Completions spec
         so the next astream invocation sees a valid history.
 
-        ``assistant_text`` 写进 assistant turn 的 ``content``。OpenAI Chat
-        Completions 协议允许同一 turn 既有 ``content`` 又有 ``tool_calls``，
-        某些 OpenAI-compat provider 会"先吐文字再进 tool_calls"。和 Gemini
-        路径的 streamed_text_buffer 一样，这条 text 必须一起写进历史，否则
-        下一轮上下文丢前缀，模型重复 / 改口。
+        ``assistant_text`` is written into the assistant turn's ``content``.
+        The OpenAI Chat Completions protocol allows a turn to carry both
+        ``content`` and ``tool_calls``, and some OpenAI-compat providers
+        "emit text first, then enter tool_calls". Like the Gemini path's
+        streamed_text_buffer, this text must be written into the history
+        too, otherwise the next turn's context loses the prefix and the
+        model repeats itself / backtracks.
 
-        ``assistant_reasoning`` 是 thinking 模型本轮的推理链（``reasoning_content``）。
-        DeepSeek-R / Qwen / GLM thinking 等端点在多轮 tool calling 时要求把发起
-        tool_calls 那条 assistant 消息的 ``reasoning_content`` 原样回填，否则下一轮
-        报 400 "The `reasoning_content` in the thinking mode must be passed back to
-        the API."。非 thinking 端点恒为空，此时不写该字段以免污染普通会话。
+        ``assistant_reasoning`` is the thinking model's reasoning chain for
+        this turn (``reasoning_content``). Endpoints like DeepSeek-R /
+        Qwen / GLM thinking require the ``reasoning_content`` of the
+        assistant message that initiated the tool_calls to be passed back
+        verbatim in multi-turn tool calling, otherwise the next turn fails
+        with 400 "The `reasoning_content` in the thinking mode must be
+        passed back to the API.". Non-thinking endpoints always leave it
+        empty, in which case the field is omitted to avoid polluting
+        normal conversations.
         """
         # 防御性过滤：``ChatOpenAI.collect_tool_calls`` 已会丢弃空 name 槽位，
         # 但万一调用方直接构造（或上游聚合实现替换），这里再兜一层 ——
@@ -752,6 +872,72 @@ class OmniOfflineClient:
                 "content": result.output_as_json_string(),
             })
 
+    async def _notify_reasoning_active(self) -> None:
+        """Tell the host that the model is emitting reasoning / thinking chunks, so
+        the chat can show a thinking-dots bubble even on a non-Focus turn whose
+        provider reasons internally. The reasoning TEXT is still filtered out at the
+        call site — only this boolean pulse escapes. Pulses once per stream: it
+        records the current stream's seq as the pulse owner and no-ops while that
+        same seq still owns the pulse, so the three filter points can call it
+        blindly. Best-effort: a callback failure must never disturb the stream.
+
+        getattr defaults guard ``__new__`` test stubs that bypass ``__init__``."""
+        cur = getattr(self, "_reasoning_stream_seq", 0)
+        if getattr(self, "_reasoning_active_pulse_seq", None) == cur:
+            return  # already pulsed for THIS stream
+        self._reasoning_active_pulse_seq = cur
+        cb = getattr(self, "on_thinking_active", None)
+        if cb is None:
+            return
+        try:
+            await cb(True)
+        except Exception as e:
+            logger.debug("on_thinking_active(True) callback failed (ignored): %s", e)
+
+    def _begin_reasoning_stream(self) -> int:
+        """Open a new reasoning-pulse scope for one stream and return its ownership
+        token. Bumps the seq so this stream's first reasoning chunk re-pulses and
+        so an older interleaving stream's clear can't fire for this scope. Crucially
+        does NOT touch ``_reasoning_active_pulse_seq`` — that single source of truth
+        stays owned by whoever last lit the bubble, so a preempted older stream can
+        still clear its own pulse (Codex P2). Called at the top of both stream entry
+        points (stream_text and prompt_ephemeral)."""
+        self._reasoning_stream_seq = getattr(self, "_reasoning_stream_seq", 0) + 1
+        return self._reasoning_stream_seq
+
+    async def _notify_reasoning_done(self, owner_seq: Optional[int] = None) -> None:
+        """Symmetric clear for ``_notify_reasoning_active``: push the bubble back to
+        False when THIS stream still owns the active pulse. Required for callers
+        without an external unconditional clear — ``prompt_ephemeral``'s proactive /
+        greeting / avatar turns clear the bubble only when a visible token reaches
+        ``send_lanlan_response``; a turn that reasons but commits no text (safety /
+        empty / tool-only) would otherwise leave the bubble stuck on (Codex P2).
+        ``stream_text``'s Focus path is cleared by core's own unconditional finally
+        instead (it must also clear the Focus pre-pulse, which fires with no
+        reasoning chunk), so this is wired into ``prompt_ephemeral``'s finally only.
+
+        ``owner_seq`` is the token from this stream's ``_begin_reasoning_stream``.
+        The clear fires only when ``_reasoning_active_pulse_seq`` still equals it:
+          - a NEWER stream that already re-pulsed took ownership (seq differs) → we
+            must NOT clear the bubble it is reasoning under;
+          - but if the newer stream merely STARTED (bumped seq) without pulsing yet,
+            ownership is still ours, so we correctly clear our own pulse rather than
+            leaking it (the bug a shared per-stream boolean would have caused).
+        Idempotent; getattr defaults guard ``__new__`` test stubs."""
+        active = getattr(self, "_reasoning_active_pulse_seq", None)
+        if active is None:
+            return
+        if owner_seq is not None and active != owner_seq:
+            return
+        self._reasoning_active_pulse_seq = None
+        cb = getattr(self, "on_thinking_active", None)
+        if cb is None:
+            return
+        try:
+            await cb(False)
+        except Exception as e:
+            logger.debug("on_thinking_active(False) clear failed (ignored): %s", e)
+
     async def _astream_with_tools(self, messages, **overrides):
         """Polymorphic streaming entry point. Yields ``LLMStreamChunk``
         objects (text + finish_reason); tool calls are intercepted and
@@ -765,6 +951,8 @@ class OmniOfflineClient:
           documented lanlan.app/free trade-off).
         - Otherwise: ``_astream_openai_with_tools``.
         """
+        tool_leak_filter = overrides.pop("_tool_leak_filter", None)
+        tool_leak_provider = overrides.pop("_tool_leak_provider", None)
         if self._use_genai_sdk and not self._genai_tools_unsupported:
             # 跟踪本轮 Gemini 路径是否已经把 text chunk yield 给上游。如果
             # 已经吐过文本，再 fallback 到 OpenAI-compat 会让用户在同一轮
@@ -773,7 +961,12 @@ class OmniOfflineClient:
             # 触发"清空气泡 + 通知 response_discarded"的标准处理。
             genai_emitted_text = False
             try:
-                async for chunk in self._astream_genai_with_tools(messages, **overrides):
+                async for chunk in self._astream_genai_with_tools(
+                    messages,
+                    _tool_leak_filter=tool_leak_filter,
+                    _tool_leak_provider=tool_leak_provider,
+                    **overrides,
+                ):
                     if getattr(chunk, "content", None):
                         genai_emitted_text = True
                     yield chunk
@@ -789,6 +982,8 @@ class OmniOfflineClient:
                     # 让上游 retry 路径基于 attempt+1 重新走（下次会直接
                     # 进 OpenAI-compat，因为 _genai_tools_unsupported=True）。
                     raise
+                if tool_leak_filter is not None:
+                    tool_leak_filter.reset()
             except Exception as e:
                 # Don't break user requests on transient genai SDK errors —
                 # log loudly and fall through. ``_genai_tools_unsupported``
@@ -800,14 +995,75 @@ class OmniOfflineClient:
                     # 流程清空气泡后基于 attempt+1 重试（下一次仍会先尝试
                     # genai，因为 transient 不翻 _genai_tools_unsupported）。
                     raise
-        async for chunk in self._astream_openai_with_tools(messages, **overrides):
+                if tool_leak_filter is not None:
+                    tool_leak_filter.reset()
+        async for chunk in self._astream_openai_with_tools(
+            messages,
+            _tool_leak_filter=tool_leak_filter,
+            _tool_leak_provider=tool_leak_provider,
+            **overrides,
+        ):
             yield chunk
+
+    async def _astream_visible_with_tools(self, messages, **overrides):
+        tool_names = {
+            tool.name for tool in getattr(self, "_tool_definitions", [])
+            if getattr(tool, "name", None)
+        }
+        leak_filter = ToolLeakFilter(tool_names=tool_names)
+        provider = getattr(self, "base_url", None) or getattr(self, "model", None)
+
+        def _finalize_filter_chunk():
+            visible, event = leak_filter.finalize()
+            if event:
+                log_tool_leak_filtered(event, provider=provider)
+            if not visible:
+                return None
+            chunk = LLMStreamChunk(content=visible)
+            setattr(chunk, "_tool_leak_filtered", True)
+            return chunk
+
+        try:
+            async for chunk in self._astream_with_tools(
+                messages, _tool_leak_filter=leak_filter, _tool_leak_provider=provider, **overrides
+            ):
+                if getattr(chunk, "_tool_leak_filtered", False):
+                    yield chunk
+                    continue
+                content = getattr(chunk, "content", None)
+                if content:
+                    chunk.content = self._filter_tool_leak_content(content, leak_filter, provider=provider)
+                    setattr(chunk, "_tool_leak_filtered", True)
+                yield chunk
+        except Exception:
+            chunk = _finalize_filter_chunk()
+            if chunk is not None:
+                yield chunk
+            raise
+
+        chunk = _finalize_filter_chunk()
+        if chunk is not None:
+            yield chunk
+
+    def _filter_tool_leak_content(
+        self,
+        content: str,
+        leak_filter: ToolLeakFilter,
+        *,
+        provider: str | None = None,
+    ) -> str:
+        visible, event = leak_filter.feed(content)
+        if event:
+            log_tool_leak_filtered(event, provider=provider)
+        return visible
 
     async def _astream_openai_with_tools(self, messages, **overrides):
         """OpenAI Chat Completions tool loop. Streams text chunks; on
         ``finish_reason == "tool_calls"`` runs the tools, appends the
         results to ``messages``, and re-invokes — up to
         ``self.max_tool_iterations`` total LLM calls."""
+        tool_leak_filter = overrides.pop("_tool_leak_filter", None)
+        tool_leak_provider = overrides.pop("_tool_leak_provider", None)
         tools_payload = self._openai_tools_payload()
         if tools_payload:
             overrides.setdefault("tools", tools_payload)
@@ -828,11 +1084,23 @@ class OmniOfflineClient:
             # assistant tool_calls turn 一起回填，否则部分 provider 下一轮报
             # 400（reasoning_content must be passed back）。普通端点恒为空。
             streamed_reasoning_buffer = ""
-            async for chunk in self.llm.astream(messages, **overrides):
+            async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
                 if getattr(chunk, "content", None):
+                    if tool_leak_filter is not None:
+                        chunk.content = self._filter_tool_leak_content(
+                            chunk.content, tool_leak_filter, provider=tool_leak_provider
+                        )
+                        setattr(chunk, "_tool_leak_filtered", True)
                     streamed_text_buffer += chunk.content
                 if getattr(chunk, "reasoning_content", None):
                     streamed_reasoning_buffer += chunk.reasoning_content
+                    # Pulse the thinking bubble on ANY chunk carrying reasoning,
+                    # BEFORE the pure-reasoning skip below — a thinking provider
+                    # can pack reasoning_content onto the SAME delta as a
+                    # tool_call_delta / finish_reason (the OpenAI adapter keeps
+                    # them in one LLMStreamChunk), and a reasoning tool-call turn
+                    # has no visible token to show feedback otherwise (Codex P2).
+                    await self._notify_reasoning_active()
                 if chunk.tool_call_deltas:
                     deltas_per_chunk.append(chunk.tool_call_deltas)
                 if chunk.finish_reason:
@@ -855,6 +1123,8 @@ class OmniOfflineClient:
                     and not chunk.finish_reason
                     and not chunk.usage_metadata
                 ):
+                    # Pure reasoning-only chunk: already pulsed above; drop it so
+                    # the "first token" TTFT埋点 isn't fooled by a reasoning token.
                     continue
                 # 永远 yield 文本 chunk —— 即便是 tool-only turn 也可能在
                 # finish_reason=tool_calls 之前 emit usage chunk 和空 content。
@@ -886,6 +1156,16 @@ class OmniOfflineClient:
                 and tools_payload
                 and self.on_tool_call is not None
             ):
+                if tool_leak_filter is not None:
+                    tail, event = tool_leak_filter.finalize()
+                    if event:
+                        log_tool_leak_filtered(event, provider=tool_leak_provider)
+                    if tail:
+                        streamed_text_buffer += tail
+                        tail_chunk = LLMStreamChunk(content=tail)
+                        setattr(tail_chunk, "_tool_leak_filtered", True)
+                        yield tail_chunk
+                    tool_leak_filter.reset()
                 # ChatOpenAI is the right import even though we're outside
                 # ChatOpenAI — `collect_tool_calls` is a staticmethod.
                 from utils.llm_client import ChatOpenAI as _ChatOpenAI
@@ -893,7 +1173,13 @@ class OmniOfflineClient:
                 calls = _ChatOpenAI.collect_tool_calls(deltas_per_chunk)
                 await self._execute_and_append_openai_tool_calls(
                     messages, calls,
-                    assistant_text=streamed_text_buffer,
+                    # Strip any leaked <think> CoT before it lands in history:
+                    # the streaming guard (ThinkingStreamStripper) only protects
+                    # TTS/UI; this assembled pre-tool text is persisted raw to the
+                    # assistant tool-call turn, so a leak-prone Focus turn would
+                    # otherwise carry CoT into the next turn's context. No-op on
+                    # clean replies (no think tag present).
+                    assistant_text=strip_thinking_segments(streamed_text_buffer),
                     assistant_reasoning=streamed_reasoning_buffer,
                 )
                 # 通知上游 ``stream_text``：本轮的 pre-tool text + tool_calls
@@ -916,13 +1202,18 @@ class OmniOfflineClient:
         }
         final_finish_reason: Optional[str] = None
         final_prompt_tokens: Optional[int] = None
-        async for chunk in self.llm.astream(messages, **final_overrides):
+        async for chunk in self.llm.astream(messages, **final_overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
             if chunk.finish_reason:
                 final_finish_reason = chunk.finish_reason
             if chunk.usage_metadata:
                 pt = chunk.usage_metadata.get("prompt_tokens")
                 if pt:
                     final_prompt_tokens = pt
+            # Pulse on ANY reasoning chunk (incl. reasoning bundled with a tool
+            # delta / finish_reason on one delta), before the pure-reasoning skip
+            # below — same fix as the main loop (Codex P2).
+            if getattr(chunk, "reasoning_content", None):
+                await self._notify_reasoning_active()
             # 与常规 tool-loop 路径一致：不向下游转发 thinking 模型的纯
             # reasoning chunk（有 reasoning_content、无 content / tool delta /
             # finish / usage）。stream_text 在首个 yield 的 chunk 上记 TTFT，
@@ -935,6 +1226,11 @@ class OmniOfflineClient:
                 and not chunk.usage_metadata
             ):
                 continue
+            if getattr(chunk, "content", None) and tool_leak_filter is not None:
+                chunk.content = self._filter_tool_leak_content(
+                    chunk.content, tool_leak_filter, provider=tool_leak_provider
+                )
+                setattr(chunk, "_tool_leak_filtered", True)
             yield chunk
         # prompt_tokens 走局部变量、流结束后无条件回填（与 genai 路径同口径）：这次
         # forced-finalize 没给 usage 时写回 None，而非沿用上一轮 tool-iteration 的旧
@@ -957,7 +1253,8 @@ class OmniOfflineClient:
 
         Raises ``_GenaiToolsUnsupported`` if the SDK or this model
         cannot handle tools — caller falls back to OpenAI-compat."""
-        from utils.llm_client import LLMStreamChunk
+        tool_leak_filter = overrides.pop("_tool_leak_filter", None)
+        tool_leak_provider = overrides.pop("_tool_leak_provider", None)
         if not _ensure_genai():
             raise _GenaiToolsUnsupported("google-genai SDK not importable")
         types = _genai_types
@@ -1052,8 +1349,13 @@ class OmniOfflineClient:
                     cand_content = getattr(cand, "content", None)
                     parts = getattr(cand_content, "parts", None) or []
                     for part in parts:
-                        # Skip thinking parts (Gemini 2.5+ thinking models).
+                        # Skip thinking parts (Gemini 2.5+ thinking models) — but
+                        # surface the boolean "is thinking" pulse first so the
+                        # bubble shows on genai reasoning turns too (dual with the
+                        # OpenAI-compat reasoning_content path). The thought TEXT
+                        # itself is still dropped.
                         if getattr(part, "thought", False):
+                            await self._notify_reasoning_active()
                             continue
                         text = getattr(part, "text", None) or ""
                         fn_call = getattr(part, "function_call", None)
@@ -1082,9 +1384,16 @@ class OmniOfflineClient:
                                 raw_args,
                             ))
                         elif text:
+                            if tool_leak_filter is not None:
+                                text = self._filter_tool_leak_content(
+                                    text, tool_leak_filter, provider=tool_leak_provider,
+                                )
                             had_text = True
                             streamed_text_buffer += text
-                            yield LLMStreamChunk(content=text)
+                            chunk_out = LLMStreamChunk(content=text)
+                            if tool_leak_filter is not None:
+                                setattr(chunk_out, "_tool_leak_filtered", True)
+                            yield chunk_out
                     # Usage metadata may arrive on the chunk.
                     usage_meta = getattr(chunk, "usage_metadata", None)
                     if usage_meta is not None and not usage_emitted:
@@ -1152,13 +1461,26 @@ class OmniOfflineClient:
                     }
                     for i, (tc_id, tc_name, _args, tc_raw) in enumerate(collected_tool_calls)
                 ]
+                if tool_leak_filter is not None:
+                    tail, event = tool_leak_filter.finalize()
+                    if event:
+                        log_tool_leak_filtered(event, provider=tool_leak_provider)
+                    if tail:
+                        streamed_text_buffer += tail
+                        tail_chunk = LLMStreamChunk(content=tail)
+                        setattr(tail_chunk, "_tool_leak_filtered", True)
+                        yield tail_chunk
+                    tool_leak_filter.reset()
                 # 把本轮已经流给用户的 text 一起写进历史。Gemini 在同一 turn
                 # 里允许 text part 与 function_call part 并存；如果这里仍写
                 # ``content=""``，下一轮 LLM 看到的上下文会缺掉前半句，模型
                 # 会重复前缀或改口，最终持久化历史的顺序也跟真实生成顺序对不上。
                 messages.append({
                     "role": "assistant",
-                    "content": streamed_text_buffer,
+                    # Symmetric with the OpenAI path: strip leaked <think> CoT
+                    # before persisting the pre-tool text to history (no-op on
+                    # clean replies / the genai path, which routes thought out).
+                    "content": strip_thinking_segments(streamed_text_buffer),
                     "tool_calls": tool_calls_dict,
                 })
                 for i, (tc_id, tc_name, tc_args, tc_raw) in enumerate(collected_tool_calls):
@@ -1247,8 +1569,15 @@ class OmniOfflineClient:
                     continue
                 text = getattr(part, "text", None) or ""
                 if text:
+                    if tool_leak_filter is not None:
+                        text = self._filter_tool_leak_content(
+                            text, tool_leak_filter, provider=tool_leak_provider,
+                        )
                     final_had_text = True
-                    yield LLMStreamChunk(content=text)
+                    chunk_out = LLMStreamChunk(content=text)
+                    if tool_leak_filter is not None:
+                        setattr(chunk_out, "_tool_leak_filtered", True)
+                    yield chunk_out
         # 统一回填本次 forced-finalize 自己的诊断值（含 prompt_tokens）。prompt_tokens
         # 走局部变量、流结束后无条件回填：若这次被挡住/没给 usage，写回 None 而非沿用
         # 上一轮 tool-iteration 的旧值，避免 INFO log / 上层 LLM_NO_RESPONSE 诊断串台。
@@ -1265,13 +1594,14 @@ class OmniOfflineClient:
             )
 
     def update_max_response_length(self, max_length: int) -> None:
-        """更新回复 token 上限（用户可能在对话期间修改设置）。
-        单位与 ``self.max_response_length`` 一致：tiktoken token 数。
-        同步刷新 ``self.llm.max_completion_tokens`` 让下一次 astream 请求
-        在新的 budget+20 自然停止。
+        """Update the response token cap (the user may change settings mid-conversation).
+        Same unit as ``self.max_response_length``: tiktoken token count.
+        Also refreshes ``self.llm.max_completion_tokens`` so the next astream
+        request stops naturally at the new budget+20.
 
-        ``0`` / 负数都解释成"无限制"，与 ``__init__`` 同款语义；上层把
-        -1 当取消上限信号也能透下来。"""
+        ``0`` / negative values are both interpreted as "unlimited", matching the
+        ``__init__`` semantics; an upper layer passing -1 as a cancel-the-cap signal
+        also passes through correctly."""
         if isinstance(max_length, int):
             self.max_response_length = max_length if max_length > 0 else _UNLIMITED_BUDGET
             if self.llm is not None:
@@ -1321,25 +1651,37 @@ class OmniOfflineClient:
             new_model: The model to switch to
             use_vision_config: If True, use vision_base_url and vision_api_key
         """
-        if new_model and new_model != self.model:
+        lock = getattr(self, "_model_switch_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._model_switch_lock = lock
+
+        async with lock:
+            if not new_model or new_model == self.model:
+                return
+
             logger.info(f"Switching model from {self.model} to {new_model}")
 
             # 选择使用的 API 配置
             if use_vision_config:
                 base_url = self.vision_base_url
                 api_key = self.vision_api_key if self.vision_api_key and self.vision_api_key != '' else None
+                provider_type = self.vision_provider_type
             else:
                 base_url = self.base_url
                 api_key = self.api_key
+                provider_type = self.provider_type
 
             # 先创建新 client，成功后再原子替换，避免半切换状态。
             # max_completion_tokens 跟随当前 max_response_length 同步设置
             # （和 __init__ 一致）。
-            new_llm = create_chat_llm(
+            new_llm = await create_chat_llm_async(
                 new_model, base_url, api_key,
                 streaming=True, max_retries=0,
                 # 普通 budget；summary 的 3000 抬升只在 stream_text 内临时生效。
                 max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
+                timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
+                provider_type=provider_type,
             )
             old_llm = self.llm
             self.llm = new_llm
@@ -1372,8 +1714,8 @@ class OmniOfflineClient:
     
     async def _check_repetition(self, response: str) -> bool:
         """
-        检查回复是否与近期回复高度重复。
-        如果连续3轮都高度重复，返回 True 并触发回调。
+        Check whether the reply is highly repetitive of recent replies.
+        Returns True and triggers the callback if 3 consecutive turns are highly repetitive.
         """
         
         # 与最近的回复比较相似度
@@ -1397,7 +1739,7 @@ class OmniOfflineClient:
                 self._conversation_history = [self._conversation_history[0]]
             else:
                 self._conversation_history = []
-            
+
             # 清空重复检测缓存
             self._recent_responses.clear()
             
@@ -1412,7 +1754,7 @@ class OmniOfflineClient:
     async def _notify_response_discarded(self, reason: str, attempt: int, max_attempts: int, will_retry: bool,
                                          message: Optional[str] = None) -> None:
         """
-        通知上层当前回复被丢弃，用于清空前端气泡/提示用户
+        Notify the upper layer that the current reply was discarded, so the frontend bubble can be cleared / the user informed
         """
         if self.on_response_discarded:
             try:
@@ -1421,16 +1763,19 @@ class OmniOfflineClient:
                 logger.warning(f"通知 response_discarded 失败: {e}")
 
     async def _summarize_tail_for_tts(self, prefix: str, tail: str) -> Optional[str]:
-        """长回复 summary 路径的小模型调用。
+        """Small-model call for the long-reply summary path.
 
-        ``prefix`` 是 TTS 已经播给用户听的那段（用作上下文锚点，让 summary
-        自然衔接）；``tail`` 是 cutover 之后没读出来、待压缩的那段。返回
-        emotion-tier LLM 写出来的 1-2 句收尾，或在配置缺失/调用失败时返回
-        ``None`` —— 由 caller fallback 到"完整原文照读"。
+        ``prefix`` is the part TTS has already played to the user (used as a context
+        anchor so the summary flows naturally); ``tail`` is the part after the cutover
+        that was never read out and needs compressing. Returns the 1-2 closing
+        sentences written by the emotion-tier LLM, or ``None`` when config is missing /
+        the call fails — the caller then falls back to "read the full original text".
 
-        prompt 不灌 persona —— prefix/tail 本身就是主模型用人设口吻写出来的，
-        小模型只要保留原有语气、把尾巴压短即可，不需要再演一遍人设。语种从
-        ``tail`` 检测（前缀可能很短，尾巴信息量更稳）。
+        The prompt does not include the persona — prefix/tail were already written by
+        the main model in the persona's voice, so the small model only needs to keep
+        the existing tone and shorten the tail, not re-enact the persona. Language is
+        detected from ``tail`` (the prefix may be very short; the tail is more
+        informative).
         """
         if not (tail and tail.strip()):
             return None
@@ -1450,6 +1795,7 @@ class OmniOfflineClient:
         emotion_api_key = emotion_config.get('api_key')
         emotion_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')
+        emotion_provider_type = emotion_config.get('provider_type')
         if not (emotion_api_key and emotion_model):
             logger.info("summary: emotion 模型/Key 未配置，跳过长回复摘要")
             return None
@@ -1489,9 +1835,11 @@ class OmniOfflineClient:
         # （scripts/check_no_temperature.py 会守门）。emotion-tier 模型自带
         # 一个合适的 temperature，不需要 caller 干预。
         try:
-            llm = create_chat_llm(
+            llm = await create_chat_llm_async(
                 emotion_model, emotion_base_url, emotion_api_key,
                 max_completion_tokens=120,
+                timeout=30,
+                provider_type=emotion_provider_type,
             )
         except Exception as e:
             logger.warning("summary: 构造 emotion LLM 失败: %s", e)
@@ -1539,24 +1887,107 @@ class OmniOfflineClient:
             return None
         return summary
 
-    async def stream_text(self, text: str, *, system_prefix: str | None = None) -> None:
+    @staticmethod
+    def _focus_stream_overrides(
+        thinking_on: bool, model: str, base_max_tokens: int | None = None,
+    ) -> dict:
+        """Per-call streaming overrides for a Focus turn.
+
+        When thinking-on, override extra_body with ``focus_extra_body(model)`` —
+        the provider's thinking knob flipped to its ENABLED form (per provider
+        dialect) while PRESERVING non-thinking provider extras (e.g. step-2-mini's
+        built-in web_search), which a blunt ``extra_body=None`` would drop.
+        Returns ``{}`` (instance default, thinking off) otherwise.
+
+        Also bumps ``max_completion_tokens`` by ``FOCUS_THINKING_EXTRA_TOKENS``
+        — but ONLY when this turn actually flips thinking ON for the provider:
+        thinking models (Qwen / GLM / Kimi / Doubao / OpenRouter) bill reasoning
+        tokens against the SAME budget as the visible reply, so without headroom
+        the chain-of-thought squeezes the answer short. "Actually on" is detected
+        by ``focus_extra_body(model) != get_extra_body(model)`` — when the focus
+        form equals the regular (thinking-off) extra_body (Claude kept disabled,
+        unknown models → None, non-thinking providers only preserving their
+        non-thinking extras) there is no reasoning to reserve for, and a needless
+        +800 could push a request past a model's output ceiling near the cap /
+        summary floor. The bump is layered on ``base_max_tokens`` (the live
+        instance ceiling, already reflecting summary-mode lift / vision-model
+        switch), so it composes with both. ``base_max_tokens=None`` (unlimited
+        budget) omits the field — the request stays uncapped. The Python-side
+        length guard still caps the visible reply at ``max_response_length``;
+        this only gives reasoning its own slack on the API side.
+
+        Vision-model turns are included: Focus runs thinking-on regardless of
+        whether the turn carries images. The inline streaming timeout
+        (``DIALOG_LLM_STREAM_TIMEOUT_SECONDS``, 180s) is generous enough for a
+        vision reasoning turn — unlike the short-windowed proactive Phase-2 path,
+        which still keeps thinking off (its 16-25s window would time out).
+        """
+        if not thinking_on:
+            return {}
+        from config.providers import focus_extra_body, get_extra_body
+        fb = focus_extra_body(model)
+        overrides: dict = {"extra_body": fb}
+        # Headroom only when Focus actually enables thinking for this provider:
+        # ``fb is None`` ⇒ no thinking-enable override at all (unknown model);
+        # ``fb == get_extra_body(model)`` ⇒ focus form equals the regular
+        # (thinking-off) form (Claude kept disabled, non-thinking providers only
+        # preserving their own extras). Either way there's no reasoning to
+        # reserve for, and a needless +800 could push a request past a model's
+        # output ceiling.
+        if (
+            base_max_tokens is not None
+            and fb is not None
+            and fb != get_extra_body(model)
+        ):
+            overrides["max_completion_tokens"] = base_max_tokens + FOCUS_THINKING_EXTRA_TOKENS
+        return overrides
+
+    async def stream_text(
+        self,
+        text: str,
+        *,
+        system_prefix: str | None = None,
+        thinking_on: bool = False,
+        input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+        history_replacement_text: str | None = None,
+    ) -> None:
         """
         Send a text message to the API and stream the response.
         If there are pending images, temporarily switch to vision model for this turn.
         Uses langchain ChatOpenAI for streaming.
 
-        ``system_prefix`` 用途：caller（典型场景 SessionManager 把 passive agent
-        callback 渲染成自带 watermark 的 ``======[系统通知] xxx======`` 文本）
-        把这段中性 system notice 文本**就地拼到本轮 user message 的 content
-        前缀**——LLM 把它当作"用户当前发声那一刻附带的额外上下文"，在同一轮
-        回答里自然提及，不再起独立 turn 也不再单开 SystemMessage。
+        ``thinking_on`` (Focus mode 凝神, docs/design/focus-truename-mode.md):
+        when True, this single turn drops the auto-resolved thinking-off
+        ``extra_body`` so the provider runs its default reasoning ("放飞自我").
+        It is a per-call override (``extra_body=None`` threaded into
+        ``astream``) — the session LLM is NOT rebuilt and the next regular
+        turn falls straight back to thinking-off. Applies to the
+        OpenAI-compat path (where the thinking-off knob lives); the native
+        google-genai path is already thinking-capable by default, so the
+        override is a no-op there.
 
-        与 voice mode 的对偶：``OmniRealtimeClient.prime_context(skipped=False)``
-        在 GPT/GLM/Step 上同样走 ``create_response`` 把 callback 注入成 user
-        role 消息触发响应。inline 进 user content 即接受 callback 文本随
-        user message 进入 ``_conversation_history`` 持久化（跟 voice 端 user
-        role 注入语义一致）。
-        """
+        Purpose of ``system_prefix``: the caller (typically SessionManager rendering a
+        passive agent callback into watermarked ``======[系统通知] xxx======`` text)
+        splices this neutral system-notice text **in place, as a prefix to this turn's
+        user message content** — the LLM treats it as "extra context attached at the
+        moment the user spoke" and mentions it naturally within the same turn, without
+        starting a separate turn or a separate SystemMessage.
+
+        Symmetry with voice mode: ``OmniRealtimeClient.prime_context(skipped=False)``
+        on GPT/GLM/Step likewise goes through ``create_response`` to inject the
+        callback as a user-role message and trigger a response. Inlining into user
+        content means accepting that the callback text is persisted into
+        ``_conversation_history`` along with the user message (consistent with the
+        voice side's user-role injection semantics).
+
+        ``input_transcript_callback`` lets a caller bind the transcript recording
+        callback to this request. This is used when the frontend sends a long prompt
+        but wants memory/history to record a concise user-facing summary.
+
+        ``history_replacement_text`` keeps the full prompt available for the current
+        LLM turn, then replaces the just-appended user history entry before the next
+        turn reuses ``_conversation_history``.
+        """  # noqa: DOCSTRING_CJK
         if not text or not text.strip():
             # If only images without text, use a default prompt
             if self._pending_images:
@@ -1564,8 +1995,40 @@ class OmniOfflineClient:
             else:
                 return
 
-        # Check if we need to switch to vision model
-        has_images = len(self._pending_images) > 0
+        # Fresh stream: open a new reasoning-pulse scope (bump the ownership seq)
+        # so this turn's first reasoning chunk re-pulses the bubble. stream_text
+        # does not clear via _notify_reasoning_done — core's inline finally clears
+        # unconditionally — so it only needs the bump, not an owner token.
+        self._begin_reasoning_stream()
+
+        # Check if we need to switch to vision model. A staged proactive-vision
+        # screenshot (the screen she just commented on) counts as an image too,
+        # so a text-only user reply still goes multi-modal and the model sees it.
+        # The staged screenshot is dropped (not injected) when either:
+        #  - TTL: older than the 2-min cap (the screen has moved on — a stale
+        #    frame would mislead more than help); or
+        #  - superseded: a later AI turn was appended after staging (e.g. a
+        #    greeting / agent callback via prompt_ephemeral), so this reply isn't
+        #    answering the screen-based talk anymore. History only grows by
+        #    appends between staging and this read (the user hasn't been appended
+        #    yet), so a length change means an intervening AI turn (Codex P2).
+        proactive_image = self._proactive_image_to_inject
+        if proactive_image:
+            _expired = (
+                time.monotonic() - self._proactive_image_staged_at
+                > _PROACTIVE_SCREENSHOT_TTL_SECONDS
+            )
+            _superseded = len(self._conversation_history) != self._proactive_image_history_len
+            if _expired or _superseded:
+                logger.info(
+                    "Proactive screenshot dropped (expired=%s superseded=%s)",
+                    _expired, _superseded,
+                )
+                self._proactive_image_to_inject = None
+                self._proactive_image_staged_at = 0.0
+                self._proactive_image_history_len = 0
+                proactive_image = None
+        has_images = bool(proactive_image) or len(self._pending_images) > 0
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
         # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
         # 落 history，跟 voice mode user-role 注入对偶。
@@ -1586,7 +2049,17 @@ class OmniOfflineClient:
             # Multi-modal message: images + text
             content = []
 
-            # Add images first
+            # Add images first. Temporal order: the proactive screenshot (the
+            # screen she commented on, BEFORE the user spoke) leads, then the
+            # user's own pending frame(s) — so the model doesn't mistake the
+            # earlier screen for what the user just captured.
+            if proactive_image:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{proactive_image}"
+                    }
+                })
             for img_b64 in self._pending_images:
                 content.append({
                     "type": "image_url",
@@ -1602,21 +2075,39 @@ class OmniOfflineClient:
             })
 
             user_message = HumanMessage(content=content)
-            logger.info(f"Sending multi-modal message with {len(self._pending_images)} images")
+            _img_count = len(self._pending_images) + (1 if proactive_image else 0)
+            logger.info(
+                f"Sending multi-modal message with {_img_count} image(s)"
+                f"{' (incl. proactive screen)' if proactive_image else ''}"
+            )
 
-            # Clear pending images after using them
+            # Clear pending images after using them (content already holds the
+            # data urls). The proactive screenshot is one-shot: consumed by this
+            # reply, then cleared so it never re-injects into later turns.
             self._pending_images.clear()
+            self._proactive_image_to_inject = None
+            self._proactive_image_staged_at = 0.0
+            self._proactive_image_history_len = 0
         else:
             # Text-only message（已含 system_prefix watermark 前缀，若有）
             user_message = HumanMessage(content=_user_text_with_prefix)
 
         self._conversation_history.append(user_message)
+        history_replacement_index = len(self._conversation_history) - 1
+        history_replacement_text = (
+            str(history_replacement_text).strip()
+            if history_replacement_text is not None
+            else ""
+        )
+        if history_replacement_text and _prefix_clean:
+            history_replacement_text = f"{_prefix_clean}\n\n{history_replacement_text}"
         if has_images:
             self._evict_old_images()
 
         # Callback for user input
-        if self.on_input_transcript:
-            await self.on_input_transcript(text.strip())
+        transcript_callback = input_transcript_callback or self.on_input_transcript
+        if transcript_callback:
+            await transcript_callback(text.strip())
 
         # Retry策略：重试2次，间隔1秒、2秒
         max_retries = 3
@@ -1757,7 +2248,38 @@ class OmniOfflineClient:
                         # PLACE). The yielded chunks are exactly the same
                         # shape as raw ``self.llm.astream``, so the existing
                         # prefix/fence/length-guard logic below is untouched.
-                        async for chunk in self._astream_with_tools(self._conversation_history):
+                        # Focus 凝神: thinking_on threads ``extra_body=None``
+                        # down to ``astream`` (per-call override) so this turn
+                        # reasons freely; regular turns pass nothing → the
+                        # instance's thinking-off extra_body applies. Routed
+                        # through the visible (tool-leak-filtered) variant,
+                        # which forwards **overrides to ``_astream_with_tools``.
+                        # Also threads a ``max_completion_tokens`` bump
+                        # (+FOCUS_THINKING_EXTRA_TOKENS) so reasoning gets its
+                        # own headroom instead of eating the reply's budget;
+                        # base is the live instance ceiling (already reflects
+                        # summary-mode lift / vision switch), ``None`` stays
+                        # uncapped.
+                        _focus_overrides = self._focus_stream_overrides(
+                            thinking_on, self.model,
+                            base_max_tokens=self.llm.max_completion_tokens if self.llm else None,
+                        )
+                        # Focus 凝神: leak-prone models (qwen3.5/3.6/3.7 hybrids)
+                        # stream their chain-of-thought into ``content`` ending in
+                        # a lone ``</think>``; hold + drop it before TTS/UI ever
+                        # see it. Clean providers (reasoning_content path) get no
+                        # stripper, so their streaming stays byte-for-byte untouched.
+                        # Gate on the SAME condition as _focus_stream_overrides
+                        # (just ``thinking_on`` — vision turns now reason too).
+                        from config.providers import leaks_thinking_in_content
+                        think_stripper = (
+                            ThinkingStreamStripper()
+                            if thinking_on and leaks_thinking_in_content(self.model)
+                            else None
+                        )
+                        async for chunk in self._astream_visible_with_tools(
+                            self._conversation_history, **_focus_overrides,
+                        ):
                             if not _ttft_recorded:
                                 _ttft_recorded = True
                                 try:
@@ -1787,6 +2309,20 @@ class OmniOfflineClient:
                                 pipe_count = 0
                                 prefix_buffer = ""
                                 prefix_checked = not bool(self._prefix_buffer_size)
+                                if think_stripper is not None:
+                                    # Flush before reset: if this pre-tool segment
+                                    # never emitted </think>, the stripper is still
+                                    # holding real answer text it withheld from
+                                    # TTS/UI. The inner generator already persisted
+                                    # that text to history (stripped), so emit it to
+                                    # TTS/UI only here — dropping it (a bare reset)
+                                    # would lose the pre-tool sentence. Then re-arm
+                                    # for the post-tool segment (new semantic unit).
+                                    _pretool_residual = think_stripper.flush()
+                                    if _pretool_residual and _pretool_residual.strip() and self.on_text_delta:
+                                        await self.on_text_delta(_pretool_residual, is_first_chunk)
+                                        is_first_chunk = False
+                                    think_stripper.reset()
                                 # Summary 状态收尾：cutover 之后的 tail 已经 UI-only
                                 # 发出去了，但 TTS 还没听到。tool 边界处不知道
                                 # post-tool 段会有多长，没法走"final < max+slack"
@@ -1825,6 +2361,10 @@ class OmniOfflineClient:
                                 break
 
                             content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                            if think_stripper is not None and content:
+                                # Holds CoT until the first </think>; returns "" while
+                                # buffering so the empty-content guard below skips it.
+                                content = think_stripper.feed(content)
 
                             if content and content.strip():
                                 truncated_content = content
@@ -2023,6 +2563,24 @@ class OmniOfflineClient:
                             elif content and not content.strip():
                                 logger.debug(f"OmniOfflineClient: 过滤空白内容 - content_repr: {repr(content)[:100]}")
 
+                        # 流结束后：先 flush thinking stripper 的残留。仅漏型
+                        # provider 的 thinking_on 轮挂了它；若整轮没出现 </think>
+                        # （模型本轮没思考），它一直 hold，这里把攒住的正文还回
+                        # prefix_buffer，走下面的通用 emit/guard 路径，避免丢答案。
+                        if think_stripper is not None:
+                            _think_residual = think_stripper.flush()
+                            if _think_residual:
+                                prefix_buffer += _think_residual
+                                # Force the unified flush below to run on this
+                                # residual. When prefix checking is disabled
+                                # (_prefix_buffer_size == 0) prefix_checked starts
+                                # True, so `and not prefix_checked` would otherwise
+                                # drop the held answer silently. Safe to clear: a
+                                # non-empty residual means no </think> ever arrived,
+                                # which only happens when the stripper held the whole
+                                # stream → prefix_buffer was never filled by the live
+                                # path, so prefix_checked carried no completed state.
+                                prefix_checked = False
                         # 流结束后：flush 未处理的前缀缓冲区（走通用 emit/guard 路径）
                         if prefix_buffer and not prefix_checked:
                             prefix_checked = True
@@ -2406,7 +2964,7 @@ class OmniOfflineClient:
                     if assistant_message_total:
                         break
 
-                except (APIConnectionError, AuthenticationError, InternalServerError, RateLimitError) as e:
+                except _LLM_RETRY_ERROR_TYPES as e:
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
                     is_internal_error = isinstance(e, InternalServerError)
@@ -2555,6 +3113,15 @@ class OmniOfflineClient:
         finally:
             self._is_responding = False
 
+            if (
+                history_replacement_text
+                and 0 <= history_replacement_index < len(self._conversation_history)
+                and self._conversation_history[history_replacement_index] is user_message
+            ):
+                self._conversation_history[history_replacement_index] = HumanMessage(
+                    content=history_replacement_text
+                )
+
             # 还原 summary 模式临时抬高的 API budget，别泄漏给 prompt_ephemeral。
             if _summary_prev_max_tokens is not None and getattr(self, "llm", None) is not None:
                 self.llm.max_completion_tokens = _summary_prev_max_tokens
@@ -2575,7 +3142,23 @@ class OmniOfflineClient:
                     getattr(self, "model", None),
                 )
                 if self.on_status_message:
-                    await self.on_status_message(json.dumps({"code": "LLM_NO_RESPONSE"}))
+                    finish_reason = getattr(self, "_last_finish_reason", None)
+                    block_reason = getattr(self, "_last_block_reason", None)
+                    prompt_tokens = getattr(self, "_last_prompt_tokens", None)
+                    model = getattr(self, "model", None)
+                    if _is_safety_violation_signal(finish_reason, block_reason):
+                        await self.on_status_message(json.dumps({
+                            "code": "API_POLICY_VIOLATION",
+                            "details": {
+                                "msg": "LLM completion was blocked by upstream safety policy.",
+                                "finish_reason": finish_reason,
+                                "block_reason": block_reason,
+                                "prompt_tokens": prompt_tokens,
+                                "model": model,
+                            },
+                        }))
+                    else:
+                        await self.on_status_message(json.dumps({"code": "LLM_NO_RESPONSE"}))
             
             # Call response done callback
             if self.on_response_done:
@@ -2604,6 +3187,34 @@ class OmniOfflineClient:
     def has_pending_images(self) -> bool:
         """Check if there are pending images waiting to be sent."""
         return len(self._pending_images) > 0
+
+    def set_proactive_screenshot(self, image_b64: str | None) -> None:
+        """Stage (or clear) the proactive-vision screenshot for the user's next reply.
+
+        When proactive chat used the screen as its material, the committed
+        AIMessage carries only text, so the conversation model can't see what
+        was on screen when the user replies. This stashes that screenshot so the
+        NEXT ``stream_text`` folds it in as leading visual context — symmetric
+        with how ``_pending_images`` carries the user's own frame, but kept in a
+        SEPARATE single-slot field: sharing ``_pending_images`` would steal the
+        user's next frame (see core.py proactive media note / Codex P2).
+
+        Pass ``None`` (e.g. a proactive round that obtained no screenshot) to
+        clear, so the slot always reflects the most recent proactive round and a
+        stale screenshot never trails a later talk. The stage timestamp arms the
+        TTL (``_PROACTIVE_SCREENSHOT_TTL_SECONDS``) checked lazily at injection;
+        the history-length marker pins the screenshot to the AI turn it was staged
+        on, so a later proactive talk delivered through another path (greeting /
+        agent callback via ``prompt_ephemeral``) supersedes it.
+        """
+        if image_b64:
+            self._proactive_image_to_inject = image_b64
+            self._proactive_image_staged_at = time.monotonic()
+            self._proactive_image_history_len = len(self._conversation_history)
+        else:
+            self._proactive_image_to_inject = None
+            self._proactive_image_staged_at = 0.0
+            self._proactive_image_history_len = 0
 
     def _evict_old_images(self, keep_turns: int = 2) -> None:
         # 只保留最近 keep_turns 个含图 HumanMessage 的图片，更早的剥掉 image_url
@@ -2731,6 +3342,7 @@ class OmniOfflineClient:
         images: Optional[list] = None,
         completion_mode: str = "proactive",
         persist_response: bool = True,
+        on_committed: Optional[Callable[[], None]] = None,
     ) -> bool:
         """Send a fire-and-forget instruction to the LLM and stream the response.
 
@@ -2760,6 +3372,9 @@ class OmniOfflineClient:
           Uses ``on_response_done()`` so the reply goes through the
           regular user-visible completion path while still keeping the
           injected instruction itself ephemeral.
+        - ``on_committed``:
+          Called after visible text is confirmed but before completion
+          callbacks flush proactive state.
 
         Returns True if any user-visible text was generated, False if aborted
         or only nonverbal directives were emitted.
@@ -2779,6 +3394,8 @@ class OmniOfflineClient:
         # stream_text does (一旦带图就永久切 vision — 既定设计；vision model 也能跑
         # 后续纯文本轮). The instruction itself stays ephemeral (not persisted).
         if images:
+            # 一旦带图就永久切到 vision model（既定设计，见上）。vision model 也能
+            # 跑后续纯文本轮，且凝神不再因 vision 而关闭思考。
             if self.vision_model and self.vision_model != self.model:
                 logger.info(
                     f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"
@@ -2809,6 +3426,11 @@ class OmniOfflineClient:
         self._last_finish_reason = None
         self._last_block_reason = None
         self._last_prompt_tokens = None
+        # Open a new reasoning-pulse scope like stream_text does and capture the
+        # ownership token: the finally clear below must fire ONLY for this turn's
+        # own pulse, never for a newer user stream_text that interleaved and
+        # re-pulsed under a fresher seq (Codex P2).
+        _reasoning_owner_seq = self._begin_reasoning_stream()
 
         try:
             self._is_responding = True
@@ -2834,7 +3456,7 @@ class OmniOfflineClient:
                 try:
                     # 主动搭话同样走 tool-aware streaming —— agent 注入的 stage
                     # direction 也可能让模型决定调用工具（比如 "讲一下今天天气"）。
-                    async for chunk in self._astream_with_tools(messages_to_send):
+                    async for chunk in self._astream_visible_with_tools(messages_to_send):
                         if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                             logger.debug(f"🔍 [Usage-Proactive] {chunk.usage_metadata}")
                         if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
@@ -2895,7 +3517,7 @@ class OmniOfflineClient:
 
                     break  # 流正常结束，跳出 retry 循环
 
-                except (APIConnectionError, AuthenticationError, InternalServerError, RateLimitError) as e:
+                except _LLM_RETRY_ERROR_TYPES as e:
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
                     logger.info(f"ℹ️ prompt_ephemeral 捕获到 {error_type} 错误")
@@ -2965,10 +3587,27 @@ class OmniOfflineClient:
             return False
         finally:
             self._is_responding = False
+            # Clear the thinking bubble if this proactive/greeting/avatar turn
+            # pulsed it but committed no visible text — unlike stream_text, there
+            # is no external unconditional clear bracketing this call (Codex P2).
+            # Passing the owner seq suppresses the clear when a newer user turn
+            # interleaved and re-pulsed. No-op when nothing pulsed or it was
+            # already cleared on the first visible token (idempotent).
+            await self._notify_reasoning_done(_reasoning_owner_seq)
             # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             committed_text = _strip_nonverbal_directives(assistant_message).strip()
             content_committed = bool(committed_text)
+            # 一条可见的 ephemeral 回复（greeting / agent 回调 / 戳头像的 quip）是
+            # 用户接下来要回应的「新一条 AI 轮」，它让之前为「下一条用户回复」暂存的
+            # 屏幕截图过时——清掉它。persist_response=False 的回复（如头像 quip）不进
+            # 历史、历史长度不变，stream_text 的 history-len marker 看不到，必须在这条
+            # ephemeral 回复的 choke point 清（Codex P2）。只在真吐了可见文本时清，
+            # 半途 abort / 无文本的尝试不丢一张仍有效的暂存屏。
+            if content_committed:
+                self._proactive_image_to_inject = None
+                self._proactive_image_staged_at = 0.0
+                self._proactive_image_history_len = 0
             # Empty-completion 诊断：和 stream_text 的兜底 warning 对偶。
             # 主动搭话语义上是"静默放弃"，所以不发 status_message，但 INFO
             # 一行 finish_reason 让日志能复盘——上次出问题就是因为没法区分
@@ -2985,6 +3624,11 @@ class OmniOfflineClient:
                     getattr(self, "model", None),
                     completion_mode,
                 )
+            elif on_committed:
+                try:
+                    on_committed()
+                except Exception:
+                    logger.exception("prompt_ephemeral on_committed callback failed")
             if content_committed and persist_response:
                 self._conversation_history.append(AIMessage(content=assistant_message))
                 # 防复读 corpus：只录常规 reply（completion_mode == "response"）。
@@ -3042,6 +3686,9 @@ class OmniOfflineClient:
         self._is_responding = False
         self._conversation_history = []
         self._pending_images.clear()
+        self._proactive_image_to_inject = None
+        self._proactive_image_staged_at = 0.0
+        self._proactive_image_history_len = 0
         if self.llm:
             try:
                 await self.llm.aclose()

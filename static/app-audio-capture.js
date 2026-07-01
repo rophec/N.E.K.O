@@ -979,20 +979,23 @@
             console.error(window.t('console.getMicrophonePermissionFailed'), err);
             window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
 
-            // 失败时恢复文本输入区
-            S.voiceChatActive = false;
-            const textInputArea = document.getElementById('text-input-area');
-            if (textInputArea) {
-                textInputArea.classList.remove('hidden');
-            }
-            if (typeof window.syncVoiceChatComposerHidden === 'function') {
-                window.syncVoiceChatComposerHidden(false);
-            }
+            const hasOuterVoiceStartLifecycle = !!(S.voiceStartPending || window.isMicStarting);
 
-            // 失败时移除录音状态类
             if (_mic) {
                 _mic.classList.remove('recording');
                 _mic.classList.remove('active');
+            }
+            if (!hasOuterVoiceStartLifecycle) {
+                S.isRecording = false;
+                window.isRecording = false;
+                S.voiceChatActive = false;
+                const textInputArea = document.getElementById('text-input-area');
+                if (textInputArea) {
+                    textInputArea.classList.remove('hidden');
+                }
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
             }
             stopGameVoiceSttGate({ restoreOrdinaryMic: false });
             throw err;
@@ -1082,7 +1085,9 @@
     }
 
     // 停止录音（内部辅助，清理音频管道与后端通信）
-    function stopRecording() {
+    function stopRecording(options) {
+        options = options || {};
+        const notifyServer = options.notifyServer !== false;
         // 停止语音期间主动视觉定时
         if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
             window.stopProactiveVisionDuringSpeech();
@@ -1138,7 +1143,7 @@
         }
 
         // 通知服务器暂停会话
-        if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+        if (notifyServer && S.socket && S.socket.readyState === WebSocket.OPEN) {
             S.socket.send(JSON.stringify({
                 action: 'pause_session'
             }));
@@ -1358,7 +1363,18 @@
     window.startGameVoiceSttGate = startGameVoiceSttGate;
     window.stopGameVoiceSttGate = stopGameVoiceSttGate;
 
+    function isTutorialShortcutBlockedForMicMute() {
+        if (typeof window.isNekoShortcutBlockedByTutorial === 'function') {
+            return window.isNekoShortcutBlockedByTutorial();
+        }
+        return window.isInTutorial === true;
+    }
+
     window.toggleMicMute = function(showToast = true) {
+        if (isTutorialShortcutBlockedForMicMute()) {
+            console.log('[Electron Shortcut] toggleMicMute: blocked - tutorial active');
+            return S.isMicMuted;
+        }
         S.isMicMuted = !S.isMicMuted;
         if (S.isMicMuted) {
             stopSilenceDetection();
@@ -1508,15 +1524,7 @@
             if (!isPopupAvailable()) return false;
             micPopup.innerHTML = '';
 
-            if (audioInputs.length === 0) {
-                var noMicItem = document.createElement('div');
-                noMicItem.textContent = window.t ? window.t('microphone.noDevices') : '没有检测到麦克风设备';
-                noMicItem.style.padding = '8px 12px';
-                noMicItem.style.color = 'var(--neko-popup-text-sub)';
-                noMicItem.style.fontSize = '13px';
-                micPopup.appendChild(noMicItem);
-                return true;
-            }
+            var hasMicrophoneDevices = audioInputs.length > 0;
 
             // ===== 双栏布局 =====
             var leftColumn = document.createElement('div');
@@ -1547,27 +1555,113 @@
             speakerHeader.appendChild(speakerValue);
             speakerContainer.appendChild(speakerHeader);
 
+            // 非线性轨道：thumb 位置走 0..SPEAKER_SLIDER_TRACK_MAX（千分比精度），
+            // 经膝点映射成 0-200% 音量，使常规的 0-100% 占满轨道前 3/4、100% 落在锚点处。
+            var SPEAKER_SLIDER_TRACK_MAX = 1000;
+            // Matches Chromium/Electron's native range thumb; the anchor tick is cosmetic.
+            var SPEAKER_SLIDER_THUMB_SIZE = 16;
+            var SPEAKER_VOLUME_SNAP_RADIUS = 1;
+            var SPEAKER_VOLUME_NORMAL_COLOR = '#4f8cff';
+            var SPEAKER_VOLUME_BOOST_COLOR = '#ff9f43';
+
+            function speakerTrackPosFromVolume(vol) {
+                return Math.round(window.appUtils.valueToKneeTrack(
+                    vol, C.DEFAULT_SPEAKER_VOLUME, C.MAX_SPEAKER_VOLUME, C.SPEAKER_VOLUME_KNEE_RATIO
+                ) * SPEAKER_SLIDER_TRACK_MAX);
+            }
+            function speakerVolumeFromTrackPos(pos) {
+                return Math.round(window.appUtils.kneeTrackToValue(
+                    pos / SPEAKER_SLIDER_TRACK_MAX, C.DEFAULT_SPEAKER_VOLUME, C.MAX_SPEAKER_VOLUME, C.SPEAKER_VOLUME_KNEE_RATIO
+                ));
+            }
+            var speakerVolumeAnchorTrackPos = speakerTrackPosFromVolume(C.DEFAULT_SPEAKER_VOLUME);
+            var speakerSliderPointerActive = false;
+            var speakerSliderHadPointerInput = false;
+            function speakerThumbAlignedLeft(trackPos) {
+                var ratio = trackPos / SPEAKER_SLIDER_TRACK_MAX;
+                var halfThumb = SPEAKER_SLIDER_THUMB_SIZE / 2;
+                var thumbOffsetPx = halfThumb * (1 - 2 * ratio);
+                return 'calc(' + (ratio * 100) + '% + ' + thumbOffsetPx.toFixed(2) + 'px)';
+            }
+            function snapSpeakerTrackPos(pos) {
+                return Math.abs(speakerVolumeFromTrackPos(pos) - C.DEFAULT_SPEAKER_VOLUME) <= SPEAKER_VOLUME_SNAP_RADIUS
+                    ? speakerVolumeAnchorTrackPos
+                    : pos;
+            }
+            function applySpeakerTrackPos(trackPos) {
+                var newVol = speakerVolumeFromTrackPos(trackPos);
+                S.speakerVolume = newVol;
+                applySpeakerVolumeVisual(newVol);
+                if (S.speakerGainNode) {
+                    S.speakerGainNode.gain.setTargetAtTime(newVol / 100, S.speakerGainNode.context.currentTime, 0.05);
+                }
+            }
+
             var speakerSlider = document.createElement('input');
             speakerSlider.type = 'range';
             speakerSlider.id = 'speaker-volume-slider';
             speakerSlider.min = '0';
-            speakerSlider.max = '100';
+            speakerSlider.max = String(SPEAKER_SLIDER_TRACK_MAX);
             speakerSlider.step = '1';
-            speakerSlider.value = String(S.speakerVolume);
-            Object.assign(speakerSlider.style, { width: '100%', height: '6px', borderRadius: '3px', cursor: 'pointer', accentColor: '#4f8cff' });
+            speakerSlider.value = String(speakerTrackPosFromVolume(S.speakerVolume));
+            Object.assign(speakerSlider.style, { width: '100%', height: '6px', borderRadius: '3px', cursor: 'pointer', accentColor: SPEAKER_VOLUME_NORMAL_COLOR, position: 'relative', zIndex: '2', margin: '0' });
 
-            speakerSlider.addEventListener('input', function (e) {
-                var newVol = parseInt(e.target.value, 10);
-                S.speakerVolume = newVol;
-                speakerValue.textContent = newVol + '%';
-                if (S.speakerGainNode) {
-                    S.speakerGainNode.gain.setTargetAtTime(newVol / 100, S.speakerGainNode.context.currentTime, 0.05);
-                }
+            // 超过标准音量（>100%）时数值与轨道染暖色，把增强区从常规区里区分出来
+            function applySpeakerVolumeVisual(vol) {
+                var color = vol > C.DEFAULT_SPEAKER_VOLUME ? SPEAKER_VOLUME_BOOST_COLOR : SPEAKER_VOLUME_NORMAL_COLOR;
+                speakerValue.textContent = vol + '%';
+                speakerValue.style.color = color;
+                speakerSlider.style.accentColor = color;
+            }
+            applySpeakerVolumeVisual(S.speakerVolume);
+
+            speakerSlider.addEventListener('pointerdown', function () {
+                speakerSliderPointerActive = true;
+                speakerSliderHadPointerInput = true;
             });
-            speakerSlider.addEventListener('change', function () {
+            speakerSlider.addEventListener('pointerup', function () {
+                speakerSliderPointerActive = false;
+            });
+            speakerSlider.addEventListener('pointercancel', function () {
+                speakerSliderPointerActive = false;
+            });
+            speakerSlider.addEventListener('input', function (e) {
+                var trackPos = parseInt(e.target.value, 10);
+                if (isNaN(trackPos)) return;
+                if (speakerSliderPointerActive) {
+                    var snappedTrackPos = snapSpeakerTrackPos(trackPos);
+                    if (snappedTrackPos !== trackPos) {
+                        trackPos = snappedTrackPos;
+                        speakerSlider.value = String(snappedTrackPos);
+                    }
+                }
+                applySpeakerTrackPos(trackPos);
+            });
+            speakerSlider.addEventListener('change', function (e) {
+                var trackPos = parseInt(e.target.value, 10);
+                if (!isNaN(trackPos) && speakerSliderHadPointerInput) {
+                    var snappedTrackPos = snapSpeakerTrackPos(trackPos);
+                    if (snappedTrackPos !== trackPos) {
+                        speakerSlider.value = String(snappedTrackPos);
+                        applySpeakerTrackPos(snappedTrackPos);
+                    }
+                }
+                speakerSliderHadPointerInput = false;
                 if (typeof window.saveSpeakerVolumeSetting === 'function') window.saveSpeakerVolumeSetting();
             });
-            speakerContainer.appendChild(speakerSlider);
+
+            // 用相对定位容器在轨道 75% 处画一条 100% 标准锚点，告诉用户「这条线以上是增强」
+            var speakerSliderWrap = document.createElement('div');
+            Object.assign(speakerSliderWrap.style, { position: 'relative', width: '100%', height: '18px', display: 'flex', alignItems: 'center' });
+            var speakerAnchorTick = document.createElement('div');
+            Object.assign(speakerAnchorTick.style, {
+                position: 'absolute', left: speakerThumbAlignedLeft(speakerVolumeAnchorTrackPos), top: '0', bottom: '0',
+                width: '2px', transform: 'translateX(-50%)',
+                backgroundColor: 'var(--neko-popup-text-sub)', opacity: '0.28', borderRadius: '1px', pointerEvents: 'none', zIndex: '0'
+            });
+            speakerSliderWrap.appendChild(speakerSlider);
+            speakerSliderWrap.appendChild(speakerAnchorTick);
+            speakerContainer.appendChild(speakerSliderWrap);
 
             var speakerHint = document.createElement('div');
             speakerHint.textContent = window.t ? window.t('speaker.volumeHint') : '调节AI语音的播放音量';
@@ -1710,6 +1804,13 @@
             gainSlider.step = '1';
             gainSlider.value = String(S.microphoneGainDb);
             Object.assign(gainSlider.style, { width: '100%', height: '6px', borderRadius: '3px', cursor: 'pointer', accentColor: '#4f8cff' });
+            if (!hasMicrophoneDevices) {
+                gainSlider.disabled = true;
+                gainSlider.style.cursor = 'not-allowed';
+                gainSlider.style.opacity = '0.55';
+                gainLabel.style.color = 'var(--neko-popup-text-sub)';
+                gainValueEl.style.color = 'var(--neko-popup-text-sub)';
+            }
 
             gainSlider.addEventListener('input', function (e) {
                 var newGainDb = parseFloat(e.target.value);
@@ -1785,33 +1886,40 @@
             rightColumn.appendChild(deviceTitle);
 
             // 默认麦克风选项
-            var defaultOption = document.createElement('button');
-            defaultOption.className = 'mic-option';
-            defaultOption.textContent = window.t ? window.t('microphone.defaultDevice') : '系统默认麦克风';
-            if (S.selectedMicrophoneId === null) defaultOption.classList.add('selected');
-            Object.assign(defaultOption.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: S.selectedMicrophoneId === null ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: S.selectedMicrophoneId === null ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: S.selectedMicrophoneId === null ? '500' : '400' });
-            defaultOption.addEventListener('mouseenter', function () { if (S.selectedMicrophoneId !== null) defaultOption.style.background = 'var(--neko-popup-hover)'; });
-            defaultOption.addEventListener('mouseleave', function () { if (S.selectedMicrophoneId !== null) defaultOption.style.background = 'transparent'; });
-            defaultOption.addEventListener('click', async function () { await selectMicrophone(null); updateMicListSelection(); });
-            rightColumn.appendChild(defaultOption);
+            if (hasMicrophoneDevices) {
+                var defaultOption = document.createElement('button');
+                defaultOption.className = 'mic-option';
+                defaultOption.textContent = window.t ? window.t('microphone.defaultDevice') : '系统默认麦克风';
+                if (S.selectedMicrophoneId === null) defaultOption.classList.add('selected');
+                Object.assign(defaultOption.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: S.selectedMicrophoneId === null ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: S.selectedMicrophoneId === null ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: S.selectedMicrophoneId === null ? '500' : '400' });
+                defaultOption.addEventListener('mouseenter', function () { if (S.selectedMicrophoneId !== null) defaultOption.style.background = 'var(--neko-popup-hover)'; });
+                defaultOption.addEventListener('mouseleave', function () { if (S.selectedMicrophoneId !== null) defaultOption.style.background = 'transparent'; });
+                defaultOption.addEventListener('click', async function () { await selectMicrophone(null); updateMicListSelection(); });
+                rightColumn.appendChild(defaultOption);
 
-            var sep3 = document.createElement('div');
-            Object.assign(sep3.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '5px 0' });
-            rightColumn.appendChild(sep3);
+                var sep3 = document.createElement('div');
+                Object.assign(sep3.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '5px 0' });
+                rightColumn.appendChild(sep3);
 
-            // 各个设备选项
-            audioInputs.forEach(function (device, idx) {
-                var option = document.createElement('button');
-                option.className = 'mic-option';
-                option.dataset.deviceId = device.deviceId;
-                option.textContent = device.label || (window.t ? window.t('microphone.deviceLabel', { index: idx + 1 }) : '麦克风 ' + (idx + 1));
-                if (S.selectedMicrophoneId === device.deviceId) option.classList.add('selected');
-                Object.assign(option.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: S.selectedMicrophoneId === device.deviceId ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: S.selectedMicrophoneId === device.deviceId ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: S.selectedMicrophoneId === device.deviceId ? '500' : '400' });
-                option.addEventListener('mouseenter', function () { if (S.selectedMicrophoneId !== device.deviceId) option.style.background = 'var(--neko-popup-hover)'; });
-                option.addEventListener('mouseleave', function () { if (S.selectedMicrophoneId !== device.deviceId) option.style.background = 'transparent'; });
-                option.addEventListener('click', async function () { await selectMicrophone(device.deviceId); updateMicListSelection(); });
-                rightColumn.appendChild(option);
-            });
+                // 各个设备选项
+                audioInputs.forEach(function (device, idx) {
+                    var option = document.createElement('button');
+                    option.className = 'mic-option';
+                    option.dataset.deviceId = device.deviceId;
+                    option.textContent = device.label || (window.t ? window.t('microphone.deviceLabel', { index: idx + 1 }) : '麦克风 ' + (idx + 1));
+                    if (S.selectedMicrophoneId === device.deviceId) option.classList.add('selected');
+                    Object.assign(option.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: S.selectedMicrophoneId === device.deviceId ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: S.selectedMicrophoneId === device.deviceId ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: S.selectedMicrophoneId === device.deviceId ? '500' : '400' });
+                    option.addEventListener('mouseenter', function () { if (S.selectedMicrophoneId !== device.deviceId) option.style.background = 'var(--neko-popup-hover)'; });
+                    option.addEventListener('mouseleave', function () { if (S.selectedMicrophoneId !== device.deviceId) option.style.background = 'transparent'; });
+                    option.addEventListener('click', async function () { await selectMicrophone(device.deviceId); updateMicListSelection(); });
+                    rightColumn.appendChild(option);
+                });
+            } else {
+                var noMicItem = document.createElement('div');
+                noMicItem.textContent = window.t ? window.t('microphone.noDevices') : '没有检测到麦克风设备';
+                Object.assign(noMicItem.style, { padding: '8px 12px', color: 'var(--neko-popup-text-sub)', fontSize: '13px' });
+                rightColumn.appendChild(noMicItem);
+            }
 
             // 组装
             micPopup.appendChild(leftColumn);
