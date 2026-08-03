@@ -98,47 +98,43 @@ def test_risk_budget_uses_score_rank_honba_and_riichi_sticks_transparently() -> 
     assert "四位追三位差8000点+8" in model["calculation"]
 
 
-def test_table_context_requires_two_matching_frames_before_strategy_state_changes(monkeypatch) -> None:
+def test_table_context_scans_once_per_round_and_updates_strategy_state(monkeypatch) -> None:
     engine = RoundCoachEngine()
     surface = TableSurfaceResult(
         ok=True,
         warped_image=Image.new("RGB", (800, 800), "black"),
     )
     scene = GameSceneResult(detected=True, table_surface=surface)
-    reads = iter(
-        [
-            TableContextResult(
-                ok=True,
-                scores={"self": 25000, "left_opponent": 25000, "top_opponent": 25000, "right_opponent": 25000},
-                ranks={"self": 1, "left_opponent": 1, "top_opponent": 1, "right_opponent": 1},
-                honba_count=0,
-                riichi_stick_count=0,
-                confidence=0.9,
-                reason="table_context_detected",
-            ),
-            TableContextResult(
-                ok=True,
-                scores={"self": 25000, "left_opponent": 25000, "top_opponent": 25000, "right_opponent": 25000},
-                ranks={"self": 1, "left_opponent": 1, "top_opponent": 1, "right_opponent": 1},
-                honba_count=0,
-                riichi_stick_count=0,
-                confidence=0.91,
-                reason="table_context_detected",
-            ),
-        ]
+    result = TableContextResult(
+        ok=True,
+        scores={"self": 25000, "left_opponent": 25000, "top_opponent": 25000, "right_opponent": 25000},
+        ranks={"self": 1, "left_opponent": 1, "top_opponent": 1, "right_opponent": 1},
+        honba_count=0,
+        riichi_stick_count=0,
+        confidence=0.9,
+        reason="table_context_detected",
     )
+    calls = []
     monkeypatch.setattr(engine, "_detect_game_scene", lambda _path: scene)
-    monkeypatch.setattr(coach_module, "detect_table_context", lambda *_args, **_kwargs: next(reads))
-
-    engine._observe_table_context(Image.new("RGB", (1000, 600), "black"))
-    assert engine.state.player_scores == {}
-    assert engine.state.table_context_pending_frames == 1
+    monkeypatch.setattr(
+        coach_module,
+        "detect_table_context",
+        lambda *_args, **_kwargs: calls.append("ocr") or result,
+    )
 
     engine._observe_table_context(Image.new("RGB", (1000, 600), "black"))
     assert engine.state.player_scores["self"] == 25000
     assert engine.state.honba_count == 0
     assert engine.state.table_riichi_stick_count == 0
     assert engine.state.table_context_pending_frames == 0
+    assert calls == ["ocr"]
+
+    engine._observe_table_context(Image.new("RGB", (1000, 600), "black"))
+    assert calls == ["ocr"]
+
+    engine.reset_round("next")
+    engine._observe_table_context(Image.new("RGB", (1000, 600), "black"))
+    assert calls == ["ocr", "ocr"]
 
 
 def test_round_plan_uses_fourth_place_gap_and_table_rewards() -> None:

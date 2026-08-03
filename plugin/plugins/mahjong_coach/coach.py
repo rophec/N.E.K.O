@@ -78,32 +78,6 @@ def _frame_identity(path: ImageSource) -> tuple[str, int, int, str] | None:
     return source_identity(path)
 
 
-def _table_context_signature(result: TableContextResult) -> str:
-    score_part = ",".join(
-        f"{player}:{int(result.scores[player])}"
-        for player in _TABLE_PLAYERS
-        if player in result.scores
-    )
-    honba = "?" if result.honba_count is None else str(int(result.honba_count))
-    sticks = "?" if result.riichi_stick_count is None else str(int(result.riichi_stick_count))
-    return f"{score_part}|honba:{honba}|sticks:{sticks}"
-
-
-def _committed_table_context_signature(state: RoundCoachState) -> str:
-    score_part = ",".join(
-        f"{player}:{int(state.player_scores[player])}"
-        for player in _TABLE_PLAYERS
-        if player in state.player_scores
-    )
-    honba = "?" if state.honba_count is None else str(int(state.honba_count))
-    sticks = (
-        "?"
-        if state.table_riichi_stick_count is None
-        else str(int(state.table_riichi_stick_count))
-    )
-    return f"{score_part}|honba:{honba}|sticks:{sticks}"
-
-
 class RoundCoachEngine:
     def __init__(
         self,
@@ -125,6 +99,7 @@ class RoundCoachEngine:
         self._last_game_scene_identity: tuple[str, int, int, str] | None = None
         self._last_game_scene_result: GameSceneResult | None = None
         self._last_table_context_result: TableContextResult | None = None
+        self._table_context_scan_pending = True
         self._game_scene_confirmation_frames = 0
         self._game_scene_confirmed = False
         self._river_frames_since_full_scan = 0
@@ -159,6 +134,7 @@ class RoundCoachEngine:
         self._last_game_scene_identity = None
         self._last_game_scene_result = None
         self._last_table_context_result = None
+        self._table_context_scan_pending = True
         self._river_frames_since_full_scan = 0
         self._river_correction_candidates = {}
         self._pending_self_call_claim = {}
@@ -553,6 +529,8 @@ class RoundCoachEngine:
         return result
 
     def _observe_table_context(self, path: ImageSource | None) -> TableContextResult:
+        if not self._table_context_scan_pending:
+            return self._last_table_context_result or TableContextResult(reason="table_context_already_scanned")
         if path is None:
             result = TableContextResult(reason="image_path_missing")
             self._last_table_context_result = result
@@ -564,6 +542,10 @@ class RoundCoachEngine:
             self.state.table_context_pending_signature = ""
             self.state.table_context_pending_frames = 0
             return result
+        # Scores only change between hands. Consume one OCR refresh after the
+        # active table for this round is available; subsequent 400 ms frames
+        # reuse the result until reset_round() arms the next refresh.
+        self._table_context_scan_pending = False
         result = detect_table_context(
             path,
             table_surface_result=scene.table_surface,
@@ -573,21 +555,6 @@ class RoundCoachEngine:
         if not result.ok:
             self.state.table_context_pending_signature = ""
             self.state.table_context_pending_frames = 0
-            return result
-
-        signature = _table_context_signature(result)
-        committed_signature = _committed_table_context_signature(self.state)
-        if self.state.player_scores and signature == committed_signature:
-            self.state.table_context_confidence = round(float(result.confidence), 4)
-            self.state.table_context_pending_signature = ""
-            self.state.table_context_pending_frames = 0
-            return result
-        if signature == self.state.table_context_pending_signature:
-            self.state.table_context_pending_frames += 1
-        else:
-            self.state.table_context_pending_signature = signature
-            self.state.table_context_pending_frames = 1
-        if self.state.table_context_pending_frames < 2:
             return result
 
         self.state.player_scores = dict(result.scores)
@@ -609,10 +576,12 @@ class RoundCoachEngine:
                 "ok": False,
                 "reason": self.state.table_context_reason or "table_context_not_scanned",
                 "confirmed": bool(self.state.player_scores),
+                "round_scan_pending": self._table_context_scan_pending,
             }
         payload = self._last_table_context_result.to_dict()
         payload["confirmed"] = bool(self.state.player_scores)
         payload["confirmation_frames"] = self.state.table_context_pending_frames
+        payload["round_scan_pending"] = self._table_context_scan_pending
         payload["committed_scores"] = dict(self.state.player_scores)
         payload["committed_ranks"] = dict(self.state.player_ranks)
         return payload
