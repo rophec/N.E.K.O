@@ -121,6 +121,7 @@
 - `[x]` `node --check`、Python `py_compile` 和 `git diff --check` 通过。
 - `[x]` 插件包重新构建并通过 payload hash 校验：`plugin/neko_plugin_cli/target/mahjong_coach-simple-strategy.neko-plugin`（SHA256 `f64bf1a6ed605f154389fb866b58c1451f5f4773bf96b15502f562422a0d88f8`）。
 - `[x]` Win32 原生外部窗口完成实际渲染截图复查；简易/完整策略配置页为 `mahjong-simple-strategy-config.png`，非指令式详细卡为 `mahjong-simple-strategy-full-card-v2.png`（工作目录外的验收产物，不纳入插件包）。
+- `[x]` 同机局部微基准：固定单家立直听牌局面运行本地策略 500 次，P50 `8.605ms`、P95 `9.916ms`；生成结构化详细卡与文本 1000 次，P50 `0.049ms`、P95 `0.059ms`。该数据不包含窗口捕获、视觉识别与实际 GDI 刷新，因此不替代阶段一端到端 P95 验收。
 
 ## 3. 当前运行链
 
@@ -434,3 +435,4 @@ elapsed_ms
 | 2026-08-03 | 新增中央计分盘 OCR 与左上角本场/供托读取；四家点数连续两帧确认后生成顺位，点差修正攻守允许线，本场/供托计入和牌收益；内外面板展示同一场况与计算依据。 | 真实 1890×1147 实战帧读出四家 25000、本场0、供托0，最低分数置信度0.8059；插件测试 240 passed，Node 语法、Python 编译、diff 检查和插件包哈希校验通过。 |
 | 2026-08-03 | 将“简易策略”实现为独立的轻防守预设：显著降低普通危险度权重并放宽边缘推进，同时保留多家立直、晚巡、极高危险和差牌型硬防守；详细策略卡改为非指令性的方案风险/牌型分析，原生浮窗直接增加简易/完整策略选择。 | 雀魂插件测试 240 passed；Node 语法、Python 编译和 diff 检查通过；插件包 payload hash `f64bf1a6…d88f8` 校验通过。 |
 | 2026-08-03 | 在真实 Win32 GDI 分发后备路径中渲染配置页与完整策略卡，确认策略力度按钮、展示模式和方案 A/B/C 卡片布局可见，详细卡没有“首选/备选/不推荐”操作指令；同时修正四个训练辅助脚本的英文模块 docstring 以满足 PR i18n 门禁。 | `mahjong-simple-strategy-config.png` 与 `mahjong-simple-strategy-full-card-v2.png` 人工复查；`check_docstring_no_cjk.py --base origin/main`、Ruff、Python 编译与 diff 检查通过。 |
+| 2026-08-03 | 补充当前机器上的策略与详细卡局部微基准，确认简易策略排序和解释卡生成本身不是 750ms 响应目标的主要瓶颈；端到端捕获/识别基准仍需真实雀魂窗口或固定录屏。 | 策略 500 次 P95 `9.916ms`；详细卡 1000 次 P95 `0.059ms`。 |
