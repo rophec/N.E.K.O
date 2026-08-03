@@ -122,6 +122,9 @@ class DefaultCaptureProvider:
     def persist_packet(self, packet: FramePacket, file_path: Path, *, save_format: str = "jpg") -> str:
         if packet.image is None:
             return packet.image_path
+        safe_format = save_format if save_format in {"png", "jpg", "jpeg"} else "jpg"
+        suffix = ".png" if safe_format == "png" else ".jpg"
+        file_path = file_path.with_suffix(suffix)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         self._persist_image(packet.image, file_path)
         packet.image_path = str(file_path)
@@ -201,13 +204,13 @@ class DefaultCaptureProvider:
 
         if pyautogui is not None:
             try:
-                return self._save_with_pyautogui(context.file_path, region)
+                return self._save_with_pyautogui(context.file_path, None)
             except Exception as exc:
                 errors.append(f"pyautogui: {exc}")
 
         if ImageGrab is not None:
             try:
-                return self._save_with_imagegrab(context.file_path, region)
+                return self._save_with_imagegrab(context.file_path, None)
             except Exception as exc:
                 errors.append(f"imagegrab: {exc}")
 

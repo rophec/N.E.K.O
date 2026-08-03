@@ -1013,7 +1013,10 @@ class CoachOverlayController:
 
                     with Image.open(path) as opened:
                         image = opened.convert("RGB")
-                    image.thumbnail((_DETAIL_IMAGE_MAX_WIDTH, _DETAIL_IMAGE_MAX_HEIGHT), Image.LANCZOS)
+                    image.thumbnail(
+                        (_DETAIL_IMAGE_MAX_WIDTH, _DETAIL_IMAGE_MAX_HEIGHT),
+                        Image.Resampling.LANCZOS,
+                    )
                     photo = ImageTk.PhotoImage(image)
                     # 保留 PhotoImage 引用，否则 Tk 会回收图片。 / Keep a PhotoImage reference or Tk will garbage-collect it.
                     detail_state["image_photo"] = photo
