@@ -1,14 +1,14 @@
 """Extract hand tile crops from Mahjong Soul screenshots for training data.
 
 Usage:
-    # 从截图目录提取手牌 crop，用 template matcher 自动标注
-    python scripts/extract_hand_crops.py --input-dir path/to/screenshots --output-dir data/hand_crops
+    # Extract hand crops and label them with the template matcher.
+    uv run python scripts/extract_hand_crops.py --input-dir path/to/screenshots --output-dir data/hand_crops
 
-    # 指定分辨率（默认自动检测）
-    python scripts/extract_hand_crops.py --input-dir path/to/screenshots --output-dir data/hand_crops --width 1920 --height 1080
+    # Override the automatically detected resolution.
+    uv run python scripts/extract_hand_crops.py --input-dir path/to/screenshots --output-dir data/hand_crops --width 1920 --height 1080
 
-    # 只提取，不分类（生成 raw crops + 棋盘格预览，方便手动标注）
-    python scripts/extract_hand_crops.py --input-dir path/to/screenshots --output-dir data/hand_crops --no-classify
+    # Extract without classification and emit raw crops plus a contact sheet.
+    uv run python scripts/extract_hand_crops.py --input-dir path/to/screenshots --output-dir data/hand_crops --no-classify
 
 Output structure:
     data/hand_crops/

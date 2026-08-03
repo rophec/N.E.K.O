@@ -5,14 +5,14 @@ Two-stage training:
   Stage 2: Unfreeze last 2 backbone layers, low-lr fine-tune (5-10 epochs)
 
 Usage:
-    # 完整两阶段训练
-    python scripts/train_tile_classifier.py --dataset-dir data/tile_dataset --output-dir tmp/tile_model
+    # Run both training stages.
+    uv run python scripts/train_tile_classifier.py --dataset-dir data/tile_dataset --output-dir tmp/tile_model
 
-    # 只跑 Stage 1
-    python scripts/train_tile_classifier.py --dataset-dir data/tile_dataset --output-dir tmp/tile_model --stage1-only
+    # Run only Stage 1.
+    uv run python scripts/train_tile_classifier.py --dataset-dir data/tile_dataset --output-dir tmp/tile_model --stage1-only
 
-    # 从已有 checkpoint 继续 Stage 2
-    python scripts/train_tile_classifier.py --dataset-dir data/tile_dataset --output-dir tmp/tile_model --resume tmp/tile_model/stage1_best.pt
+    # Resume Stage 2 from an existing checkpoint.
+    uv run python scripts/train_tile_classifier.py --dataset-dir data/tile_dataset --output-dir tmp/tile_model --resume tmp/tile_model/stage1_best.pt
 
 Requires:
     pip install torch torchvision timm onnx

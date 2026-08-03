@@ -120,7 +120,7 @@
 - `[x]` `uv run pytest plugin/plugins/mahjong_coach/tests -q`：`240 passed`，仅有一个既有弃用警告。
 - `[x]` `node --check`、Python `py_compile` 和 `git diff --check` 通过。
 - `[x]` 插件包重新构建并通过 payload hash 校验：`plugin/neko_plugin_cli/target/mahjong_coach-simple-strategy.neko-plugin`（SHA256 `f64bf1a6ed605f154389fb866b58c1451f5f4773bf96b15502f562422a0d88f8`）。
-- `[x]` Win32 原生外部窗口完成实际渲染截图复查；最终风险解释样例：`mahjong-overlay-risk-explained-v9.png`（工作目录外的验收产物，不纳入插件包）。
+- `[x]` Win32 原生外部窗口完成实际渲染截图复查；简易/完整策略配置页为 `mahjong-simple-strategy-config.png`，非指令式详细卡为 `mahjong-simple-strategy-full-card-v2.png`（工作目录外的验收产物，不纳入插件包）。
 
 ## 3. 当前运行链
 
@@ -433,3 +433,4 @@ elapsed_ms
 | 2026-08-03 | 按原定范围复核阶段二：玩家画像迁移、三态攻守、兜牌保形、风格差异、前三候选、精确牌面证据、透明危险度/允许线以及内外面板同步均已有代码、自动测试和 Win32 可复查输出，阶段二更新为完成；真实牌谱扩充与完整场况列为后续增强。 | 相关功能包含在 231 passed 基线中；本次仅更新状态。 |
 | 2026-08-03 | 新增中央计分盘 OCR 与左上角本场/供托读取；四家点数连续两帧确认后生成顺位，点差修正攻守允许线，本场/供托计入和牌收益；内外面板展示同一场况与计算依据。 | 真实 1890×1147 实战帧读出四家 25000、本场0、供托0，最低分数置信度0.8059；插件测试 240 passed，Node 语法、Python 编译、diff 检查和插件包哈希校验通过。 |
 | 2026-08-03 | 将“简易策略”实现为独立的轻防守预设：显著降低普通危险度权重并放宽边缘推进，同时保留多家立直、晚巡、极高危险和差牌型硬防守；详细策略卡改为非指令性的方案风险/牌型分析，原生浮窗直接增加简易/完整策略选择。 | 雀魂插件测试 240 passed；Node 语法、Python 编译和 diff 检查通过；插件包 payload hash `f64bf1a6…d88f8` 校验通过。 |
+| 2026-08-03 | 在真实 Win32 GDI 分发后备路径中渲染配置页与完整策略卡，确认策略力度按钮、展示模式和方案 A/B/C 卡片布局可见，详细卡没有“首选/备选/不推荐”操作指令；同时修正四个训练辅助脚本的英文模块 docstring 以满足 PR i18n 门禁。 | `mahjong-simple-strategy-config.png` 与 `mahjong-simple-strategy-full-card-v2.png` 人工复查；`check_docstring_no_cjk.py --base origin/main`、Ruff、Python 编译与 diff 检查通过。 |

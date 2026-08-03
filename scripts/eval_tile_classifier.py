@@ -1,15 +1,15 @@
 """Evaluate tile classifier on discard crops and hand crops separately.
 
 Usage:
-    # 评估 ONNX 模型
-    python scripts/eval_tile_classifier.py --model-dir tmp/tile_model --test-dir data/tile_dataset/test
+    # Evaluate an ONNX model.
+    uv run python scripts/eval_tile_classifier.py --model-dir tmp/tile_model --test-dir data/tile_dataset/test
 
-    # 对比弃牌和手牌精度
-    python scripts/eval_tile_classifier.py --model-dir tmp/tile_model \
+    # Compare discard and hand-crop accuracy.
+    uv run python scripts/eval_tile_classifier.py --model-dir tmp/tile_model \
         --discard-dir data/tile_dataset/test --hand-dir data/hand_crops
 
-    # 用现有模型评估
-    python scripts/eval_tile_classifier.py \
+    # Evaluate the bundled model.
+    uv run python scripts/eval_tile_classifier.py \
         --model-dir plugin/plugins/mahjong_coach/data/models/vit_tile_classifier \
         --hand-dir data/hand_crops
 """

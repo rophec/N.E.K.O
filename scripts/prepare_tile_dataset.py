@@ -4,14 +4,14 @@ Merges HuggingFace discard crops with local hand crops, applies augmentations,
 and splits into train/val/test.
 
 Usage:
-    # 从 HuggingFace 下载 + 本地手牌 crop 合并
-    python scripts/prepare_tile_dataset.py --hand-crops-dir data/hand_crops --output-dir data/tile_dataset
+    # Combine Hugging Face samples with local hand crops.
+    uv run python scripts/prepare_tile_dataset.py --hand-crops-dir data/hand_crops --output-dir data/tile_dataset
 
-    # 只用本地手牌 crop（不下载 HuggingFace）
-    python scripts/prepare_tile_dataset.py --hand-crops-dir data/hand_crops --output-dir data/tile_dataset --no-hf
+    # Use only local hand crops.
+    uv run python scripts/prepare_tile_dataset.py --hand-crops-dir data/hand_crops --output-dir data/tile_dataset --no-hf
 
-    # 指定手牌数据占比
-    python scripts/prepare_tile_dataset.py --hand-crops-dir data/hand_crops --output-dir data/tile_dataset --hand-ratio 0.4
+    # Set the target hand-crop ratio.
+    uv run python scripts/prepare_tile_dataset.py --hand-crops-dir data/hand_crops --output-dir data/tile_dataset --hand-ratio 0.4
 """
 from __future__ import annotations
 
