@@ -113,7 +113,10 @@ class RoundCoachEngine:
     ) -> None:
         self.config = config or MahjongCoachConfig()
         self.calibration_dir = calibration_dir
-        self.state = RoundCoachState()
+        self.state = RoundCoachState(
+            play_style=self.config.play_style,
+            strategy_preset=self.config.strategy_preset,
+        )
         self._last_fingerprints: dict[str, bytes] = {}
         self._last_yolo26_path: Path | None = None
         self._last_yolo26_identity: tuple[str, int, int, str] | None = None
@@ -143,7 +146,11 @@ class RoundCoachEngine:
         self._settlement_archived_for_round = False
 
     def reset_round(self, round_id: str = "default") -> RoundCoachState:
-        self.state = RoundCoachState(round_id=round_id or "default", play_style=self.config.play_style)
+        self.state = RoundCoachState(
+            round_id=round_id or "default",
+            play_style=self.config.play_style,
+            strategy_preset=self.config.strategy_preset,
+        )
         self._last_fingerprints = {}
         self._last_yolo26_path = None
         self._last_yolo26_identity = None
@@ -3003,6 +3010,11 @@ def rank_discard_decisions(
     value_honors = _value_honor_tiles(config)
     opponents = _riichi_targets(riichi_players, piles)
     profile = config.player_profile if config is not None else None
+    strategy_preset = getattr(config, "strategy_preset", "simple")
+    simple_policy_active = (
+        strategy_preset == "simple"
+        and getattr(profile, "risk_tolerance", "balanced") != "conservative"
+    )
     inferred_turn = turn_number if turn_number is not None else max(
         1,
         sum(len(items) for items in piles.values()) // 4 + 1,
@@ -3012,6 +3024,7 @@ def rank_discard_decisions(
         len(opponents),
         _play_style(config),
         risk_tolerance=getattr(profile, "risk_tolerance", "balanced"),
+        strategy_preset=strategy_preset,
     )
     reference_effective_count = max(
         (int(item.get("effective_count", 0)) for item in options),
@@ -3145,6 +3158,7 @@ def rank_discard_decisions(
         risk_tolerance=getattr(profile, "risk_tolerance", "balanced"),
         room=getattr(profile, "room", "unknown"),
         rank=getattr(profile, "rank", "unknown"),
+        strategy_preset=strategy_preset,
         player_scores=player_scores,
         player_ranks=player_ranks,
         honba_count=honba_count,
@@ -3178,7 +3192,7 @@ def rank_discard_decisions(
             )
         else:
             candidate["risk_budget_explanation"] = (
-                f"{risk:.0f} > 当前可接受上限{risk_budget:.0f}，超{risk - risk_budget:.0f}，默认不推荐。"
+                f"{risk:.0f} > 当前可接受上限{risk_budget:.0f}，超{risk - risk_budget:.0f}，位于普通候选区间外。"
             )
 
     # A mawashi decision is two-stage: first find tiles inside the safety
@@ -3203,6 +3217,8 @@ def rank_discard_decisions(
         risk_budget=risk_budget,
         previous_posture=previous_posture,
         riichi_count=len(opponents),
+        turn_number=inferred_turn,
+        simple_policy_active=simple_policy_active,
     ) if opponents else DefensePosture.PUSH.value
     if posture == DefensePosture.FOLD.value:
         candidates.sort(
@@ -3229,6 +3245,7 @@ def rank_discard_decisions(
     elif posture == DefensePosture.PUSH.value:
         candidates.sort(
             key=lambda item: (
+                bool(simple_policy_active and float(item["defense_risk"]) > risk_budget),
                 -float(item["attack_score"]),
                 int(item["shanten"]),
                 float(item["defense_risk"]),
@@ -3252,6 +3269,8 @@ def rank_discard_decisions(
         "riichi_players": [label for label, _ in opponents],
         "riichi_count": len(opponents),
         "risk_weight": round(risk_weight, 3),
+        "strategy_preset": strategy_preset,
+        "simple_policy_active": simple_policy_active,
         "risk_budget": round(risk_budget, 2),
         "risk_scale_note": _RISK_SCALE_NOTE,
         "risk_scale_legend": _RISK_SCALE_LEGEND,
@@ -3298,6 +3317,7 @@ def _risk_budget_breakdown(
     risk_tolerance: str,
     room: str,
     rank: str,
+    strategy_preset: str = "standard",
     player_scores: dict[str, int] | None = None,
     player_ranks: dict[str, int] | None = None,
     honba_count: int | None = None,
@@ -3317,6 +3337,8 @@ def _risk_budget_breakdown(
         "balanced": "均衡风格",
         "aggressive": "激进风格",
     }.get(risk_tolerance, "默认风格")
+    simple_policy_active = strategy_preset == "simple" and risk_tolerance != "conservative"
+    strategy_adjustment = 12.0 if simple_policy_active else 0.0
     multi_riichi_adjustment = -max(0, riichi_count - 1) * 12.0
     turn_adjustment = 0.0
     turn_label = ""
@@ -3381,6 +3403,8 @@ def _risk_budget_breakdown(
         {"label": style_label, "value": style_adjustment},
         {"label": f"{riichi_count}家立直压力", "value": multi_riichi_adjustment},
     ]
+    if strategy_adjustment:
+        components.append({"label": "简易策略轻防守", "value": strategy_adjustment})
     for label, value in (
         (turn_label, turn_adjustment),
         (value_label, value_adjustment),
@@ -3391,7 +3415,8 @@ def _risk_budget_breakdown(
         if label and value:
             components.append({"label": label, "value": value})
     raw = sum(float(item["value"]) for item in components)
-    final = max(5.0, min(78.0, raw))
+    upper_limit = 88.0 if simple_policy_active else 78.0
+    final = max(5.0, min(upper_limit, raw))
     formula_parts = [f"{components[0]['label']}{base:.0f}"]
     for component in components[1:]:
         value = float(component["value"])
@@ -3399,7 +3424,7 @@ def _risk_budget_breakdown(
         formula_parts.append(f"{component['label']}{sign}{abs(value):.0f}")
     calculation = " ".join(formula_parts) + f" = 上限{final:.0f}"
     if final != raw:
-        calculation += f"（原始{raw:.0f}，限制在5–78）"
+        calculation += f"（原始{raw:.0f}，限制在5–{upper_limit:.0f}）"
     return {
         "base": base,
         "components": components,
@@ -3411,6 +3436,8 @@ def _risk_budget_breakdown(
         "table_reward_bonus": table_reward_bonus,
         "estimated_value_with_table_rewards": estimated_value_with_rewards,
         "placement_adjustment": placement_adjustment,
+        "strategy_preset": strategy_preset,
+        "simple_policy_active": simple_policy_active,
     }
 
 
@@ -3423,6 +3450,7 @@ def _risk_budget(
     risk_tolerance: str,
     room: str,
     rank: str,
+    strategy_preset: str = "standard",
     player_scores: dict[str, int] | None = None,
     player_ranks: dict[str, int] | None = None,
     honba_count: int | None = None,
@@ -3436,6 +3464,7 @@ def _risk_budget(
         risk_tolerance=risk_tolerance,
         room=room,
         rank=rank,
+        strategy_preset=strategy_preset,
         player_scores=player_scores,
         player_ranks=player_ranks,
         honba_count=honba_count,
@@ -3457,12 +3486,26 @@ def _choose_defense_posture(
     risk_budget: float,
     previous_posture: str,
     riichi_count: int,
+    turn_number: int = 1,
+    simple_policy_active: bool = False,
 ) -> str:
     risk = float(candidate.get("defense_risk", 100.0))
     shanten = int(candidate.get("shanten", 8))
     effective_count = int(candidate.get("effective_count", 0))
     has_live_route = shanten <= 2 and effective_count >= 3
-    if risk <= max(8.0, risk_budget * 0.62) and shanten <= 1 and effective_count >= 4:
+    hard_fold = (
+        (riichi_count >= 2 and (shanten >= 2 or risk >= risk_budget + 14.0))
+        or (turn_number >= 16 and shanten >= 2 and risk > risk_budget)
+        or risk >= 92.0
+        or (shanten >= 3 and risk > max(25.0, risk_budget - 5.0))
+    )
+    if hard_fold:
+        computed = DefensePosture.FOLD.value
+    elif simple_policy_active and shanten <= 1 and effective_count >= 4 and risk <= risk_budget:
+        computed = DefensePosture.PUSH.value
+    elif simple_policy_active and has_live_route and risk <= risk_budget:
+        computed = DefensePosture.MAWASHI.value
+    elif risk <= max(8.0, risk_budget * 0.62) and shanten <= 1 and effective_count >= 4:
         computed = DefensePosture.PUSH.value
     elif (risk <= risk_budget or risk <= 10.0) and has_live_route:
         computed = DefensePosture.MAWASHI.value
@@ -3518,6 +3561,7 @@ def _defense_weight(
     style: str,
     *,
     risk_tolerance: str = "balanced",
+    strategy_preset: str = "standard",
 ) -> float:
     if riichi_count <= 0:
         return 0.0
@@ -3537,6 +3581,9 @@ def _defense_weight(
         weight += 0.14
     if riichi_count > 1:
         weight += min(0.25, (riichi_count - 1) * 0.15)
+    if strategy_preset == "simple" and risk_tolerance != "conservative":
+        # 简易策略仅把风险作为轻量修正；极端危险仍由姿态层的硬防守门槛处理。
+        weight *= 0.4
     return max(0.0, min(1.25, weight))
 
 

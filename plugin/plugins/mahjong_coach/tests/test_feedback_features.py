@@ -51,8 +51,12 @@ def test_legacy_fast_style_migrates_to_versioned_aggressive_profile() -> None:
 
     config = MahjongCoachConfig.from_payload({"decision": {"play_style": "fast"}})
     assert config.play_style == "fast"
+    assert config.strategy_preset == "simple"
     assert config.player_profile.risk_tolerance == "aggressive"
     assert config.player_profile.goal_bias == "speed"
+
+    standard = MahjongCoachConfig.from_payload({"decision": {"strategy_preset": "standard"}})
+    assert standard.strategy_preset == "standard"
 
 
 def test_preferences_store_never_persists_hwnd_and_can_clear_target(tmp_path: Path) -> None:
@@ -357,18 +361,35 @@ def test_player_risk_profile_changes_edge_defense_result() -> None:
         river,
         turn_number=10,
     )
+    standard_balanced = rank_discard_decisions(
+        hand,
+        MahjongCoachConfig(
+            strategy_preset="standard",
+            player_profile=PlayerProfile(risk_tolerance="balanced"),
+        ),
+        ["shimocha"],
+        river,
+        turn_number=10,
+    )
 
     assert conservative["posture"] == "fold"
-    assert balanced["posture"] == "mawashi"
-    assert balanced["legacy_mode"] == "balanced"
+    assert conservative["simple_policy_active"] is False
+    assert balanced["posture"] == "push"
+    assert balanced["legacy_mode"] == "attack"
     assert balanced["preserve_win_chance"] is True
     assert balanced["win_potential"] == "strong"
     assert balanced["top_candidates"][0]["within_risk_budget"] is True
     assert balanced["top_candidates"][0]["defense_risk"] <= balanced["risk_budget"]
     assert balanced["top_candidates"][0]["shanten"] == 0
-    assert "继续保留和牌路线" in _discard_ranking_text(balanced)
-    assert aggressive["posture"] == "mawashi"
+    assert balanced["simple_policy_active"] is True
+    assert balanced["strategy_preset"] == "simple"
+    assert "简易策略轻防守+12" in balanced["risk_budget_calculation"]
+    assert aggressive["posture"] == "push"
     assert aggressive["risk_budget"] > conservative["risk_budget"]
+    assert standard_balanced["posture"] == "mawashi"
+    assert standard_balanced["simple_policy_active"] is False
+    assert balanced["risk_weight"] < standard_balanced["risk_weight"]
+    assert balanced["risk_budget"] > standard_balanced["risk_budget"]
     assert len(aggressive["top_candidates"]) == 3
     assert {"safety", "shape_loss", "effective_count", "effective_count_delta"} <= aggressive["top_candidates"][0].keys()
 

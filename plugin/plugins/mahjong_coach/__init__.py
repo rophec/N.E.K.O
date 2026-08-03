@@ -27,6 +27,7 @@ from .models import (
     WindowTargetDescriptor,
     _clean_string_list,
     _valid_play_style,
+    _valid_strategy_preset,
     _valid_river_tracking_mode,
     _valid_tile_recognition_mode,
 )
@@ -204,9 +205,16 @@ class MahjongCoachPlugin(NekoPluginBase):
             self.logger.warning("failed to start tk event loop: {}", exc)
             return None
 
-    def _on_overlay_start_sync(self, style: str) -> None:
-        self.logger.info("_on_overlay_start_sync called style={}", style)
-        self._schedule_on_loop(self._overlay_start_live(play_style=style), "overlay_start")
+    def _on_overlay_start_sync(self, style: str, strategy_preset: str = "simple") -> None:
+        self.logger.info(
+            "_on_overlay_start_sync called style={} strategy_preset={}",
+            style,
+            strategy_preset,
+        )
+        self._schedule_on_loop(
+            self._overlay_start_live(play_style=style, strategy_preset=strategy_preset),
+            "overlay_start",
+        )
 
     def _on_overlay_stop_sync(self) -> None:
         self._schedule_on_loop(self._overlay_stop_live(hide_overlay=True), "overlay_stop")
@@ -688,6 +696,7 @@ class MahjongCoachPlugin(NekoPluginBase):
                 "seat_wind": {"type": "string", "default": ""},
                 "dora_tiles": {"type": "array", "items": {"type": "string"}, "default": []},
                 "play_style": {"type": "string", "default": ""},
+                "strategy_preset": {"type": "string", "default": ""},
                 "river_tracking_mode": {"type": "string", "default": ""},
                 "tile_recognition_mode": {"type": "string", "default": ""},
                 "settlement_recognition_enabled": {"type": "boolean"},
@@ -710,6 +719,7 @@ class MahjongCoachPlugin(NekoPluginBase):
         seat_wind: str = "",
         dora_tiles: list[str] | None = None,
         play_style: str = "",
+        strategy_preset: str = "",
         river_tracking_mode: str = "",
         tile_recognition_mode: str = "",
         settlement_recognition_enabled: bool | None = None,
@@ -728,6 +738,7 @@ class MahjongCoachPlugin(NekoPluginBase):
                     dora_tiles=dora_tiles,
                     play_style=play_style,
                 )
+                self._apply_runtime_strategy_preset(strategy_preset)
                 self._apply_runtime_river_tracking_mode(river_tracking_mode)
                 self._apply_runtime_tile_recognition_mode(tile_recognition_mode)
                 self._apply_runtime_settlement_config(
@@ -783,6 +794,7 @@ class MahjongCoachPlugin(NekoPluginBase):
                 "seat_wind": {"type": "string", "default": ""},
                 "dora_tiles": {"type": "array", "items": {"type": "string"}, "default": []},
                 "play_style": {"type": "string", "default": ""},
+                "strategy_preset": {"type": "string", "default": ""},
                 "river_tracking_mode": {"type": "string", "default": ""},
                 "tile_recognition_mode": {"type": "string", "default": ""},
                 "target_window_title": {"type": "string", "default": ""},
@@ -804,6 +816,7 @@ class MahjongCoachPlugin(NekoPluginBase):
         seat_wind: str = "",
         dora_tiles: list[str] | None = None,
         play_style: str = "",
+        strategy_preset: str = "",
         river_tracking_mode: str = "",
         tile_recognition_mode: str = "",
         target_window_title: str = "",
@@ -822,6 +835,7 @@ class MahjongCoachPlugin(NekoPluginBase):
             seat_wind=seat_wind,
             dora_tiles=dora_tiles,
             play_style=play_style,
+            strategy_preset=strategy_preset,
             river_tracking_mode=river_tracking_mode,
             tile_recognition_mode=tile_recognition_mode,
             target_window_title=target_window_title,
@@ -841,6 +855,7 @@ class MahjongCoachPlugin(NekoPluginBase):
         seat_wind: str = "",
         dora_tiles: list[str] | None = None,
         play_style: str = "",
+        strategy_preset: str = "",
         river_tracking_mode: str = "",
         tile_recognition_mode: str = "",
         target_window_title: str = "",
@@ -850,12 +865,13 @@ class MahjongCoachPlugin(NekoPluginBase):
         settlement_confirm_frames: int | None = None,
         settlement_confirm_max_gap_ms: int | None = None,
     ):
-        self.logger.info("_overlay_start_live called play_style={} river_tracking_mode={} tile_recognition_mode={}", play_style, river_tracking_mode, tile_recognition_mode)
+        self.logger.info("_overlay_start_live called play_style={} strategy_preset={} river_tracking_mode={} tile_recognition_mode={}", play_style, strategy_preset, river_tracking_mode, tile_recognition_mode)
         if self._engine is None:
             self.logger.warning("_overlay_start_live early return: engine is None")
             return Err(SdkError("mahjong coach is not initialized"))
         async with self._get_engine_lock():
             style_before = self._cfg.play_style
+            strategy_preset_before = self._cfg.strategy_preset
             river_mode_before = self._cfg.river_tracking_mode
             tile_mode_before = self._cfg.tile_recognition_mode
             self._apply_runtime_round_context(
@@ -864,6 +880,7 @@ class MahjongCoachPlugin(NekoPluginBase):
                 dora_tiles=dora_tiles,
                 play_style=play_style,
             )
+            self._apply_runtime_strategy_preset(strategy_preset)
             self._apply_runtime_river_tracking_mode(river_tracking_mode)
             self._apply_runtime_tile_recognition_mode(tile_recognition_mode)
             self._apply_runtime_settlement_config(
@@ -879,6 +896,8 @@ class MahjongCoachPlugin(NekoPluginBase):
                     self._cfg.river_tracking_mode,
                 )
             if play_style and self._cfg.play_style != style_before:
+                self._invalidate_live_plan_for_style_change()
+            if strategy_preset and self._cfg.strategy_preset != strategy_preset_before:
                 self._invalidate_live_plan_for_style_change()
             if tile_recognition_mode and self._cfg.tile_recognition_mode != tile_mode_before:
                 self._invalidate_live_plan_for_style_change()
@@ -1008,6 +1027,16 @@ class MahjongCoachPlugin(NekoPluginBase):
         self._cfg = updated
         if self._engine is not None:
             self._engine.config = updated
+
+    def _apply_runtime_strategy_preset(self, strategy_preset: str = "") -> None:
+        if not strategy_preset:
+            return
+        preset = _valid_strategy_preset(strategy_preset)
+        updated = replace(self._cfg, strategy_preset=preset)
+        self._cfg = updated
+        if self._engine is not None:
+            self._engine.config = updated
+            self._engine.state.strategy_preset = preset
 
     def _apply_runtime_tile_recognition_mode(self, tile_recognition_mode: str = "") -> None:
         if not tile_recognition_mode:

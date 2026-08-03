@@ -41,9 +41,10 @@ def test_overlay_preferences_use_injected_plugin_data_path(
 def test_overlay_preferences_persist_compact_or_full_strategy_panel(tmp_path: Path) -> None:
     prefs_path = tmp_path / "overlay.json"
 
-    _save_prefs(prefs_path, 620, 320, 18, "compact", "full")
+    _save_prefs(prefs_path, 620, 320, 18, "compact", "full", "standard")
 
     assert _load_prefs(prefs_path)["panel_mode"] == "full"
+    assert _load_prefs(prefs_path)["strategy_preset"] == "standard"
     assert _overlay_panel_text("compact", "简洁主建议", "完整策略卡片") == "简洁主建议"
     assert _overlay_panel_text("full", "简洁主建议", "完整策略卡片") == "完整策略卡片"
 
@@ -96,17 +97,17 @@ def test_full_strategy_card_contains_same_top_three_candidates() -> None:
     structured = overlay_strategy_card_from_payload(payload)
 
     assert "兜牌 · 守中求和" in card
-    assert "首选　打 1万" in card
-    assert "#1　打1万" in card
-    assert "#2　打东" in card
-    assert "#3　打2索" in card
+    assert "重点分析　1万" in card
+    assert "方案A　候选牌1万" in card
+    assert "方案B　候选牌东" in card
+    assert "方案C　候选牌2索" in card
     assert "风险高 72/100（超上限10）" in card
     assert "不是放铳概率" in card
     assert "0–9极低" in card
     assert "现物0、全见5、筋30" in card
     assert "字牌已见3/2/0–1枚=38/55/72" in card
     assert "听牌基础62 均衡风格+0 = 上限62" in card
-    assert structured["action"] == "打 1万"
+    assert structured["focus_tile"] == "1万"
     assert structured["candidates"][2]["tone"] == "danger"
     assert "相比东" in structured["candidates"][0]["comparison_reason"]
     assert structured["candidates"][2]["risk_delta_label"] == "超上限10"
@@ -115,7 +116,11 @@ def test_full_strategy_card_contains_same_top_three_candidates() -> None:
     assert "手牌东×1" in structured["candidates"][1]["safety_reason"]
     assert "上家牌河东×1" in structured["candidates"][1]["safety_reason"]
     assert "不是把中、发等其他字牌合并计算" in structured["candidates"][1]["safety_reason"]
-    assert structured["candidates"][2]["verdict"].startswith("不推荐")
+    assert "超预算风险" in structured["candidates"][2]["tradeoff"]
+    assert "首选" not in card
+    assert "备选" not in card
+    assert "不推荐" not in card
+    assert "本卡只解释权衡，不直接给出操作指令" in structured["decision_process"]
 
 
 def test_full_strategy_card_explains_scores_rank_honba_and_deposits() -> None:

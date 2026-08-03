@@ -52,13 +52,13 @@ _DEFAULT_HEIGHT = 140
 
 # Config mode (two buttons) compact size
 _CONFIG_WIDTH = 640
-_CONFIG_HEIGHT = 275
+_CONFIG_HEIGHT = 335
 _DETAIL_WIDTH = 1160
 _DETAIL_HEIGHT = 870
 _DETAIL_IMAGE_MAX_WIDTH = 540
 _DETAIL_IMAGE_MAX_HEIGHT = 740
 _SWITCH_STYLE_LABEL = "打法/显示"
-_CONFIG_STYLE_HINT = "选择打法后开始预测；预测中可点击右上角“打法/显示”随时调整"
+_CONFIG_STYLE_HINT = "先选策略力度，再选择打法开始或应用；预测中点“打法/显示”可随时调整"
 
 def _load_prefs(path: Path) -> dict[str, Any]:
     try:
@@ -69,12 +69,14 @@ def _load_prefs(path: Path) -> dict[str, Any]:
             fs = int(data.get("font_size", _FONT_SIZE))
             display_mode = _normalize_display_mode(data.get("display_mode"))
             panel_mode = _normalize_panel_mode(data.get("panel_mode"))
+            strategy_preset = _normalize_strategy_preset(data.get("strategy_preset"))
             return {
                 "width": max(_MIN_WIDTH, min(_MAX_WIDTH, w)),
                 "height": max(_MIN_HEIGHT, min(_MAX_HEIGHT, h)),
                 "font_size": max(16, min(32, fs)),
                 "display_mode": display_mode,
                 "panel_mode": panel_mode,
+                "strategy_preset": strategy_preset,
             }
     except Exception:
         pass
@@ -84,6 +86,7 @@ def _load_prefs(path: Path) -> dict[str, Any]:
         "font_size": _FONT_SIZE,
         "display_mode": "compact",
         "panel_mode": "compact",
+        "strategy_preset": "simple",
     }
 
 
@@ -94,16 +97,19 @@ def _save_prefs(
     font_size: int,
     display_mode: str | None = None,
     panel_mode: str | None = None,
+    strategy_preset: str | None = None,
 ) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         existing_mode = "compact"
         existing_panel_mode = "compact"
+        existing_strategy_preset = "simple"
         try:
             existing = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(existing, dict):
                 existing_mode = _normalize_display_mode(existing.get("display_mode"))
                 existing_panel_mode = _normalize_panel_mode(existing.get("panel_mode"))
+                existing_strategy_preset = _normalize_strategy_preset(existing.get("strategy_preset"))
         except Exception:
             pass
         path.write_text(
@@ -114,6 +120,7 @@ def _save_prefs(
                     "font_size": font_size,
                     "display_mode": _normalize_display_mode(display_mode or existing_mode),
                     "panel_mode": _normalize_panel_mode(panel_mode or existing_panel_mode),
+                    "strategy_preset": _normalize_strategy_preset(strategy_preset or existing_strategy_preset),
                 },
                 ensure_ascii=False,
             ),
@@ -131,6 +138,10 @@ def _normalize_display_mode(value: Any) -> str:
 def _normalize_panel_mode(value: Any) -> str:
     mode = str(value or "").strip().lower()
     return "full" if mode in {"full", "card", "strategy", "complete"} else "compact"
+
+
+def _normalize_strategy_preset(value: Any) -> str:
+    return "standard" if str(value or "").strip().lower() in {"standard", "full", "complete"} else "simple"
 
 
 def _overlay_panel_text(panel_mode: str, compact_text: str, strategy_card_text: str) -> str:
@@ -171,7 +182,7 @@ class CoachOverlayController:
         self,
         *,
         prefs_path: Path,
-        on_start: Callable[[str], None] | None = None,
+        on_start: Callable[[str, str], None] | None = None,
         on_stop: Callable[[], None] | None = None,
     ) -> None:
         self._queue: queue.Queue[Any] = queue.Queue()
@@ -274,6 +285,7 @@ class CoachOverlayController:
             "font_size": prefs["font_size"],
             "display_mode": prefs["display_mode"],
             "panel_mode": prefs["panel_mode"],
+            "strategy_preset": prefs["strategy_preset"],
         }
         class_name = f"NekoMahjongCoachOverlay_{id(self):x}"
         instance = win32api.GetModuleHandle(None)
@@ -339,7 +351,7 @@ class CoachOverlayController:
             _draw_text(hdc, str(card.get("posture") or "策略"), (36, 65, 88, 84), color=win32api.RGB(255, 255, 255), small=True)
             _draw_text(
                 hdc,
-                f"首选  {str(card.get('action') or '')}",
+                f"重点分析  {str(card.get('focus_tile') or '')}",
                 (104, 52, width - 245, 88),
                 color=win32api.RGB(30, 30, 30),
                 custom_font=headline_font,
@@ -431,9 +443,9 @@ class CoachOverlayController:
                 outline = accent_brush if tone == "primary" else (danger_brush if tone == "danger" else border_brush)
                 win32gui.FillRect(hdc, (left, card_top, right, card_bottom), background)
                 win32gui.FrameRect(hdc, (left, card_top, right, card_bottom), outline)
-                rank_label = f"#{candidate.get('rank', index + 1)}  {'首选' if tone == 'primary' else '备选'}"
+                rank_label = f"方案{'ABC'[index]}  {'排序基准' if tone == 'primary' else '对照方案'}"
                 _draw_text(hdc, rank_label, (left + 12, card_top + 10, right - 8, card_top + 30), color=win32api.RGB(42, 123, 196) if tone == "primary" else win32api.RGB(90, 90, 90), small=True)
-                _draw_text(hdc, f"打 {candidate.get('tile', '?')}", (left + 12, card_top + 34, right - 8, card_top + 64), color=win32api.RGB(30, 30, 30), custom_font=candidate_font)
+                _draw_text(hdc, f"候选牌 {candidate.get('tile', '?')}", (left + 12, card_top + 34, right - 8, card_top + 64), color=win32api.RGB(30, 30, 30), custom_font=candidate_font)
                 risk_color = win32api.RGB(220, 38, 38) if tone == "danger" else win32api.RGB(30, 30, 30)
                 _draw_text(hdc, f"{candidate.get('risk_summary', '')} · {candidate.get('risk_delta_label', candidate.get('risk_status', ''))}", (left + 12, card_top + 68, right - 8, card_top + 90), color=risk_color, small=True)
                 _draw_text(hdc, str(candidate.get("shape_summary") or ""), (left + 12, card_top + 92, right - 8, card_top + 114), color=win32api.RGB(50, 50, 50), small=True)
@@ -454,7 +466,7 @@ class CoachOverlayController:
                 win32gui.FillRect(hdc, (left + 8, verdict_top, right - 8, card_bottom - 8), primary_light_brush if tone == "primary" else (danger_light_brush if tone == "danger" else white_brush))
                 _draw_text(
                     hdc,
-                    str(candidate.get("verdict") or ""),
+                    str(candidate.get("tradeoff") or ""),
                     (left + 14, verdict_top + 8, right - 14, card_bottom - 10),
                     color=win32api.RGB(42, 123, 196) if tone == "primary" else (win32api.RGB(220, 38, 38) if tone == "danger" else win32api.RGB(80, 80, 80)),
                     small=True,
@@ -484,21 +496,28 @@ class CoachOverlayController:
                 win32gui.FillRect(hdc, (mid + 6, 44, width - 16, 92), accent_brush)
                 _draw_text(hdc, "立直（门清憋大牌）", (30, 60, mid - 14, 88), color=win32api.RGB(255, 255, 255), small=True)
                 _draw_text(hdc, "快攻（积极副露）", (mid + 22, 60, width - 24, 88), color=win32api.RGB(255, 255, 255), small=True)
-                _draw_text(hdc, "文案模式", (18, 108, 110, 138), color=win32api.RGB(102, 102, 102), small=True)
+                _draw_text(hdc, "策略力度", (18, 108, 110, 138), color=win32api.RGB(102, 102, 102), small=True)
+                simple_brush = accent_brush if state["strategy_preset"] == "simple" else card_brush
+                standard_brush = accent_brush if state["strategy_preset"] == "standard" else card_brush
+                win32gui.FillRect(hdc, (mid - 174, 104, mid - 6, 142), simple_brush)
+                win32gui.FillRect(hdc, (mid + 6, 104, mid + 174, 142), standard_brush)
+                _draw_text(hdc, "简易策略 · 轻防守", (mid - 151, 115, mid - 10, 138), color=win32api.RGB(255, 255, 255) if state["strategy_preset"] == "simple" else win32api.RGB(30, 30, 30), small=True)
+                _draw_text(hdc, "完整攻守 · 全风险", (mid + 28, 115, mid + 168, 138), color=win32api.RGB(255, 255, 255) if state["strategy_preset"] == "standard" else win32api.RGB(30, 30, 30), small=True)
+                _draw_text(hdc, "文案模式", (18, 158, 110, 188), color=win32api.RGB(102, 102, 102), small=True)
                 compact_brush = accent_brush if state["display_mode"] == "compact" else card_brush
                 beginner_brush = accent_brush if state["display_mode"] == "beginner" else card_brush
-                win32gui.FillRect(hdc, (mid - 126, 104, mid - 10, 140), compact_brush)
-                win32gui.FillRect(hdc, (mid + 10, 104, mid + 126, 140), beginner_brush)
-                _draw_text(hdc, "简洁", (mid - 88, 115, mid - 10, 138), color=win32api.RGB(255, 255, 255) if state["display_mode"] == "compact" else win32api.RGB(30, 30, 30), small=True)
-                _draw_text(hdc, "新手", (mid + 48, 115, mid + 126, 138), color=win32api.RGB(255, 255, 255) if state["display_mode"] == "beginner" else win32api.RGB(30, 30, 30), small=True)
-                _draw_text(hdc, "展示内容", (18, 158, 110, 188), color=win32api.RGB(102, 102, 102), small=True)
+                win32gui.FillRect(hdc, (mid - 126, 154, mid - 10, 190), compact_brush)
+                win32gui.FillRect(hdc, (mid + 10, 154, mid + 126, 190), beginner_brush)
+                _draw_text(hdc, "简洁", (mid - 88, 165, mid - 10, 188), color=win32api.RGB(255, 255, 255) if state["display_mode"] == "compact" else win32api.RGB(30, 30, 30), small=True)
+                _draw_text(hdc, "新手", (mid + 48, 165, mid + 126, 188), color=win32api.RGB(255, 255, 255) if state["display_mode"] == "beginner" else win32api.RGB(30, 30, 30), small=True)
+                _draw_text(hdc, "展示内容", (18, 208, 110, 238), color=win32api.RGB(102, 102, 102), small=True)
                 compact_panel_brush = accent_brush if state["panel_mode"] == "compact" else card_brush
                 full_panel_brush = accent_brush if state["panel_mode"] == "full" else card_brush
-                win32gui.FillRect(hdc, (mid - 174, 152, mid - 6, 194), compact_panel_brush)
-                win32gui.FillRect(hdc, (mid + 6, 152, mid + 174, 194), full_panel_brush)
-                _draw_text(hdc, "简洁主建议", (mid - 136, 165, mid - 10, 190), color=win32api.RGB(255, 255, 255) if state["panel_mode"] == "compact" else win32api.RGB(30, 30, 30), small=True)
-                _draw_text(hdc, "详细策略推理", (mid + 38, 165, mid + 168, 190), color=win32api.RGB(255, 255, 255) if state["panel_mode"] == "full" else win32api.RGB(30, 30, 30), small=True)
-                _draw_text(hdc, _CONFIG_STYLE_HINT, (92, 220, width - 60, 250), color=win32api.RGB(102, 102, 102), small=True)
+                win32gui.FillRect(hdc, (mid - 174, 202, mid - 6, 244), compact_panel_brush)
+                win32gui.FillRect(hdc, (mid + 6, 202, mid + 174, 244), full_panel_brush)
+                _draw_text(hdc, "简洁主建议", (mid - 136, 215, mid - 10, 240), color=win32api.RGB(255, 255, 255) if state["panel_mode"] == "compact" else win32api.RGB(30, 30, 30), small=True)
+                _draw_text(hdc, "详细策略推理", (mid + 38, 215, mid + 168, 240), color=win32api.RGB(255, 255, 255) if state["panel_mode"] == "full" else win32api.RGB(30, 30, 30), small=True)
+                _draw_text(hdc, _CONFIG_STYLE_HINT, (80, 275, width - 60, 310), color=win32api.RGB(102, 102, 102), small=True)
                 return
             win32gui.FillRect(hdc, (12, 14, 62, 36), accent_brush)
             _draw_text(hdc, "本地", (22, 18, 62, 36), color=win32api.RGB(255, 255, 255), small=True)
@@ -644,18 +663,23 @@ class CoachOverlayController:
                     if 44 <= y <= 96:
                         try:
                             if self._on_start is not None:
-                                self._on_start("riichi" if x < midpoint else "fast")
+                                self._on_start("riichi" if x < midpoint else "fast", str(state["strategy_preset"]))
                         except Exception as exc:
                             self.last_error = f"button click failed: {exc}"
                         state["started"] = True
                         _resize_main("strategy")
                         return 0
-                    if 100 <= y <= 144:
+                    if 100 <= y <= 146:
+                        state["strategy_preset"] = "simple" if x < midpoint else "standard"
+                        _save_prefs(self._prefs_path, int(state["width"]), int(state["height"]), int(state["font_size"]), str(state["display_mode"]), str(state["panel_mode"]), str(state["strategy_preset"]))
+                        win32gui.InvalidateRect(hwnd, None, True)
+                        return 0
+                    if 150 <= y <= 194:
                         state["display_mode"] = "compact" if x < midpoint else "beginner"
                         _save_prefs(self._prefs_path, int(state["width"]), int(state["height"]), int(state["font_size"]), str(state["display_mode"]), str(state["panel_mode"]))
                         win32gui.InvalidateRect(hwnd, None, True)
                         return 0
-                    if 148 <= y <= 200:
+                    if 198 <= y <= 250:
                         state["panel_mode"] = "compact" if x < midpoint else "full"
                         _save_prefs(self._prefs_path, int(state["width"]), int(state["height"]), int(state["font_size"]), str(state["display_mode"]), str(state["panel_mode"]))
                         if state["started"]:
@@ -1118,6 +1142,7 @@ class CoachOverlayController:
                 "font_size": prefs["font_size"],
                 "display_mode": prefs["display_mode"],
                 "panel_mode": prefs["panel_mode"],
+                "strategy_preset": prefs["strategy_preset"],
             }
             drag_state = {"offset_x": 0, "offset_y": 0, "x": 0, "y": 0, "manual": False}
 
@@ -1146,7 +1171,7 @@ class CoachOverlayController:
                 def _on_click(_e):
                     try:
                         if self._on_start is not None:
-                            self._on_start(style)
+                            self._on_start(style, layout["strategy_preset"])
                     except Exception as exc:
                         self.last_error = f"button click failed: {exc}"
                     session_state["started"] = True
@@ -1159,6 +1184,55 @@ class CoachOverlayController:
 
             _make_btn(btn_row, "立直（门清憋大牌）", "riichi")
             _make_btn(btn_row, "快攻（积极副露）", "fast")
+
+            tk.Label(
+                config_frame,
+                text="策略力度",
+                bg=_BG,
+                fg=_TEXT_MUTED,
+                font=(_FONT, 10, "bold"),
+            ).pack(pady=(0, 2))
+            strategy_preset_row = tk.Frame(config_frame, bg=_BG)
+            strategy_preset_row.pack(pady=(0, 8))
+
+            def _refresh_strategy_preset_buttons() -> None:
+                for child in strategy_preset_row.winfo_children():
+                    selected = getattr(child, "_overlay_strategy_preset", "") == layout["strategy_preset"]
+                    child.config(bg=_BTN_PRIMARY if selected else _CARD, fg="#ffffff" if selected else _TEXT)
+
+            def _make_strategy_preset_btn(parent, text, preset):
+                btn = tk.Label(
+                    parent,
+                    text=text,
+                    bg=_CARD,
+                    fg=_TEXT,
+                    font=(_FONT, 11, "bold"),
+                    padx=18,
+                    pady=6,
+                    cursor="hand2",
+                )
+                btn._overlay_strategy_preset = preset
+                btn.pack(side="left", padx=6)
+
+                def _on_click(_e):
+                    layout["strategy_preset"] = preset
+                    _save_prefs(
+                        self._prefs_path,
+                        layout["width"],
+                        layout["height"],
+                        layout["font_size"],
+                        layout["display_mode"],
+                        layout["panel_mode"],
+                        layout["strategy_preset"],
+                    )
+                    _refresh_strategy_preset_buttons()
+
+                btn.bind("<Button-1>", _on_click)
+                return btn
+
+            _make_strategy_preset_btn(strategy_preset_row, "简易策略 · 轻防守", "simple")
+            _make_strategy_preset_btn(strategy_preset_row, "完整攻守 · 全风险", "standard")
+            _refresh_strategy_preset_buttons()
 
             mode_row = tk.Frame(config_frame, bg=_BG)
             mode_row.pack(pady=(0, 10))
@@ -1397,7 +1471,7 @@ class CoachOverlayController:
                 posture_value = str(card.get("posture_value") or "")
                 posture_bg = {"push": _SUCCESS, "mawashi": _WARNING, "fold": _DANGER}.get(posture_value, _BTN_PRIMARY)
                 full_posture.config(text=str(card.get("posture") or "策略"), bg=posture_bg)
-                full_action.config(text=f"首选  {str(card.get('action') or '等待判断')}")
+                full_action.config(text=f"重点分析  {str(card.get('focus_tile') or '等待牌面')}")
                 full_summary.config(text=f"{str(card.get('posture_summary') or '')} · {str(card.get('shape_summary') or '')}")
                 risk_ok = str(card.get("risk_status") or "") != "超预算"
                 full_risk.config(
@@ -1425,8 +1499,8 @@ class CoachOverlayController:
                     widgets["frame"].config(bg=bg, highlightbackground=border)
                     for label in widgets["labels"]:
                         label.config(bg=bg)
-                    widgets["rank"].config(text=f"#{candidate.get('rank', index + 1)}  {'首选' if tone == 'primary' else '备选'}")
-                    widgets["tile"].config(text=f"打 {candidate.get('tile', '?')}")
+                    widgets["rank"].config(text=f"方案{'ABC'[index]}  {'排序基准' if tone == 'primary' else '对照方案'}")
+                    widgets["tile"].config(text=f"候选牌 {candidate.get('tile', '?')}")
                     widgets["risk"].config(
                         text=f"{candidate.get('risk_summary', '')} · {candidate.get('risk_delta_label', candidate.get('risk_status', ''))}",
                         fg=_DANGER if tone == "danger" else _TEXT,
@@ -1438,7 +1512,7 @@ class CoachOverlayController:
                     widgets["shape_reason"].config(text=str(candidate.get("shape_reason") or ""))
                     widgets["comparison"].config(text=str(candidate.get("comparison_reason") or ""))
                     widgets["verdict"].config(
-                        text=str(candidate.get("verdict") or ""),
+                        text=str(candidate.get("tradeoff") or ""),
                         bg="#eaf6ff" if tone == "primary" else ("#fff1f2" if tone == "danger" else "#ffffff"),
                         fg=_BORDER_FOCUS if tone == "primary" else (_DANGER if tone == "danger" else _TEXT_MUTED),
                     )
@@ -1807,7 +1881,7 @@ def overlay_strategy_card_text_from_payload(payload: dict[str, Any], *, prefs_pa
         return compact
     lines = [
         f"{card['posture']} · {card['posture_summary']}",
-        f"首选　{card['action']}",
+        f"重点分析　{card['focus_tile']}",
         f"{card['shape_summary']}　　{card['risk_summary']}（{card['risk_status']}）",
         str(card["explanation"]),
         f"场况：{card['match_context_summary']}" if card.get("match_context_summary") else "",
@@ -1815,18 +1889,18 @@ def overlay_strategy_card_text_from_payload(payload: dict[str, Any], *, prefs_pa
         f"风险刻度：{card['risk_scale_note']}；{card['risk_scale_legend']}",
         str(card["risk_model_legend"]),
         f"本局允许线：{card['risk_budget_calculation']}",
-        "备选比较",
+        "方案比较（仅展示风险与牌型权衡）",
     ]
-    for candidate in card["candidates"]:
+    for index, candidate in enumerate(card["candidates"]):
         lines.append(
-            f"#{candidate['rank']}　打{candidate['tile']}　{candidate['risk_summary']}（{candidate['risk_delta_label']}）　"
+            f"方案{'ABC'[index]}　候选牌{candidate['tile']}　{candidate['risk_summary']}（{candidate['risk_delta_label']}）　"
             f"{candidate['shape_summary']}"
         )
         lines.append(f"　安全：{candidate['safety_reason']}")
         lines.append(f"　风险：{candidate['risk_reason']}")
         lines.append(f"　成型：{candidate['shape_reason']}")
         lines.append(f"　比较：{candidate['comparison_reason']}")
-        lines.append(f"　结论：{candidate['verdict']}")
+        lines.append(f"　权衡：{candidate['tradeoff']}")
     return "\n".join(line for line in lines if line)
 
 
@@ -1883,9 +1957,9 @@ def overlay_strategy_card_from_payload(payload: dict[str, Any]) -> dict[str, Any
         "fold": "安全优先",
     }.get(posture_value, "攻守判断")
     explanation = {
-        "push": "风险可控，继续推进和牌。",
-        "mawashi": "先守住风险预算，再保留和牌路线。",
-        "fold": "当前和牌收益不足以覆盖风险。",
+        "push": "牌型收益较高，风险仍在当前允许线内。",
+        "mawashi": "存在兼顾安全与成型的候选，和牌路线仍然保留。",
+        "fold": "当前候选的牌型收益不足以覆盖高风险。",
     }.get(posture_value, "根据风险与牌型综合排序。")
     rendered_candidates: list[dict[str, Any]] = []
     for index, item in enumerate(candidates, start=1):
@@ -1924,7 +1998,7 @@ def overlay_strategy_card_from_payload(payload: dict[str, Any]) -> dict[str, Any
         risk_budget_explanation = str(item.get("risk_budget_explanation") or (
             f"{risk:.0f} ≤ 当前可接受上限{budget:.0f}，低{budget - risk:.0f}，可进入候选。"
             if budget_delta >= 0
-            else f"{risk:.0f} > 当前可接受上限{budget:.0f}，超{abs(budget_delta):.0f}，默认不推荐。"
+            else f"{risk:.0f} > 当前可接受上限{budget:.0f}，超{abs(budget_delta):.0f}，位于普通候选区间外。"
         ))
         rendered_candidates.append(
             {
@@ -1960,7 +2034,7 @@ def overlay_strategy_card_from_payload(payload: dict[str, Any]) -> dict[str, Any
                     f"牌型损失{shape_loss}{effective_text}。"
                 ),
                 "comparison_reason": "",
-                "verdict": "",
+                "tradeoff": "",
             }
         )
     if posture_value == "mawashi" and rendered_candidates:
@@ -1978,7 +2052,7 @@ def overlay_strategy_card_from_payload(payload: dict[str, Any]) -> dict[str, Any
             effective_gain = best_candidate["effective_count"] - safe_alt["effective_count"]
             if effective_gain > 0:
                 tradeoffs.append(
-                    f"{best_candidate['tile']}与{safe_alt['tile']}都在预算内；首选多保留{effective_gain}张有效牌"
+                    f"方案A的{best_candidate['tile']}与{safe_alt['tile']}都在预算内；前者多保留{effective_gain}张有效牌"
                 )
         if danger_alt is not None:
             effective_gain = danger_alt["effective_count"] - best_candidate["effective_count"]
@@ -2015,25 +2089,25 @@ def overlay_strategy_card_from_payload(payload: dict[str, Any]) -> dict[str, Any
                         f"但风险低{danger_alt['risk'] - candidate['risk']:.0f}并回到预算内"
                     )
                 candidate["comparison_reason"] = "；".join(comparisons) + ("。" if comparisons else "")
-                candidate["verdict"] = "首选：预算内最能保留和牌机会"
+                candidate["tradeoff"] = "排序基准：预算内且保留的和牌机会最多"
             else:
                 risk_text = (
-                    f"风险比首选高{risk_diff:.0f}"
+                    f"风险比方案A高{risk_diff:.0f}"
                     if risk_diff > 0
-                    else f"风险比首选低{abs(risk_diff):.0f}"
+                    else f"风险比方案A低{abs(risk_diff):.0f}"
                 )
                 effective_text = (
-                    f"有效牌比首选多{effective_diff}张"
+                    f"有效牌比方案A多{effective_diff}张"
                     if effective_diff > 0
-                    else f"有效牌比首选少{abs(effective_diff)}张"
+                    else f"有效牌比方案A少{abs(effective_diff)}张"
                 )
                 candidate["comparison_reason"] = f"{risk_text}；{effective_text}。"
                 if candidate["risk_status"] == "超预算":
-                    candidate["verdict"] = "不推荐：牌效收益不够抵消超预算风险"
+                    candidate["tradeoff"] = "牌效收益尚不足以覆盖超预算风险"
                 elif candidate["risk"] < best_candidate["risk"] and candidate["effective_count"] < best_candidate["effective_count"]:
-                    candidate["verdict"] = "备选：更安全，但牺牲较多牌效"
+                    candidate["tradeoff"] = "风险更低，同时牺牲较多牌效"
                 else:
-                    candidate["verdict"] = "备选：风险与牌效综合不如首选"
+                    candidate["tradeoff"] = "风险与牌效的综合排序低于方案A"
     best_shanten = int(best.get("shanten", 8))
     best_shanten_text = "听牌" if best_shanten <= 0 else f"{best_shanten}向听"
     return {
@@ -2041,7 +2115,7 @@ def overlay_strategy_card_from_payload(payload: dict[str, Any]) -> dict[str, Any
         "posture_value": posture_value,
         "posture_summary": posture_summary,
         "potential": potential,
-        "action": f"打 {rendered_candidates[0]['tile']}",
+        "focus_tile": rendered_candidates[0]["tile"],
         "shape_summary": f"保持{best_shanten_text} · 有效{int(best.get('effective_count') or 0)}张",
         "risk": best_risk,
         "risk_budget": budget,
@@ -2054,7 +2128,7 @@ def overlay_strategy_card_from_payload(payload: dict[str, Any]) -> dict[str, Any
         "explanation": explanation,
         "match_context_summary": match_context_summary,
         "match_context_explanation": match_context_explanation,
-        "decision_process": "决策顺序：先检查风险预算 → 再比较向听与有效牌 → 最后比较打点与巡目",
+        "decision_process": "分析顺序：先检查风险预算 → 再比较向听与有效牌 → 最后比较打点与巡目；本卡只解释权衡，不直接给出操作指令",
         "candidates": rendered_candidates,
     }
 

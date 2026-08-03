@@ -40,6 +40,7 @@ const keywordsInput = document.getElementById('keywordsInput');
 const intervalInput = document.getElementById('intervalInput');
 const overlayInput = document.getElementById('overlayInput');
 const riverTrackingModeInput = document.getElementById('riverTrackingModeInput');
+const strategyPresetInput = document.getElementById('strategyPresetInput');
 const tileRecognitionModeInput = document.getElementById('tileRecognitionModeInput');
 const settlementEnabledInput = document.getElementById('settlementEnabledInput');
 const settlementConfidenceInput = document.getElementById('settlementConfidenceInput');
@@ -1034,6 +1035,7 @@ function renderPreferences(data = {}, force = false) {
     setSelectValue(riskToleranceInput, profile.risk_tolerance || 'balanced');
     setSelectValue(goalBiasInput, profile.goal_bias || 'balanced');
     setSelectValue(callBiasInput, profile.call_bias || 'balanced');
+    setSelectValue(strategyPresetInput, data.config?.strategy_preset || strategyPresetInput?.value || 'simple');
     if (target.title) {
       const existing = [...windowCandidateSelect.options].find((item) => item.value === target.title);
       if (!existing) {
@@ -1059,7 +1061,7 @@ function renderDefenseCandidates(strategy = {}) {
     const card = document.createElement('article');
     card.className = 'defense-candidate-card';
     const title = document.createElement('strong');
-    title.textContent = `#${index + 1} 打 ${compact(item.tile, '?')}`;
+    title.textContent = `方案${String.fromCharCode(65 + index)} · 候选牌 ${compact(item.tile, '?')}`;
     const safety = document.createElement('span');
     safety.textContent = `${compact(item.safety, '安全度未知')} · 危险 ${Number(item.defense_risk || 0).toFixed(1)}`;
     const shape = document.createElement('span');
@@ -1415,6 +1417,7 @@ async function analyzeFrame() {
     force_checkpoint: Boolean(forceCheckpointInput.checked),
     ...settlementRuntimeArgs(),
     tile_recognition_mode: tileRecognitionModeInput ? tileRecognitionModeInput.value : 'legacy',
+    strategy_preset: strategyPresetInput ? strategyPresetInput.value : 'simple',
     round_wind: analysisRoundWindInput.value.trim(),
     seat_wind: analysisSeatWindInput.value.trim(),
     dora_tiles: tileValues(analysisDoraTilesInput.value),
@@ -1549,6 +1552,7 @@ async function startLive() {
     ...settlementRuntimeArgs(),
     river_tracking_mode: riverTrackingModeInput ? riverTrackingModeInput.value : 'checkpoint',
     tile_recognition_mode: tileRecognitionModeInput ? tileRecognitionModeInput.value : 'legacy',
+    strategy_preset: strategyPresetInput ? strategyPresetInput.value : 'simple',
     round_wind: roundWindInput.value.trim(),
     seat_wind: seatWindInput.value.trim(),
     dora_tiles: tileValues(doraTilesInput.value),

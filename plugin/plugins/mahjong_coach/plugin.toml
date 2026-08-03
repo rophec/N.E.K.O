@@ -31,6 +31,7 @@ coach_checkpoint_self_turns = 3
 critical_action_interrupts = true
 per_turn_discard_prompt = false
 play_style = "riichi"
+strategy_preset = "simple"
 
 [profile]
 rank = "unknown"

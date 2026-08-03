@@ -491,7 +491,7 @@ async def test_status_and_native_overlay_share_last_published_strategy_snapshot(
     assert payload["display_snapshot"]["overlay_text"] == plugin._overlay.payload["text"]
     assert payload["display_snapshot"]["strategy_card_text"] == plugin._overlay.payload["strategy_card_text"]
     assert payload["display_snapshot"]["strategy_card"] == plugin._overlay.payload["strategy_card"]
-    assert payload["display_snapshot"]["strategy_card"]["action"] == "打 1万"
+    assert payload["display_snapshot"]["strategy_card"]["focus_tile"] == "1万"
     assert "本地兜牌 · 守中求和" in payload["overlay_text"]
 
 
@@ -2106,14 +2106,22 @@ async def test_start_live_updates_style_when_already_running() -> None:
     plugin._live_last_checkpoint_at = 123.0
     plugin.logger = SimpleNamespace(info=lambda *_args, **_kwargs: None, warning=lambda *_args, **_kwargs: None)
 
-    result = await plugin._overlay_start_live(overlay=True, play_style="fast", river_tracking_mode="live")
+    result = await plugin._overlay_start_live(
+        overlay=True,
+        play_style="fast",
+        strategy_preset="standard",
+        river_tracking_mode="live",
+    )
 
     assert result.unwrap()["status"] == "already_running"
     assert plugin._cfg.play_style == "fast"
+    assert plugin._cfg.strategy_preset == "standard"
     assert plugin._cfg.river_tracking_mode == "live"
     assert plugin._engine.config.play_style == "fast"
+    assert plugin._engine.config.strategy_preset == "standard"
     assert plugin._engine.config.river_tracking_mode == "live"
     assert plugin._engine.state.play_style == "fast"
+    assert plugin._engine.state.strategy_preset == "standard"
     assert plugin._engine.state.opening_emitted is False
     assert plugin._engine.state.current_plan == ""
     assert plugin._engine.state.last_update_reason == "style_changed"

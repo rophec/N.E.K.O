@@ -135,6 +135,7 @@ class MahjongCoachConfig:
     critical_action_interrupts: bool = True
     per_turn_discard_prompt: bool = False
     play_style: str = "riichi"
+    strategy_preset: str = "simple"
     hand_recognition_backend: str = "legacy_templates"
     onnx_hand_enabled: bool = False
     meld_recognition_enabled: bool = True
@@ -175,6 +176,7 @@ class MahjongCoachConfig:
             critical_action_interrupts=bool(decision.get("critical_action_interrupts", True)),
             per_turn_discard_prompt=bool(decision.get("per_turn_discard_prompt", False)),
             play_style=legacy_style,
+            strategy_preset=_valid_strategy_preset(decision.get("strategy_preset")),
             hand_recognition_backend=str(perception.get("hand_recognition_backend") or "legacy_templates"),
             onnx_hand_enabled=bool(perception.get("onnx_hand_enabled", False)),
             meld_recognition_enabled=bool(perception.get("meld_recognition_enabled", True)),
@@ -225,6 +227,7 @@ class RoundCoachState:
     round_id: str = "default"
     round_phase: str = "round_idle"
     play_style: str = "riichi"
+    strategy_preset: str = "simple"
     opening_emitted: bool = False
     opening_plan: str = ""
     current_plan: str = ""
@@ -362,6 +365,13 @@ def _valid_play_style(value: Any) -> str:
     if style in ("fast", "快攻", "aggressive"):
         return "fast"
     return "riichi"
+
+
+def _valid_strategy_preset(value: Any) -> str:
+    preset = str(value or "").strip().lower()
+    if preset in ("standard", "full", "complete", "完整", "完整攻守"):
+        return "standard"
+    return "simple"
 
 
 def _valid_river_tracking_mode(value: Any) -> str:
