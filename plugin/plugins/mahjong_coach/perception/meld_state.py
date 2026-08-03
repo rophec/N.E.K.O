@@ -7,6 +7,7 @@ from typing import Any
 
 from PIL import Image
 
+from .image_source import ImageSource, open_rgb, source_exists
 from .roi import RoiBox, collect_region_metrics
 from .tile_classifier_dispatch import classify_discard_tiles_batch, onnx_discard_available
 
@@ -51,21 +52,20 @@ class MeldStateResult:
 
 
 def detect_meld_state_path(
-    image_path: Path,
+    image_path: ImageSource,
     *,
     min_confidence: float = DEFAULT_MIN_MELD_CONFIDENCE,
     closed_hand_count: int | None = None,
 ) -> MeldStateResult:
     started = time.perf_counter()
-    if not image_path.exists():
+    if not source_exists(image_path):
         return MeldStateResult(reason="image_missing")
     if not onnx_discard_available():
         return MeldStateResult(reason="onnx_tile_classifier_unavailable")
     if closed_hand_count is not None and int(closed_hand_count) >= 12:
         return MeldStateResult(reason="closed_hand_count_no_melds", elapsed_ms=(time.perf_counter() - started) * 1000.0)
 
-    with Image.open(image_path) as opened:
-        image = opened.convert("RGB")
+    with open_rgb(image_path) as image:
         parsed = parse_self_melds_from_image(
             image,
             min_confidence=min_confidence,

@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from .image_source import ImageSource, open_rgb, source_exists
 from .roi import RoiBox
 
 
@@ -26,19 +27,19 @@ class RiichiDetectResult:
         }
 
 
-def detect_riichi_sticks(image_path: Path) -> RiichiDetectResult:
-    if not image_path.exists():
+def detect_riichi_sticks(image_path: ImageSource) -> RiichiDetectResult:
+    """Read the top-left deposit counter without claiming a current riichi.
+
+    This legacy entry point is kept for compatibility. The sampled UI region is
+    not the physical stick placed beside the center panel, and a non-zero value
+    can survive into another hand. Consequently it must never manufacture an
+    ``unknown`` riichi player.
+    """
+    if not source_exists(image_path):
         return RiichiDetectResult()
-    with Image.open(image_path) as opened:
-        image = opened.convert("RGB")
+    with open_rgb(image_path) as opened:
+        image = opened.copy()
     counter = _detect_riichi_stick_counter(image)
-    if counter.get("active"):
-        return RiichiDetectResult(
-            riichi_players=["unknown"],
-            detections=[counter],
-            stick_count=_int_or_none(counter.get("count")),
-            counter_confidence=float(counter.get("confidence") or 0.0),
-        )
     return RiichiDetectResult(
         detections=[counter],
         stick_count=_int_or_none(counter.get("count")),

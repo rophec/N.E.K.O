@@ -3,9 +3,10 @@ from __future__ import annotations
 import platform
 import shutil
 import subprocess
-import time
 from dataclasses import asdict, dataclass
 from typing import Any
+
+from .models import WindowTargetDescriptor
 
 
 IGNORED_WINDOW_TITLE_FRAGMENTS = (
@@ -103,6 +104,75 @@ def bind_window_from_keywords(keywords: list[str]) -> WindowBindingResult:
     )
 
 
+def bind_window_from_descriptor(
+    keywords: list[str],
+    descriptor: WindowTargetDescriptor | None = None,
+) -> WindowBindingResult:
+    descriptor = descriptor or WindowTargetDescriptor()
+    if descriptor.title or descriptor.app_name:
+        candidates = list_window_candidates(keywords)
+        wanted_title = descriptor.title.casefold()
+        wanted_app = descriptor.app_name.casefold()
+        matches = [
+            item
+            for item in candidates
+            if (
+                (wanted_title and str(item.get("title") or "").casefold() == wanted_title)
+                or (wanted_app and str(item.get("app_name") or "").casefold() == wanted_app)
+            )
+        ]
+        if not matches and wanted_title:
+            matches = [
+                item
+                for item in candidates
+                if wanted_title in str(item.get("title") or "").casefold()
+            ]
+        if matches:
+            return _binding_from_candidate(matches[0], descriptor.match_keyword)
+    return bind_window_from_keywords(keywords)
+
+
+def refresh_cached_window(binding: WindowBindingResult) -> WindowBindingResult:
+    """Refresh geometry for a cached HWND without enumerating every window."""
+    if not binding.bound:
+        return binding
+    if platform.system().lower() != "windows" or not binding.hwnd:
+        return binding
+    try:
+        import ctypes
+        import ctypes.wintypes
+
+        user32 = ctypes.windll.user32
+        hwnd = int(binding.hwnd)
+        if not user32.IsWindow(hwnd) or not user32.IsWindowVisible(hwnd):
+            return WindowBindingResult(bound=False, source="cached-hwnd", error="cached_window_invalid")
+        rect = ctypes.wintypes.RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return WindowBindingResult(bound=False, source="cached-hwnd", error="cached_window_bounds_failed")
+        length = max(1, int(user32.GetWindowTextLengthW(hwnd)) + 1)
+        title_buffer = ctypes.create_unicode_buffer(length)
+        user32.GetWindowTextW(hwnd, title_buffer, length)
+        title = _normalize_title(title_buffer.value) or binding.window_title
+        width = int(rect.right - rect.left)
+        height = int(rect.bottom - rect.top)
+        if _window_should_be_ignored(title, binding.app_name, width, height):
+            return WindowBindingResult(bound=False, source="cached-hwnd", error="cached_window_ignored")
+        return WindowBindingResult(
+            bound=True,
+            window_title=title,
+            app_name=binding.app_name,
+            match_keyword=binding.match_keyword,
+            source="cached-hwnd",
+            hwnd=hwnd,
+            left=int(rect.left),
+            top=int(rect.top),
+            width=width,
+            height=height,
+        )
+    except Exception as exc:
+        return WindowBindingResult(bound=False, source="cached-hwnd", error=f"cached_window_error:{exc}")
+
+
 def list_window_candidates(keywords: list[str]) -> list[dict[str, Any]]:
     cleaned = _clean_keywords(keywords)
     if platform.system().lower() == "windows":
@@ -147,6 +217,55 @@ def list_window_candidates(keywords: list[str]) -> list[dict[str, Any]]:
     ]
 
 
+def choose_window_candidate_native(
+    candidates: list[dict[str, Any]],
+) -> WindowTargetDescriptor | None:
+    """Ask for an explicit target with a compact native Windows dialog.
+
+    HWND values remain process-local and are deliberately not returned in the
+    persisted descriptor. Non-Windows builds fall back to the diagnostic UI.
+    """
+    if platform.system().lower() != "windows" or not candidates:
+        return None
+    try:
+        import ctypes
+
+        message_box = ctypes.windll.user32.MessageBoxW
+        yes_no_cancel = 0x00000003
+        icon_question = 0x00000020
+        set_foreground = 0x00010000
+        topmost = 0x00040000
+        flags = yes_no_cancel | icon_question | set_foreground | topmost
+        for index, item in enumerate(candidates, start=1):
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            dimensions = ""
+            if item.get("width") and item.get("height"):
+                dimensions = f"\n尺寸：{item['width']} × {item['height']}"
+            result = int(
+                message_box(
+                    None,
+                    f"检测到多个雀魂窗口（{index}/{len(candidates)}）\n\n"
+                    f"使用这个窗口吗？\n{title}{dimensions}\n\n"
+                    "选择“否”查看下一个；选择“取消”稍后再选。",
+                    "选择雀魂窗口",
+                    flags,
+                )
+            )
+            if result == 6:  # IDYES
+                return WindowTargetDescriptor(
+                    title=title,
+                    app_name=str(item.get("app_name") or "").strip(),
+                    match_keyword=str(item.get("match_keyword") or "").strip(),
+                )
+            if result == 2:  # IDCANCEL
+                return None
+        return None
+    except Exception:
+        return None
+
+
 def get_active_window_info() -> WindowBindingResult:
     system = platform.system().lower()
     if system == "windows":
@@ -189,8 +308,7 @@ def _find_matching_window_windows(keywords: list[str]) -> WindowBindingResult | 
             continue
     if not candidates:
         return None
-    _score, window, result = max(candidates, key=lambda item: item[0])
-    _activate_window_best_effort(window)
+    _score, _window, result = max(candidates, key=lambda item: item[0])
     return result
 
 
@@ -302,6 +420,21 @@ def _window_candidate_from_object(window: Any, keywords: list[str]) -> WindowCan
     )
 
 
+def _binding_from_candidate(item: dict[str, Any], fallback_keyword: str = "") -> WindowBindingResult:
+    return WindowBindingResult(
+        bound=True,
+        window_title=str(item.get("title") or ""),
+        app_name=str(item.get("app_name") or ""),
+        match_keyword=str(item.get("match_keyword") or fallback_keyword or ""),
+        source=str(item.get("source") or "window-candidate"),
+        hwnd=_coerce_int(item.get("hwnd")),
+        left=_coerce_int(item.get("left")),
+        top=_coerce_int(item.get("top")),
+        width=_coerce_int(item.get("width")),
+        height=_coerce_int(item.get("height")),
+    )
+
+
 def _normalize_title(value: str) -> str:
     return " ".join(str(value).split()).strip()
 
@@ -345,25 +478,6 @@ def _window_candidate_score(window: Any, result: WindowBindingResult) -> tuple[i
     bounds_score = 100 if result.has_bounds() else 0
     area = int(result.width or 0) * int(result.height or 0)
     return active_score + bounds_score, area
-
-
-def _activate_window_best_effort(window: Any) -> None:
-    try:
-        if bool(getattr(window, "isMinimized", False)) and hasattr(window, "restore"):
-            window.restore()
-    except Exception:
-        pass
-    try:
-        if bool(getattr(window, "isActive", False)):
-            return
-    except Exception:
-        pass
-    try:
-        if hasattr(window, "activate"):
-            window.activate()
-            time.sleep(0.08)
-    except Exception:
-        pass
 
 
 def _coerce_int(value: Any) -> int | None:

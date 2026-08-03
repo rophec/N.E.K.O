@@ -35,6 +35,8 @@
 *.dll binary
 *.lib binary
 *.exe binary
+*.onnx binary
+plugin/plugins/mahjong_coach/data/models/yolo26_mahjong/model.onnx filter=lfs diff=lfs merge=lfs -text
 *.vrm binary
 *.vrma binary
 *.moc3 binary

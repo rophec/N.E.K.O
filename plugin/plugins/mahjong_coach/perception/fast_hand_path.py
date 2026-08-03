@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -10,12 +11,24 @@ from PIL import Image
 
 from .calibration import resolve_calibration_profile
 from .hand_layout import build_hand_layout
+from .image_source import ImageSource, open_rgb, source_exists
 from .roi import RoiBox, collect_region_metrics
 from .tile_classifier_dispatch import classify_hand_tile
 from .tile_templates import is_probably_occupied_hand_slot
 
 
 MIN_FAST_HAND_CONFIDENCE = 0.12
+
+# These bands are expressed in normalized coordinates of the perspective-
+# corrected table, not the original screenshot.  They cover the four inner
+# discard lanes while leaving the outer hand/meld shelves out of the cheap
+# fingerprint gate.
+RIVER_FINGERPRINT_ROIS: dict[str, tuple[float, float, float, float]] = {
+    "self": (0.28, 0.56, 0.72, 0.76),
+    "left_opponent": (0.24, 0.28, 0.44, 0.72),
+    "top_opponent": (0.28, 0.24, 0.72, 0.44),
+    "right_opponent": (0.56, 0.28, 0.76, 0.72),
+}
 
 
 @dataclass(frozen=True)
@@ -27,6 +40,7 @@ class FastHandResult:
     elapsed_ms: float = 0.0
     raw_detections: list[dict[str, Any]] = field(default_factory=list)
     draw_slot_index: int = 14
+    analysis_hints: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -36,7 +50,7 @@ class FastHandResult:
 
 
 def detect_fast_hand_path(
-    image_path: Path,
+    image_path: ImageSource,
     *,
     calibration_dir: Path | None = None,
     min_hand_tiles: int = 12,
@@ -44,13 +58,12 @@ def detect_fast_hand_path(
     use_onnx_hand: bool | None = None,
 ) -> FastHandResult:
     started = time.perf_counter()
-    if not image_path.exists():
+    if not source_exists(image_path):
         return FastHandResult(reason="image_missing")
     min_tiles = max(1, min(14, int(min_hand_tiles or 12)))
     max_tiles = max(min_tiles, min(14, int(max_hand_tiles or 14)))
 
-    with Image.open(image_path) as opened:
-        image = opened.convert("RGB")
+    with open_rgb(image_path) as image:
         calibration = resolve_calibration_profile(*image.size, calibration_dir=calibration_dir)
         template_payload = calibration.hand_tile_templates
         if not calibration.enabled or not template_payload:
@@ -146,22 +159,32 @@ def detect_fast_hand_path(
 
 
 def quick_frame_fingerprint(
-    image_path: Path,
+    image_path: ImageSource,
     last_hashes: dict[str, bytes] | None = None,
+    *,
+    warped_table: Image.Image | None = None,
 ) -> dict[str, Any]:
-    """Cheap pixel hash of action bar + hand regions.
+    """Cheap pixel hash of action, hand, and four warped river regions.
 
     Returns dict with:
       - action_changed: bool
       - hand_changed: bool
+      - river_changed: bool
+      - river_changes: dict[str, bool]
       - hashes: dict[str, bytes]  (for next call's last_hashes)
     """
     last_hashes = last_hashes or {}
-    if not image_path.exists():
-        return {"action_changed": True, "hand_changed": True, "hashes": {}}
+    if not source_exists(image_path):
+        return {
+            "action_changed": True,
+            "hand_changed": True,
+            "river_changed": True,
+            "river_changes": {owner: True for owner in RIVER_FINGERPRINT_ROIS},
+            "hashes": {},
+        }
 
-    with Image.open(image_path) as opened:
-        image = opened.convert("RGB")
+    with open_rgb(image_path) as opened:
+        image = opened.copy()
     w, h = image.width, image.height
     arr = np.asarray(image, dtype=np.int16)
 
@@ -182,9 +205,24 @@ def quick_frame_fingerprint(
     hand_hash = _row_hash(hand_crop)
 
     hashes = {"action": action_hash, "hand": hand_hash}
+    river_changes: dict[str, bool] = {}
+    if warped_table is None:
+        # Missing or rejected perspective geometry must fail open.  Treating
+        # it as unchanged would suppress opponent discards and riichi turns.
+        river_changes = {owner: True for owner in RIVER_FINGERPRINT_ROIS}
+    else:
+        table = warped_table.convert("RGB")
+        for owner, bounds in RIVER_FINGERPRINT_ROIS.items():
+            key = f"river:{owner}"
+            value = _region_hash(table, bounds)
+            hashes[key] = value
+            river_changes[owner] = value != last_hashes.get(key, b"")
+
     return {
         "action_changed": action_hash != last_hashes.get("action", b""),
         "hand_changed": hand_hash != last_hashes.get("hand", b""),
+        "river_changed": any(river_changes.values()),
+        "river_changes": river_changes,
         "hashes": hashes,
     }
 
@@ -195,3 +233,17 @@ def _row_hash(crop: np.ndarray) -> bytes:
         return b""
     row_means = crop.reshape(crop.shape[0], -1).mean(axis=1)
     return row_means.astype(np.float32).tobytes()
+
+
+def _region_hash(image: Image.Image, bounds: tuple[float, float, float, float]) -> bytes:
+    """Return a compact spatial hash while retaining tile orientation changes."""
+    width, height = image.size
+    left = max(0, min(width - 1, int(round(width * bounds[0]))))
+    top = max(0, min(height - 1, int(round(height * bounds[1]))))
+    right = max(left + 1, min(width, int(round(width * bounds[2]))))
+    bottom = max(top + 1, min(height, int(round(height * bounds[3]))))
+    crop = image.crop((left, top, right, bottom)).resize((48, 24), Image.Resampling.BILINEAR)
+    # Five-bit color is enough to preserve a newly placed or rotated tile and
+    # avoids rerunning YOLO for insignificant one-level capture noise.
+    quantized = (np.asarray(crop, dtype=np.uint8) >> 3).tobytes()
+    return hashlib.blake2s(quantized, digest_size=16).digest()

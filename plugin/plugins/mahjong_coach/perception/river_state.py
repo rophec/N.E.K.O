@@ -8,7 +8,8 @@ from typing import Any
 from PIL import Image
 
 from .calibration import resolve_calibration_profile
-from .discard_parser import parse_discards_from_image
+from .discard_parser import parse_discards_from_image, parse_incremental_discards_from_image
+from .image_source import ImageSource, open_rgb, source_exists
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,8 @@ class RiverStateResult:
     ok: bool = False
     discard_piles: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     visible_tiles: list[str] = field(default_factory=list)
+    opponent_melds: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    opponent_meld_tiles: list[str] = field(default_factory=list)
     confidence: float = 0.0
     reason: str = ""
     elapsed_ms: float = 0.0
@@ -30,17 +33,16 @@ class RiverStateResult:
 
 
 def detect_river_state_path(
-    image_path: Path,
+    image_path: ImageSource,
     *,
     calibration_dir: Path | None = None,
     min_confidence: float = 0.90,
 ) -> RiverStateResult:
     started = time.perf_counter()
-    if not image_path.exists():
+    if not source_exists(image_path):
         return RiverStateResult(reason="image_missing")
 
-    with Image.open(image_path) as opened:
-        image = opened.convert("RGB")
+    with open_rgb(image_path) as image:
         calibration = resolve_calibration_profile(*image.size, calibration_dir=calibration_dir)
         parsed = parse_discards_from_image(
             image,
@@ -52,6 +54,45 @@ def detect_river_state_path(
     available = bool(hints.get("discard_parser_available"))
     visible_count = len(parsed.visible_tiles)
     reason = "recognized_discards" if visible_count else "no_visible_discards"
+    if not available:
+        reason = str(hints.get("discard_parser_reason") or "river_parser_unavailable")
+    return RiverStateResult(
+        ok=available,
+        discard_piles=parsed.discard_piles,
+        visible_tiles=parsed.visible_tiles,
+        confidence=float(hints.get("discard_analysis_confidence") or 0.0),
+        reason=reason,
+        elapsed_ms=(time.perf_counter() - started) * 1000.0,
+        raw_detections=parsed.raw_detections,
+        analysis_hints=hints,
+    )
+
+
+def detect_incremental_river_state_path(
+    image_path: ImageSource,
+    known_discard_piles: dict[str, list[dict[str, Any]]],
+    *,
+    calibration_dir: Path | None = None,
+    min_confidence: float = 0.90,
+) -> RiverStateResult:
+    """Detect only newly occupied next slots for an already initialized river."""
+    started = time.perf_counter()
+    if not source_exists(image_path):
+        return RiverStateResult(reason="image_missing")
+
+    with open_rgb(image_path) as image:
+        calibration = resolve_calibration_profile(*image.size, calibration_dir=calibration_dir)
+        parsed = parse_incremental_discards_from_image(
+            image,
+            known_discard_piles,
+            calibration.hand_tile_templates,
+            min_confidence=min_confidence,
+        )
+
+    hints = dict(parsed.analysis_hints)
+    available = bool(hints.get("discard_parser_available"))
+    new_count = len(parsed.visible_tiles)
+    reason = "recognized_new_discards" if new_count else "no_new_discards"
     if not available:
         reason = str(hints.get("discard_parser_reason") or "river_parser_unavailable")
     return RiverStateResult(
