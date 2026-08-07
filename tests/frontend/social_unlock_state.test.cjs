@@ -64,7 +64,14 @@ function loadSocialUnlock(options = {}) {
         window
     });
     vm.runInContext(METHODS_SOURCE, context, { filename: 'methods-buttons.js' });
-    return { api: window.nekoSocialUnlock, storage, listeners, registeredButtons, dispatchedEvents };
+    return {
+        api: window.nekoSocialUnlock,
+        storage,
+        listeners,
+        registeredButtons,
+        dispatchedEvents,
+        setTutorialState(nextState) { tutorialState = nextState; }
+    };
 }
 
 test('natural-day countdown persists first-seen date and unlocks on day four', () => {
@@ -93,7 +100,7 @@ test('clock moving backward does not unlock the social entry early', () => {
 });
 
 test('existing users migrated by the seven-day tutorial skip charging immediately', () => {
-    const { api, storage, dispatchedEvents } = loadSocialUnlock({
+    const { api, storage, dispatchedEvents, setTutorialState } = loadSocialUnlock({
         withTutorialState: true,
         tutorialState: {
             firstSeenDate: '2026-01-01',
@@ -111,6 +118,25 @@ test('existing users migrated by the seven-day tutorial skip charging immediatel
     assert.equal(event.detail.firstSeenDate, '2025-12-29');
     assert.equal(event.detail.unlocked, true);
     assert.equal(event.detail.existingUser, true);
+
+    api.getStatus(new Date(2026, 0, 1, 12));
+    assert.equal(
+        dispatchedEvents.filter(item => item.type === 'neko-social-unlock-status').length,
+        1
+    );
+
+    setTutorialState({
+        firstSeenDate: '2026-01-01',
+        completedRounds: [],
+        skippedRounds: []
+    });
+    const afterReset = api.getStatus(new Date(2026, 0, 1, 12));
+    assert.equal(afterReset.unlocked, true);
+    const unlockEvents = dispatchedEvents.filter(item => item.type === 'neko-social-unlock-status');
+    assert.equal(unlockEvents.length, 2);
+    assert.equal(unlockEvents[1].detail.firstSeenDate, '2025-12-29');
+    assert.equal(unlockEvents[1].detail.unlocked, true);
+    assert.equal(unlockEvents[1].detail.existingUser, false);
 });
 
 test('users whose tutorial first-seen date is three days old skip charging', () => {
