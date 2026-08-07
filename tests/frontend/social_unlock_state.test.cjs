@@ -14,13 +14,27 @@ function loadSocialUnlock(options = {}) {
     const storage = new Map();
     const listeners = new Map();
     const registeredButtons = [];
+    const dispatchedEvents = [];
     let tutorialState = options.tutorialState || null;
+    class CustomEvent {
+        constructor(type, init = {}) {
+            this.type = type;
+            this.detail = init.detail;
+        }
+    }
     const window = {
+        CustomEvent,
         localStorage: {
             getItem(key) { return storage.has(key) ? storage.get(key) : null; },
             setItem(key, value) { storage.set(key, String(value)); }
         },
         addEventListener(type, listener) { listeners.set(type, listener); },
+        dispatchEvent(event) {
+            dispatchedEvents.push(event);
+            const listener = listeners.get(event && event.type);
+            if (listener) listener(event);
+            return true;
+        },
         t(key, params = {}) { return `${key}:${params.days ?? ''}`; }
     };
     if (options.withTutorialState) {
@@ -50,7 +64,7 @@ function loadSocialUnlock(options = {}) {
         window
     });
     vm.runInContext(METHODS_SOURCE, context, { filename: 'methods-buttons.js' });
-    return { api: window.nekoSocialUnlock, storage, listeners, registeredButtons };
+    return { api: window.nekoSocialUnlock, storage, listeners, registeredButtons, dispatchedEvents };
 }
 
 test('natural-day countdown persists first-seen date and unlocks on day four', () => {
@@ -79,7 +93,7 @@ test('clock moving backward does not unlock the social entry early', () => {
 });
 
 test('existing users migrated by the seven-day tutorial skip charging immediately', () => {
-    const { api, storage } = loadSocialUnlock({
+    const { api, storage, dispatchedEvents } = loadSocialUnlock({
         withTutorialState: true,
         tutorialState: {
             firstSeenDate: '2026-01-01',
@@ -92,6 +106,11 @@ test('existing users migrated by the seven-day tutorial skip charging immediatel
     assert.equal(status.unlocked, true);
     assert.equal(status.remainingDays, 0);
     assert.equal(storage.get('neko.social.unlock.v1'), '2025-12-29');
+    const event = dispatchedEvents.find(item => item.type === 'neko-social-unlock-status');
+    assert.ok(event);
+    assert.equal(event.detail.firstSeenDate, '2025-12-29');
+    assert.equal(event.detail.unlocked, true);
+    assert.equal(event.detail.existingUser, true);
 });
 
 test('users whose tutorial first-seen date is three days old skip charging', () => {
