@@ -23,13 +23,15 @@ async function readMaintainerGuide() {
   )
 }
 
-test('scheduled and manually dispatched paid runs force a depth-100 AIO baseline', async () => {
+test('scheduled reports stay free while a manual paid run forces a depth-100 AIO baseline', async () => {
   const workflow = await readWorkflow()
 
   assert.match(workflow, /cron: '15 0 \* \* \*'/)
-  assert.match(workflow, /github\.event_name == 'schedule' && 'paid'/)
-  assert.match(workflow, /\(github\.event_name == 'schedule' \|\| inputs\.run_mode == 'paid'\) && '100'/)
-  assert.match(workflow, /\(github\.event_name == 'schedule' \|\| inputs\.run_mode == 'paid'\) && 'true'/)
+  assert.match(workflow, /github\.event_name == 'schedule' && 'dry-run'/)
+  assert.match(workflow, /github\.event_name == 'schedule' && '10'/)
+  assert.match(workflow, /github\.event_name == 'schedule' && 'false'/)
+  assert.match(workflow, /inputs\.run_mode == 'paid' && '100'/)
+  assert.match(workflow, /inputs\.run_mode == 'paid' && 'true'/)
   assert.doesNotMatch(workflow, /ENABLE_PAID_DATAFORSEO_SCHEDULE/)
 })
 
@@ -46,10 +48,10 @@ test('forks cannot run validation or paid report jobs', async () => {
   )
 })
 
-test('maintainer documentation cannot revive the obsolete paid-schedule kill switch', async () => {
+test('maintainer documentation requires a manual paid run', async () => {
   const guide = await readMaintainerGuide()
 
-  assert.match(guide, /08:15 Asia\/Shanghai schedule always runs the paid baseline/)
+  assert.match(guide, /schedule runs only the free observation report/)
   assert.match(guide, /fixed-name `seo-geo-daily-report` diagnostic artifact/)
   assert.match(guide, /`seo-geo-daily-paid-baseline`/)
   assert.match(guide, /obsolete `ENABLE_PAID_DATAFORSEO_SCHEDULE` variable/)

@@ -238,8 +238,23 @@ export function buildSeoPageData(
   pageData: PageData,
   docsRoot: string,
 ): Partial<PageData> | undefined {
-  if (pageData.isNotFound || pageData.description.trim()) return undefined
-  return { description: descriptionFromSource(pageData, docsRoot) }
+  if (pageData.isNotFound) return undefined
+
+  const route = sourcePathToRoute(pageData.relativePath)
+  const locale = localeForRoute(route)
+  const titleNeedsLocaleLabel =
+    locale.key !== 'en' &&
+    /^[\x00-\x7F]+$/.test(pageData.title) &&
+    pageData.title.trim().length > 0
+  const localizedTitle = titleNeedsLocaleLabel
+    ? pageData.title + (locale.key === 'ja' ? ' (日本語)' : ' (简体中文)')
+    : undefined
+  const description = pageData.description.trim()
+    ? undefined
+    : descriptionFromSource(pageData, docsRoot)
+
+  if (!localizedTitle && !description) return undefined
+  return { ...(localizedTitle ? { title: localizedTitle } : {}), ...(description ? { description } : {}) }
 }
 
 function sectionRoute(

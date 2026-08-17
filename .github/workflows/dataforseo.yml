@@ -1,11 +1,11 @@
 name: SEO GEO Daily Report
 
 run-name: >-
-  SEO/GEO - ${{ github.event_name == 'schedule' && 'daily-paid-depth-100-aio' || inputs.run_mode || 'validation' }}
+  SEO/GEO - ${{ github.event_name == 'schedule' && 'daily-free-observation' || inputs.run_mode || 'validation' }}
 
 on:
   schedule:
-    # 08:15 Asia/Shanghai, after the .cn source repository's 07:45 baseline.
+    # 08:15 Asia/Shanghai; this run never calls paid DataForSEO endpoints.
     - cron: '15 0 * * *'
   pull_request:
     paths:
@@ -84,9 +84,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      COLLECTION_KIND: ${{ github.event_name == 'schedule' && 'paid' || inputs.run_mode }}
-      SERP_DEPTH: ${{ (github.event_name == 'schedule' || inputs.run_mode == 'paid') && '100' || inputs.serp_depth }}
-      INCLUDE_AI_OVERVIEW: ${{ (github.event_name == 'schedule' || inputs.run_mode == 'paid') && 'true' || inputs.include_ai_overview }}
+      COLLECTION_KIND: ${{ github.event_name == 'schedule' && 'dry-run' || inputs.run_mode }}
+      SERP_DEPTH: ${{ github.event_name == 'schedule' && '10' || (inputs.run_mode == 'paid' && '100' || inputs.serp_depth) }}
+      INCLUDE_AI_OVERVIEW: ${{ github.event_name == 'schedule' && 'false' || (inputs.run_mode == 'paid' && 'true' || inputs.include_ai_overview) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
