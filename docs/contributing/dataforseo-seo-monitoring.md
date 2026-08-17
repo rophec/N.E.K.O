@@ -15,7 +15,7 @@ DataForSEO bills by request, but the daily baseline is deliberately **not** hidd
 
 - pull requests run tests and three `dry-run` plans only; they receive no billing credentials;
 - manual workflow dispatch defaults to `dry-run` and sends no paid request;
-- the 08:15 Asia/Shanghai schedule always runs the paid baseline at SERP depth 100 with AI Overview loading enabled;
+- the 08:15 Asia/Shanghai schedule runs only the free observation report; maintainers must explicitly dispatch a paid baseline after confirming the query set and budget;
 - there is no `ENABLE_PAID_DATAFORSEO_SCHEDULE` variable; an old variable with that name has no effect and should be removed from repository settings;
 - SERP depth 100 may bill up to ten result pages per query;
 - each SERP request sets `max_crawl_pages` from that depth, making the displayed page count a hard crawl limit;

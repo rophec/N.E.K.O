@@ -101,6 +101,7 @@ if (existsSync(sitemapPath)) {
 }
 
 const pages = new Map()
+const indexableTitles = new Map()
 const indexableDescriptions = new Map()
 const copiedPublicHtml = new Set(
   existsSync(PUBLIC_DIR)
@@ -152,7 +153,8 @@ for (const htmlPath of filesRecursively(DIST_DIR, '.html')) {
     continue
   }
 
-  if (titleMatches.length !== 1 || !titleMatches[0][1].trim()) {
+  const title = decodeHtml(titleMatches[0]?.[1]?.trim() ?? '')
+  if (titleMatches.length !== 1 || !title) {
     fail(file, 'must contain exactly one non-empty title')
   }
   if (!description.trim()) fail(file, 'meta description is missing or empty')
@@ -182,6 +184,9 @@ for (const htmlPath of filesRecursively(DIST_DIR, '.html')) {
     }
   } else {
     indexableCount += 1
+    const filesWithTitle = indexableTitles.get(title) ?? []
+    filesWithTitle.push(file)
+    indexableTitles.set(title, filesWithTitle)
     const filesWithDescription = indexableDescriptions.get(description) ?? []
     filesWithDescription.push(file)
     indexableDescriptions.set(description, filesWithDescription)
@@ -338,6 +343,14 @@ if (sitemapUrls.size !== indexableCount) {
   fail(
     'sitemap.xml',
     `contains ${sitemapUrls.size} URLs but ${indexableCount} indexable HTML pages were built`,
+  )
+}
+
+for (const [title, files] of indexableTitles) {
+  if (files.length < 2) continue
+  fail(
+    'titles',
+    'duplicate title on ' + files.join(', ') + ': ' + JSON.stringify(title),
   )
 }
 
