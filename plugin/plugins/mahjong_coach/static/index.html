@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mahjong Coach</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="coach-shell">
+      <header class="appbar">
+        <div class="brand-block">
+          <div class="title-row">
+            <h1>Mahjong Coach</h1>
+            <span id="activeRecognitionMode" class="mode-badge">LEGACY</span>
+          </div>
+          <div class="status-row">
+            <span id="liveState" class="status-dot">stopped</span>
+            <span id="statusLine">启动中</span>
+            <span id="liveWindow">未绑定窗口</span>
+          </div>
+        </div>
+
+        <div class="appbar-controls">
+          <div class="mode-switch" role="group" aria-label="识别模式">
+            <button id="legacyModeBtn" class="mode-option is-active" type="button" aria-pressed="true">原版</button>
+            <button id="yoloModeBtn" class="mode-option" type="button" aria-pressed="false">YOLO26</button>
+          </div>
+          <input id="tileRecognitionModeInput" type="hidden" value="legacy" />
+          <button id="startLiveBtn" class="primary-button" type="button">开始实战</button>
+          <button id="startYoloLiveBtn" class="yolo-live-button" type="button">YOLO26 实战</button>
+          <button id="stopLiveBtn" class="secondary-button" type="button">停止</button>
+          <button id="resetBtn" class="secondary-button" type="button">新一局</button>
+          <button id="refreshBtn" class="icon-text-button" type="button">刷新</button>
+        </div>
+      </header>
+
+      <section class="control-band" aria-label="实战观察设置">
+        <label class="control-field control-window">
+          <span>窗口</span>
+          <input id="keywordsInput" type="text" value="雀魂,Mahjong Soul" autocomplete="off" />
+        </label>
+        <label class="control-field">
+          <span>扫描间隔</span>
+          <div class="input-suffix">
+            <input id="intervalInput" type="number" min="200" step="100" value="400" />
+            <span>ms</span>
+          </div>
+        </label>
+        <label class="control-field">
+          <span>牌河更新</span>
+          <select id="riverTrackingModeInput">
+            <option value="checkpoint">检查点刷新</option>
+            <option value="live">实时跟踪</option>
+          </select>
+        </label>
+        <label class="control-field">
+          <span>策略模式</span>
+          <select id="strategyPresetInput">
+            <option value="simple" selected>简易策略 · 均衡偏激进</option>
+            <option value="standard">完整攻守 · 风险权重完整</option>
+          </select>
+        </label>
+        <label class="toggle-field">
+          <input id="overlayInput" type="checkbox" checked />
+          <span>桌面提示</span>
+        </label>
+        <label class="toggle-field">
+          <input id="autoStartLiveInput" type="checkbox" />
+          <span>随 N.E.K.O 自动捕获</span>
+        </label>
+        <label class="control-field compact-field">
+          <span>场风</span>
+          <input id="roundWindInput" type="text" value="东" autocomplete="off" />
+        </label>
+        <label class="control-field compact-field">
+          <span>自风</span>
+          <input id="seatWindInput" type="text" placeholder="东/南/西/北" autocomplete="off" />
+        </label>
+        <label class="control-field">
+          <span>宝牌</span>
+          <input id="doraTilesInput" type="text" placeholder="5p, 白" autocomplete="off" />
+        </label>
+      </section>
+
+      <details class="advanced-control-band">
+        <summary>
+          <span>窗口与玩家画像</span>
+          <span id="profileSummary">手动 · 均衡</span>
+        </summary>
+        <div class="settlement-control-grid profile-control-grid">
+          <label class="control-field">
+            <span>目标窗口</span>
+            <select id="windowCandidateSelect"><option value="">自动检测唯一窗口</option></select>
+          </label>
+          <button id="refreshWindowsBtn" class="secondary-button" type="button">刷新窗口</button>
+          <button id="saveCapturePrefsBtn" class="secondary-button" type="button">保存捕获设置</button>
+          <span id="windowSelectionStatus">尚未选择</span>
+
+          <label class="control-field"><span>四麻段位</span><select id="rankInput">
+            <option value="unknown">未指定</option><option value="novice">初心</option><option value="adept">雀士</option>
+            <option value="expert">雀杰</option><option value="master">雀豪</option><option value="saint">雀圣</option><option value="celestial">魂天</option>
+          </select></label>
+          <label class="control-field"><span>房间</span><select id="roomInput">
+            <option value="unknown">未指定</option><option value="bronze">铜之间</option><option value="silver">银之间</option>
+            <option value="gold">金之间</option><option value="jade">玉之间</option><option value="throne">王座之间</option><option value="friendly">友人场</option>
+          </select></label>
+          <label class="control-field"><span>风险偏好</span><select id="riskToleranceInput">
+            <option value="conservative">保守</option><option value="balanced" selected>均衡</option><option value="aggressive">激进</option>
+          </select></label>
+          <label class="control-field"><span>目标偏好</span><select id="goalBiasInput">
+            <option value="speed">速度</option><option value="balanced" selected>均衡</option><option value="value">打点</option><option value="yakuman">役满</option>
+          </select></label>
+          <label class="control-field"><span>副露偏好</span><select id="callBiasInput">
+            <option value="closed">门清</option><option value="balanced" selected>均衡</option><option value="open">积极副露</option>
+          </select></label>
+          <button id="saveProfileBtn" class="secondary-button" type="button">保存手动画像</button>
+
+          <label class="control-field"><span>牌谱屋昵称</span><input id="playerNicknameInput" type="text" autocomplete="off" placeholder="主动查询，不读取客户端" /></label>
+          <button id="searchPlayerBtn" class="secondary-button" type="button">查询</button>
+          <label class="control-field"><span>候选账号</span><select id="playerCandidateSelect"><option value="">先输入昵称查询</option></select></label>
+          <button id="refreshPlayerBtn" class="secondary-button" type="button">刷新统计建议</button>
+          <button id="confirmPlayerBtn" class="secondary-button" type="button">确认并应用</button>
+          <span id="profileLookupStatus">外部统计不会自动生效</span>
+        </div>
+      </details>
+
+      <details class="advanced-control-band">
+        <summary>
+          <span>结算检测</span>
+          <span id="settlementConfigSummary">已启用 · 72% · 2 帧</span>
+        </summary>
+        <div class="settlement-control-grid">
+          <label class="toggle-field">
+            <input id="settlementEnabledInput" type="checkbox" checked />
+            <span>启用结算边界</span>
+          </label>
+          <label class="control-field">
+            <span>最低置信度</span>
+            <input id="settlementConfidenceInput" type="number" min="0" max="1" step="0.01" value="0.72" />
+          </label>
+          <label class="control-field">
+            <span>连续帧数</span>
+            <input id="settlementFramesInput" type="number" min="1" max="8" step="1" value="2" />
+          </label>
+          <label class="control-field">
+            <span>最大帧间隔</span>
+            <div class="input-suffix">
+              <input id="settlementGapInput" type="number" min="200" max="10000" step="100" value="2500" />
+              <span>ms</span>
+            </div>
+          </label>
+        </div>
+      </details>
+
+      <section class="recommendation-band" aria-label="当前策略">
+        <div class="recommendation-main">
+          <div class="section-kicker">
+            <span id="analysisSource" class="source-badge">本地</span>
+            <span id="decisionType">observe</span>
+          </div>
+          <h2 id="mainPlan">等待稳定手牌</h2>
+          <p id="planDetail">识别结果稳定后，这里显示当前建议。</p>
+        </div>
+        <dl class="strategy-metrics">
+          <div>
+            <dt>攻守状态</dt>
+            <dd id="biasValue">neutral</dd>
+          </div>
+          <div>
+            <dt>防守姿态</dt>
+            <dd id="defensePostureValue">观察</dd>
+          </div>
+          <div>
+            <dt>风险预算</dt>
+            <dd id="riskBudgetValue">0</dd>
+          </div>
+          <div>
+            <dt>手牌置信度</dt>
+            <dd id="confidenceValue">0%</dd>
+          </div>
+          <div>
+            <dt>更新次数</dt>
+            <dd id="updateCount">0</dd>
+          </div>
+          <div>
+            <dt>触发原因</dt>
+            <dd id="lastReason">-</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section id="tableContextPanel" class="table-context-band" hidden aria-label="自动识别点数与顺位">
+        <div class="section-head">
+          <div><div class="section-kicker">SCORE / RANK / STICKS</div><h2>自动识别场况</h2></div>
+          <span id="tableContextStatus">等待连续两帧确认</span>
+        </div>
+        <div id="tableScoreGrid" class="table-score-grid"></div>
+        <div class="table-context-footer">
+          <strong id="tableCounterSummary">本场 -｜供托 -</strong>
+          <span id="tableStrategyImpact">稳定识别后会进入攻守阈值与预计和牌收益。</span>
+        </div>
+      </section>
+
+      <section id="defenseCandidatePanel" class="defense-candidate-band" hidden aria-label="防守候选切牌">
+        <div class="section-head">
+          <div><div class="section-kicker">PUSH / MAWASHI / FOLD</div><h2>候选切牌</h2></div>
+          <span>安全度接近时优先保留牌型</span>
+        </div>
+        <div id="defenseCandidateList" class="defense-candidate-list"></div>
+      </section>
+
+      <section class="pipeline-band" aria-label="识别流水线">
+        <div class="section-head">
+          <div>
+            <span class="section-eyebrow">PERCEPTION PIPELINE</span>
+            <h2>本帧处理进度</h2>
+          </div>
+          <span id="pipelineSummary">等待启动</span>
+        </div>
+        <div id="pipelineSteps" class="pipeline-steps"></div>
+      </section>
+
+      <section class="recognition-band" aria-label="识别结果">
+        <div class="section-head">
+          <div>
+            <span class="section-eyebrow">RECOGNIZED STATE</span>
+            <h2>当前牌面</h2>
+          </div>
+          <div class="frame-meta">
+            <span id="liveFrame">0 frames</span>
+            <span id="liveError">-</span>
+          </div>
+        </div>
+
+        <div class="result-section hand-section">
+          <div class="result-label">
+            <strong>手牌</strong>
+            <span id="handCount">0 张</span>
+          </div>
+          <div id="handTiles" class="tile-rail"></div>
+        </div>
+
+        <div class="recognition-grid">
+          <div class="result-section">
+            <div class="result-label">
+              <strong>自家副露</strong>
+              <span id="meldCount">0 组</span>
+            </div>
+            <div id="meldTiles" class="river-grid meld-grid"></div>
+          </div>
+          <div class="result-section">
+            <div class="result-label">
+              <strong>对手副露</strong>
+              <span id="opponentMeldCount">0 组</span>
+            </div>
+            <div id="opponentMeldTiles" class="river-grid meld-grid opponent-meld-grid"></div>
+          </div>
+          <div class="result-section river-section">
+            <div class="result-label">
+              <strong>四家牌河</strong>
+              <span id="riverCount">0 张</span>
+            </div>
+            <div id="riverTiles" class="river-grid"></div>
+          </div>
+        </div>
+      </section>
+
+      <details class="diagnostic-section round-archive-section">
+        <summary>
+          <span>上一局归档</span>
+          <span id="roundArchiveSummary">暂无已结束小局</span>
+        </summary>
+        <div id="roundArchiveEmpty" class="archive-empty">结算确认后自动归档</div>
+        <div id="roundArchiveContent" class="round-archive-content" hidden>
+          <dl class="archive-metrics">
+            <div><dt>归档</dt><dd id="archiveRoundId">-</dd></div>
+            <div><dt>结算</dt><dd id="archiveSettlement">-</dd></div>
+            <div><dt>时间</dt><dd id="archiveTime">-</dd></div>
+            <div><dt>立直玩家</dt><dd id="archiveRiichi">-</dd></div>
+          </dl>
+          <div class="result-section archive-hand-section">
+            <div class="result-label">
+              <strong>结束时手牌</strong>
+              <span id="archiveHandCount">0 张</span>
+            </div>
+            <div id="archiveHandTiles" class="tile-rail"></div>
+          </div>
+          <div class="recognition-grid archive-recognition-grid">
+            <div class="result-section">
+              <div class="result-label">
+                <strong>结束时副露</strong>
+                <span id="archiveMeldCount">0 组</span>
+              </div>
+              <div id="archiveMeldTiles" class="river-grid meld-grid"></div>
+            </div>
+            <div class="result-section">
+              <div class="result-label">
+                <strong>结束时对手副露</strong>
+                <span id="archiveOpponentMeldCount">0 组</span>
+              </div>
+              <div id="archiveOpponentMeldTiles" class="river-grid meld-grid opponent-meld-grid"></div>
+            </div>
+            <div class="result-section">
+              <div class="result-label">
+                <strong>结束时牌河</strong>
+                <span id="archiveRiverCount">0 张</span>
+              </div>
+              <div id="archiveRiverTiles" class="river-grid"></div>
+            </div>
+          </div>
+          <div class="archive-plan-row">
+            <strong>结束时策略</strong>
+            <span id="archivePlan">-</span>
+          </div>
+          <details class="archive-json-details">
+            <summary>完整结构</summary>
+            <pre id="roundArchiveJson"></pre>
+          </details>
+        </div>
+      </details>
+
+      <section class="analysis-grid">
+        <section class="evidence-band" aria-label="截图依据">
+          <div class="section-head">
+            <div>
+              <span class="section-eyebrow">FRAME EVIDENCE</span>
+              <h2>本帧截图依据</h2>
+            </div>
+            <span id="framePreviewState">等待截图</span>
+          </div>
+          <div class="evidence-preview-grid">
+            <div class="evidence-preview">
+              <div class="preview-label">原始截图</div>
+              <div class="frame-preview-shell">
+                <img id="framePreview" alt="雀魂识别帧" hidden />
+                <div id="framePreviewEmpty" class="preview-empty">等待实战截图</div>
+              </div>
+            </div>
+            <div class="evidence-preview">
+              <div class="preview-label">
+                <span>变换后牌桌分区</span>
+                <span id="tableRegionPreviewState">等待截图</span>
+              </div>
+              <div class="frame-preview-shell">
+                <img id="tableRegionPreview" alt="透视变换后的牌桌分区图" hidden />
+                <div id="tableRegionPreviewEmpty" class="preview-empty">等待实战截图</div>
+              </div>
+            </div>
+            <div class="evidence-preview settlement-evidence-preview">
+              <div class="preview-label">
+                <span>结算检测图</span>
+                <span id="settlementPreviewState">等待截图</span>
+              </div>
+              <div class="frame-preview-shell">
+                <img id="settlementPreview" alt="结算检测诊断图" hidden />
+                <div id="settlementPreviewEmpty" class="preview-empty">等待实战截图</div>
+              </div>
+            </div>
+          </div>
+          <p id="framePreviewPath" class="frame-path">-</p>
+        </section>
+
+        <section class="decision-context" aria-label="策略依据">
+          <div class="section-head">
+            <div>
+              <span class="section-eyebrow">STRATEGY CONTEXT</span>
+              <h2>策略依据</h2>
+            </div>
+          </div>
+          <div class="context-block">
+            <h3>保留与目标</h3>
+            <div id="targetList" class="tag-list"></div>
+          </div>
+          <div class="context-block">
+            <h3>风险与优先处理</h3>
+            <div id="cautionList" class="note-list"></div>
+          </div>
+        </section>
+      </section>
+
+      <details class="diagnostic-section">
+        <summary>
+          <span>运行诊断与耗时</span>
+          <span id="timingSummary">等待第一帧</span>
+        </summary>
+        <div class="timing-table-wrap">
+          <table class="timing-table">
+            <thead>
+              <tr>
+                <th>帧</th><th>状态</th><th>决策</th><th>来源</th><th>识别模式</th><th>回退原因</th>
+                <th>牌河模式</th><th>牌河原因</th><th>定位</th><th>截图</th><th>结算</th><th>识别</th><th>手牌</th>
+                <th>副露</th><th>按钮</th><th>牌河</th><th>策略</th><th>整轮</th>
+              </tr>
+            </thead>
+            <tbody id="timingLogBody"></tbody>
+          </table>
+        </div>
+      </details>
+
+      <details class="diagnostic-section">
+        <summary>
+          <span>单张截图分析</span>
+          <span>调试入口</span>
+        </summary>
+        <div class="manual-analysis-grid">
+          <label class="control-field manual-path">
+            <span>截图路径</span>
+            <input id="imagePathInput" type="text" autocomplete="off" />
+          </label>
+          <label class="control-field">
+            <span>自己第几巡</span>
+            <input id="turnInput" type="number" min="0" step="1" value="0" />
+          </label>
+          <label class="control-field">
+            <span>已见按钮</span>
+            <input id="buttonsInput" type="text" placeholder="chi,pon,kan" autocomplete="off" />
+          </label>
+          <label class="control-field">
+            <span>场风</span>
+            <input id="analysisRoundWindInput" type="text" value="东" autocomplete="off" />
+          </label>
+          <label class="control-field">
+            <span>自风</span>
+            <input id="analysisSeatWindInput" type="text" placeholder="东/南/西/北" autocomplete="off" />
+          </label>
+          <label class="control-field">
+            <span>宝牌</span>
+            <input id="analysisDoraTilesInput" type="text" placeholder="5p, 白" autocomplete="off" />
+          </label>
+          <label class="toggle-field">
+            <input id="forceCheckpointInput" type="checkbox" />
+            <span>强制更新</span>
+          </label>
+          <button id="analyzeBtn" class="primary-button" type="button">分析截图</button>
+        </div>
+        <pre id="decisionOutput"></pre>
+      </details>
+    </main>
+    <script src="./main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "model_family": "yolo26",
+  "model_variant": "yolo26m",
+  "task": "detect",
+  "runtime": "onnxruntime",
+  "format": "onnx",
+  "model_file": "model.onnx",
+  "labels_file": "labels.json",
+  "class_count": 34,
+  "input_size": [800, 800],
+  "input_space": "warped_table",
+  "output_format": "end2end_xyxy_conf_class",
+  "default_confidence": 0.25,
+  "export_opset": 18,
+  "export_ultralytics_version": "8.4.83",
+  "training_run": "yolo26m_clean_rebuild_b8_e50_20260714",
+  "sha256": "fca49295f8d1e9134803f6d069406f7a2e8ef9c7223d9d1fe1ed4cacdf143521"
+}
