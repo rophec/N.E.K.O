@@ -13,6 +13,44 @@
       "aiReferralRegex": ".*(chatgpt\\.com|openai\\.com|openai|perplexity\\.ai|perplexity|copilot\\.microsoft\\.com|copilot\\.com|(business\\.)?gemini\\.google|bard\\.google\\.com|chat\\.deepseek\\.com|deepseek\\.com|chat\\.qwen\\.ai|doubao\\.com|poe\\.com|anthropic\\.com|claude\\.ai|edgeservices\\.bing\\.com).*"
     }
   },
+  "bingWebmaster": {
+    "apiKeyPathEnv": "BING_WEBMASTER_API_KEY_PATH",
+    "sites": [
+      {
+        "id": "cn",
+        "label": ".cn 产品主页",
+        "siteUrl": "https://project-neko.cn/"
+      },
+      {
+        "id": "online",
+        "label": ".online 文档站",
+        "siteUrl": "https://project-neko.online/"
+      },
+      {
+        "id": "community",
+        "label": "community 社区",
+        "siteUrl": "https://community.project-neko.cn/"
+      }
+    ]
+  },
+  "chinaSearchExports": [
+    {
+      "id": "baidu-cn",
+      "platform": "baidu",
+      "label": ".cn 产品主页",
+      "siteId": "cn",
+      "siteUrl": "https://project-neko.cn/",
+      "pathEnv": "BAIDU_SEARCH_EXPORT_PATH"
+    },
+    {
+      "id": "360-cn",
+      "platform": "360",
+      "label": ".cn 产品主页",
+      "siteId": "cn",
+      "siteUrl": "https://project-neko.cn/",
+      "pathEnv": "SO360_SEARCH_EXPORT_PATH"
+    }
+  ],
   "sites": [
     {
       "id": "cn",

@@ -306,6 +306,31 @@ test('dual-site report renders the skill contract and evidence-driven action que
         indexNow: { status: 202, submittedAt: '2026-07-28T01:00:00Z', payload: { urlList: ['https://project-neko.online/'] } },
       },
     ],
+    bingInputs: [{
+      definition: { id: 'online', label: '.online 文档站', siteUrl: 'https://project-neko.online/' },
+      data: {
+        status: 'ok',
+        availability: 'available',
+        collectedAt: '2026-07-28T23:20:00.000Z',
+        traffic: {
+          dataThrough: '2026-07-27',
+          latestDay: { date: '2026-07-27', clicks: 2, impressions: 20 },
+          recent7: { clicks: 9, impressions: 90 },
+          trend7: { clicks: 3, impressions: 30 },
+        },
+        queries: {
+          dataThrough: '2026-07-25',
+          items: [{ query: 'ai desktop pet', clicks: 2, impressions: 30, averageClickPosition: 3, averageImpressionPosition: 4 }],
+        },
+        pages: {
+          dataThrough: '2026-07-25',
+          items: [{ page: 'https://project-neko.online/', clicks: 2, impressions: 30, averageClickPosition: 3, averageImpressionPosition: 4 }],
+        },
+        crawl: { latestDay: { date: '2026-07-27', crawledPages: 8, inIndex: 100, crawlErrors: 1 } },
+        feeds: [{ url: 'https://project-neko.online/sitemap.xml', status: 'Success', urlCount: 308, lastCrawled: '2026-07-26' }],
+        errors: [],
+      },
+    }],
     previousReport: {
       reportDate: '2026-07-28',
       generatedAt: '2026-07-27T23:30:00.000Z',
@@ -370,20 +395,130 @@ test('dual-site report renders the skill contract and evidence-driven action que
     totalSegments: 2,
     complete: true,
   })
-  assert.match(markdown, /需要优先关注/)
-  assert.match(markdown, /搜索表现（近 7 天）/)
-  assert.match(markdown, /\*\*本期范围\*\*：2026-07-19 → 2026-07-25；\*\*对比范围\*\*：2026-07-12 → 2026-07-18。/)
-  assert.match(markdown, /\| \.cn 产品主页 \| 14 \|/)
-  assert.match(markdown, /数据或技术阻塞/)
-  assert.match(markdown, /搜索机会明细/)
-  assert.match(markdown, /高曝光但低点击/)
-  assert.match(markdown, /今天可以直接执行/)
-  assert.match(markdown, /访问与转化（近 7 天）/)
-  assert.match(markdown, /\*\*本期范围\*\*：2026-07-21 → 2026-07-27；\*\*对比范围\*\*：N\/A。/)
+  assert.match(markdown, /首页战况（HEADLINE）/)
+  assert.match(markdown, /Top 10 同口径变动：\*\*\+1（当前 1，上次 0；2\/2 个逐词结果可比）\*\*/)
+  assert.match(markdown, /今日新进 Top 10：\.online en \/ United States · ai desktop pet（#17 → #5 → https:\/\/project-neko\.online\/）/)
+  assert.match(markdown, /今日跌出 Top 10：无/)
+  assert.match(markdown, /关键词 → 落地页 → 排名 → CTA 主表/)
+  assert.match(markdown, /\.online` Top 10 词名与命中 URL：ai desktop pet（#5 → https:\/\/project-neko\.online\/）/)
+  assert.match(markdown, /命中 URL/)
+  assert.match(markdown, /75\.00%（90\/120）/)
+  assert.match(markdown, /GSC sitemap 覆盖：/)
+  assert.match(markdown, /Organic 文档→主页（昨日）/)
+  assert.match(markdown, /AI 来源转化：文档→主页（昨日）/)
+  assert.match(markdown, /上一份日报 2026-07-28/)
+  assert.match(markdown, /\| \+3 \|/)
+  assert.match(markdown, /UNSUPPORTED/)
+  assert.match(markdown, /GSC 搜索表现/)
+  assert.match(markdown, /搜索频率与月搜索需求/)
+  assert.match(markdown, /GSC 实际搜索可见频率/)
+  assert.match(markdown, /20\.00 次\/日（Δ \+5\.71（\+40\.00%））/)
+  assert.match(markdown, /GSC 连续 7 日环比/)
+  assert.match(markdown, /Bing Webmaster 搜索、收录与抓取/)
+  assert.match(markdown, /ai desktop pet（2 点击 \/ 30 曝光）/)
+  assert.match(markdown, /周快照截止：2026-07-25/)
+  assert.ok(built.trust.some(row => row.source === 'Bing Webmaster'))
+  assert.match(markdown, /GEO \/ AI 搜索战况/)
+  assert.match(markdown, /DataForSEO AIO 触发频率：1\/2（50\.00%）/)
+  assert.match(markdown, /N\.E\.K\.O AIO 引用频率（全部已观察查询）：0\/2（0\.00%）/)
+  assert.match(markdown, /触发率 \+50\.00 pp/)
+  assert.match(markdown, /人工 AI 引用抽查：NOT_RUN/)
+  assert.match(markdown, /转化漏斗/)
+  assert.match(markdown, /CTA 追踪契约：/)
+  assert.match(markdown, /GA4 连续 7 日环比/)
+  assert.match(markdown, /10\.00%/)
+  assert.match(markdown, /AI crawler 访问/)
+  assert.match(markdown, /Daily \/ Weekly \/ Monthly/)
+  assert.match(markdown, /TODO · P1 \/ data_blocker/)
+  assert.match(markdown, /跳过\/延后 P2：核心数据尚不完整/)
+  assert.match(markdown, /本次未触发主规则：落地页错配/)
+  assert.match(markdown, /没有 commit\/PR\/内容证据前不得写成 DONE/)
+  assert.match(markdown, /数据可信度/)
+  assert.match(markdown, /P0 \/ P1 \/ P2/)
   assert.match(markdown, /GA4_CN_PROPERTY_ID is not configured/)
   assert.match(markdown, /IndexNow cn: status artifact not available/)
   assert.match(markdown, /技术健康/)
   assert.match(markdown, /范围说明/)
+  assert.match(markdown, /关键词 → 落地页 → 排名 → CTA 主表/)
+})
+
+test('free mode renders the concise daily format with Bing and ignores intentionally skipped paid sources', () => {
+  const built = buildMonitoringReport({
+    config,
+    generatedAt: '2026-07-28T23:30:00.000Z',
+    window: { gsc: {}, ga4: {} },
+    mode: 'free',
+    dataForSeoInputs: [{
+      definition: cnDefinition,
+      report: null,
+      execution: notRun('Paid ranking collection is disabled for this report.'),
+    }],
+    siteInputs: [{
+      definition: {
+        id: 'cn', label: '.cn 产品主页', owner: '.cn 站点维护者',
+        origin: 'https://project-neko.cn', measurementId: 'G-2D1RSKSR72',
+      },
+      gsc: gsc(),
+      ga4: ga4(),
+      technical: technical('https://project-neko.cn'),
+      indexNow: notRun('IndexNow was intentionally skipped.'),
+    }],
+    bingInputs: [{
+      definition: { id: 'cn', label: '.cn 产品主页', siteUrl: 'https://project-neko.cn/' },
+      data: {
+        status: 'ok',
+        availability: 'available',
+        traffic: {
+          dataThrough: '2026-07-27',
+          recent7: { clicks: 12, impressions: 120 },
+          trend7: { clicks: 3, impressions: -10 },
+        },
+        queries: {
+          dataThrough: '2026-07-25',
+          items: [{ query: '猫娘计划', clicks: 4, impressions: 40 }],
+        },
+        crawl: { latestDay: { inIndex: 22 } },
+        feeds: [{ status: 'Success', urlCount: 2 }],
+        errors: [],
+      },
+    }],
+    chinaSearchInputs: [
+      {
+        definition: { id: 'baidu-cn', platform: 'baidu', label: '.cn 产品主页', siteId: 'cn' },
+        data: {
+          status: 'ok', availability: 'available', sourceFile: 'baidu-20260727.csv',
+          traffic: {
+            dataThrough: '2026-07-27',
+            recent7: { clicks: 7, impressions: 70 },
+            trend7: { clicks: 2, impressions: 10 },
+          },
+          keywords: [{ keyword: 'ai桌宠', clicks: 3, impressions: 30 }],
+          latestIndexed: 18,
+          errors: [],
+        },
+      },
+      {
+        definition: { id: '360-cn', platform: '360', label: '.cn 产品主页', siteId: 'cn' },
+        data: notRun('等待本地导出：C:\\Users\\tester\\.codex\\seo-imports\\360'),
+      },
+    ],
+  })
+  const markdown = renderMarkdown(built)
+
+  assert.equal(built.overallStatus, 'complete')
+  assert.deepEqual(built.blockers, [])
+  assert.equal(built.actions.dataBlockers.length, 0)
+  assert.match(markdown, /免费观测模式/)
+  assert.match(markdown, /## Bing 搜索与收录/)
+  assert.match(markdown, /12 \/ 120/)
+  assert.match(markdown, /\+3 \/ -10/)
+  assert.match(markdown, /猫娘计划/)
+  assert.match(markdown, /## 百度与 360 搜索（本地导出）/)
+  assert.match(markdown, /7 \/ 70/)
+  assert.match(markdown, /ai桌宠/)
+  assert.doesNotMatch(markdown, /baidu-20260727\.csv/)
+  assert.match(markdown, /NOT_RUN/)
+  assert.match(markdown, /主动未运行/)
   assert.doesNotMatch(markdown, /关键词 → 落地页 → 排名 → CTA 主表/)
 })
 
@@ -412,6 +547,7 @@ test('complete data falls back to real rank backlog actions when primary rules d
     config,
     generatedAt: '2026-07-28T23:30:00.000Z',
     window: { gsc: {}, ga4: {} },
+    mode: 'free',
     dataForSeoInputs: [
       {
         definition: cnDefinition,
@@ -473,6 +609,7 @@ test('the daily queue does not select duplicate work for the same page', () => {
     config,
     generatedAt: '2026-07-28T23:30:00.000Z',
     window: { gsc: {}, ga4: {} },
+    mode: 'free',
     dataForSeoInputs: [{
       definition: cnDefinition,
       report: report('AI 桌面助手', {

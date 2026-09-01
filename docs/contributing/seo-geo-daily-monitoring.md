@@ -56,6 +56,31 @@
 
 禁止把上述凭证提交到 Git、Markdown、`docs/public` 或任何 `VITE_*` 变量。Measurement ID 可以公开，API 密码和服务账号私钥不可以。
 
+### 本地 Bing Webmaster 只读数据
+
+本地日报可直接读取 Bing Webmaster 的搜索流量、查询词、页面、抓取/收录和 sitemap 数据，不依赖 GitHub Actions。API key 默认只从当前用户的 `~/.codex/secrets/bing-webmaster-api-key.txt` 读取，也可用 `BING_WEBMASTER_API_KEY_PATH` 或 `--bing-api-key-file` 指向其他本地文件；密钥文件和请求 URL 都不会写进报告或 Git。
+
+当前独立采集 `.cn`、`.online` 和 `community` 三个已验证站点。搜索流量与抓取按日汇总；查询词和页面只取 Bing 最新周快照，避免把多周记录重复累加。已验证站点尚未产生数据时显示“已验证，暂无数据”，不视为采集失败。未配置本地 key 时 Bing 保持 `NOT_RUN`，不会破坏原有日报或触发任何付费调用。
+
+### 本地百度与 360 官方导出
+
+百度搜索资源平台和 360 站长平台没有公开的站点统计查询 API。本地日报不会保存个人账号、Cookie，也不会调用页面内部的非公开接口；它只读取站长后台下载的官方 CSV/TSV/JSON 导出。
+
+默认目录：
+
+- 百度：`~/.codex/seo-imports/baidu/`
+- 360：`~/.codex/seo-imports/360/`
+
+把后台最新导出文件放入对应目录即可；日报自动选择修改时间最新的 `.csv`、`.tsv`、`.txt` 或 `.json`。也可以用 `BAIDU_SEARCH_EXPORT_PATH`、`SO360_SEARCH_EXPORT_PATH`，或重复的 `--china-search-export ID=PATH` 指向文件/目录：
+
+```bash
+npm run seo:report -- --mode free \
+  --china-search-export baidu-cn=D:\seo-exports\baidu \
+  --china-search-export 360-cn=D:\seo-exports\360
+```
+
+支持的中文列名包括日期、关键词/搜索词、页面/URL、点击量、展现量、点击率、平均排名和索引量；英文同义列名也支持。存在日期列时，日报计算连续两个 7 日窗口及环比；关键词或页面导出显示 Top 25。没有文件时显示“等待本地导出”，不会让免费日报失败，也不会把旧文件误称为实时 API 数据。
+
 ## Google 一次性授权
 
 1. 在 Google Cloud 项目启用 **Google Search Console API** 与 **Google Analytics Data API**。
@@ -83,6 +108,9 @@ npm test
 npm run seo:dataforseo -- --config seo/dataforseo.config.json --mode all --depth 100 --include-ai-overview --dry-run
 npm run seo:dataforseo -- --config seo/dataforseo.cn.config.json --mode all --skip-keyword-difficulty --depth 100 --include-ai-overview --dry-run
 npm run seo:dataforseo -- --config seo/dataforseo.online-zh.config.json --mode all --skip-keyword-difficulty --depth 100 --include-ai-overview --dry-run
+
+# 按每日免费自动化的简报格式生成本地只读日报；同时读取 Bing API 与百度/360 本地导出目录
+npm run seo:report -- --mode free --output-json .seo-reports/seo-monitoring-local.json --output-markdown .seo-reports/seo-monitoring-local.md
 ```
 
 真实日报由 workflow 生成。需要离线复算时，使用重复的 `--dataforseo SEGMENT=PATH` 与 `--dataforseo-status SEGMENT=PATH` 参数，再提供 Google 凭证环境变量。生成后用：

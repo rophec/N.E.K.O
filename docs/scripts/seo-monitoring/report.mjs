@@ -748,7 +748,7 @@ function buildBlockerActions(blockers, sites, automationOwner) {
   }).sort(compareGrowthActions)
 }
 
-function buildTrustRows(sites, segments, rankComparison) {
+function buildTrustRows(sites, segments, rankComparison, bingWebmasterSites = [], chinaSearchSources = []) {
   const rows = []
   for (const segment of segments) {
     rows.push({
@@ -802,6 +802,34 @@ function buildTrustRows(sites, segments, rankComparison) {
       },
     )
   }
+  for (const site of bingWebmasterSites) {
+    rows.push({
+      source: 'Bing Webmaster',
+      target: site.label,
+      status: site.status,
+      collectedAt: site.collectedAt ?? null,
+      result: site.traffic?.latestDay
+        ? `${site.traffic.latestDay.clicks} clicks / ${site.traffic.latestDay.impressions} impressions on ${site.traffic.dataThrough}`
+        : site.availability === 'empty'
+          ? 'verified; no Bing data yet'
+          : site.availability === 'not_verified'
+            ? 'site added; ownership not verified'
+            : 'N/A',
+      evidence: site.siteUrl,
+    })
+  }
+  for (const source of chinaSearchSources) {
+    rows.push({
+      source: `${source.platform === 'baidu' ? 'Baidu' : '360 Search'} local export`,
+      target: source.label,
+      status: source.status,
+      collectedAt: source.collectedAt ?? null,
+      result: source.traffic?.recent7
+        ? `${source.traffic.recent7.clicks} clicks / ${source.traffic.recent7.impressions} impressions through ${source.traffic.dataThrough}`
+        : source.availability === 'empty' ? 'export contains no recognized rows' : 'N/A',
+      evidence: source.sourceFile ?? source.reason ?? null,
+    })
+  }
   rows.push({
     source: 'Previous ranking report',
     target: 'all ranking segments',
@@ -821,6 +849,8 @@ export function buildMonitoringReport({
   window,
   dataForSeoInputs,
   siteInputs,
+  bingInputs = [],
+  chinaSearchInputs = [],
   previousReport = null,
   previousReportEvidence = null,
   mode = 'full',
@@ -853,6 +883,14 @@ export function buildMonitoringReport({
     }
   })
   const keywordMaster = segments.flatMap(segment => segment.keywordRows)
+  const bingWebmasterSites = bingInputs.map(input => ({
+    ...input.definition,
+    ...input.data,
+  }))
+  const chinaSearchSources = chinaSearchInputs.map(input => ({
+    ...input.definition,
+    ...input.data,
+  }))
   const searchFrequency = buildSearchFrequency(segments, sites)
   const aiCitationFrequency = buildAiCitationFrequency(segments)
   const blockers = sourceBlockers(sites, segments, { mode })
@@ -889,6 +927,8 @@ export function buildMonitoringReport({
     dataWindow: window,
     overallStatus: partial ? 'partial' : 'complete',
     sites,
+    bingWebmasterSites,
+    chinaSearchSources,
     dataForSeoSegments: segments,
     keywordMaster,
     searchFrequency,
@@ -898,7 +938,7 @@ export function buildMonitoringReport({
     topTenChange,
     dataForSeoCost,
     blockers,
-    trust: buildTrustRows(sites, segments, rankComparison),
+    trust: buildTrustRows(sites, segments, rankComparison, bingWebmasterSites, chinaSearchSources),
   }
 }
 
@@ -1101,6 +1141,54 @@ function aiCrawlerCell(site) {
   return `允许 ${policy.checked} 个监测爬虫（${explicit} 个显式规则，其余继承通用规则）`
 }
 
+function bingSiteSummary(site) {
+  if (site?.availability === 'not_verified') return '已添加，尚未验证所有权'
+  if (site?.availability === 'not_added') return '尚未添加到 Bing Webmaster'
+  if (site?.status === 'not_run' || site?.status === 'unavailable') {
+    return `N/A — ${site?.reason ?? site?.status ?? 'not collected'}`
+  }
+  if (site?.availability === 'empty') return '已验证，Bing 暂无可报告数据'
+  return statusLabel(site?.status)
+}
+
+function bingFeedSummary(site) {
+  const feed = site?.feeds?.[0]
+  if (!feed) return 'N/A'
+  return [feed.status, Number.isFinite(feed.urlCount) ? `${feed.urlCount} URLs` : null, feed.lastCrawled]
+    .filter(Boolean)
+    .join(' · ') || 'N/A'
+}
+
+function bingTopValue(site, key) {
+  const item = site?.[key]?.items?.[0]
+  const value = key === 'queries' ? item?.query : item?.page
+  return value ? `${value}（${item.clicks} 点击 / ${item.impressions} 曝光）` : 'N/A'
+}
+
+function pushBingDetailTable(lines, site, key, title) {
+  const items = site?.[key]?.items ?? []
+  lines.push('', `### ${escapeCell(site.label)} · ${title}`, '')
+  if (items.length === 0) {
+    lines.push(
+      site?.availability === 'empty'
+        ? '已验证，Bing 暂无数据。'
+        : site?.availability === 'not_verified'
+          ? '站点已添加，但尚未完成 Bing 所有权验证。'
+          : 'N/A',
+    )
+    return
+  }
+  lines.push(
+    `> 周快照截止：${site[key].dataThrough ?? 'N/A'}；仅展示最新快照 Top 10，不跨周累加。`,
+    '',
+    `| ${key === 'queries' ? '查询词' : '页面'} | 点击 | 曝光 | 点击平均位置 | 曝光平均位置 |`,
+    '|---|---:|---:|---:|---:|',
+  )
+  for (const item of items.slice(0, 10)) {
+    lines.push(`| ${escapeCell(key === 'queries' ? item.query : item.page)} | ${item.clicks} | ${item.impressions} | ${display(item.averageClickPosition, 2)} | ${display(item.averageImpressionPosition, 2)} |`)
+  }
+}
+
 export function renderDetailedMarkdown(report) {
   const cn = siteById(report, 'cn')
   const online = siteById(report, 'online')
@@ -1211,6 +1299,47 @@ export function renderDetailedMarkdown(report) {
     `- 高曝光低 CTR 页面：${report.actions.lowCtr.length || '0'}`,
     `- GSC 新查询：${report.sites.flatMap(site => site.gsc?.newQueries ?? []).slice(0, 10).map(item => item.query).join('、') || 'N/A'}`,
     '- 限制：GSC 的最新完整日由 API `first_incomplete_date` 动态解析；query/page 维度仍可能受 API top rows 限制。',
+    '',
+    '## 🟦 Bing Webmaster 搜索、收录与抓取',
+    '',
+    '| 站点 | 状态 | 搜索数据截止 | 最新日点击/曝光 | 近 7 日点击/曝光 | Δ前 7 日 | 查询快照 | Top 查询 | 收录量 | 最新抓取/错误 | sitemap |',
+    '|---|---|---|---:|---:|---:|---|---|---:|---:|---|',
+  )
+  for (const site of report.bingWebmasterSites ?? []) {
+    const latest = site.traffic?.latestDay
+    const recent = site.traffic?.recent7
+    const crawl = site.crawl?.latestDay
+    lines.push(`| ${escapeCell(site.label)} | ${escapeCell(bingSiteSummary(site))} | ${site.traffic?.dataThrough ?? 'N/A'} | ${latest ? `${latest.clicks}/${latest.impressions}` : 'N/A'} | ${recent ? `${recent.clicks}/${recent.impressions}` : 'N/A'} | ${site.traffic?.trend7 ? `${site.traffic.trend7.clicks >= 0 ? '+' : ''}${site.traffic.trend7.clicks} / ${site.traffic.trend7.impressions >= 0 ? '+' : ''}${site.traffic.trend7.impressions}` : 'N/A'} | ${site.queries?.dataThrough ?? 'N/A'} | ${escapeCell(bingTopValue(site, 'queries'))} | ${display(crawl?.inIndex)} | ${crawl ? `${crawl.crawledPages ?? 'N/A'}/${crawl.crawlErrors ?? 'N/A'}` : 'N/A'} | ${escapeCell(bingFeedSummary(site))} |`)
+  }
+  if ((report.bingWebmasterSites ?? []).length === 0) {
+    lines.push('| N/A | NOT_RUN | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |')
+  }
+  lines.push(
+    '',
+    '- 口径：搜索流量与抓取统计为日数据；查询词和页面为 Bing 周快照，表格只使用最新快照，避免跨周重复累加。`已验证，暂无数据` 不等于采集失败。',
+  )
+  for (const site of report.bingWebmasterSites ?? []) {
+    pushBingDetailTable(lines, site, 'queries', 'Top 查询')
+    pushBingDetailTable(lines, site, 'pages', 'Top 页面')
+  }
+  lines.push(
+    '',
+    '## 🇨🇳 百度与 360 搜索（本地官方导出）',
+    '',
+    '| 平台 | 站点 | 数据截止 | 近 7 日点击 / 展现 | Δ前 7 日 | Top 查询 | 索引量 | 本地文件 | 状态 |',
+    '|---|---|---|---:|---:|---|---:|---|---|',
+  )
+  for (const source of report.chinaSearchSources ?? []) {
+    lines.push(`| ${chinaSearchPlatform(source)} | ${escapeCell(source.label)} | ${source.traffic?.dataThrough ?? 'N/A'} | ${bingBriefPair(source.traffic?.recent7)} | ${bingBriefDelta(source.traffic?.trend7)} | ${escapeCell(chinaSearchTopKeyword(source))} | ${display(source.latestIndexed, 0)} | ${escapeCell(source.sourceFile ?? 'N/A')} | ${chinaSearchStatus(source)} |`)
+  }
+  if ((report.chinaSearchSources ?? []).length === 0) {
+    lines.push('| N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | NOT_RUN |')
+  }
+  lines.push(
+    '',
+    '- 口径：只读取百度搜索资源平台与 360 站长平台下载到本机的官方导出文件；不保存账号、Cookie，也不调用非公开接口。文件缺失时保持 `NOT_RUN`，不把旧数据冒充今日数据。',
+  )
+  lines.push(
     '',
     '## 🤖 GEO / AI 搜索战况',
     '',
@@ -1353,29 +1482,15 @@ export function renderDetailedMarkdown(report) {
     '- 复查今天选择的 1–2 个动作是否已落地；等待 GSC/GA4 完整窗口后再判断效果。',
     '- 若 IndexNow 没有 URL 变更，允许 COMPLETE + 0；若未执行，必须保持 NOT_RUN/N/A。',
     '',
+    '## 范围说明',
+    '',
+    '- 完整报告按可用证据展示 GSC、GA4、Bing Webmaster、百度/360 本地导出、DataForSEO、IndexNow 与公开技术检查；缺失来源保持明确状态，不以旧数据补齐。',
+    '',
     '## 机器可读摘要',
     '',
     '同一 artifact 内的 JSON 是本报告的机器可读真相源；Markdown 不重复嵌入可能过期的大段 JSON。',
   )
   return `${lines.join('\n')}\n`
-}
-
-function briefSourceStatus(value) {
-  const status = siteStatus(value)
-  if (status === 'ok') return '正常'
-  return `${statusLabel(status)}${value?.reason ? `：${value.reason}` : ''}`
-}
-
-function briefGsc(site) {
-  const period = site?.gsc?.recent7
-  if (siteStatus(site?.gsc) !== 'ok' || !period) return briefSourceStatus(site?.gsc)
-  return `${period.clicks} 点击 / ${period.impressions} 曝光 · CTR ${percentage(period.ctr)} · 平均排名 ${display(period.position, 2)}`
-}
-
-function briefGa4(site) {
-  const period = site?.ga4?.recent7
-  if (siteStatus(site?.ga4) !== 'ok' || !period) return briefSourceStatus(site?.ga4)
-  return `${period.organicSessions} 自然会话 · ${period.aiReferralSessions} AI 引荐 · ${period.totalSteamCtaClicks} Steam CTA`
 }
 
 function pagePath(url) {
@@ -1415,13 +1530,55 @@ function recentQueries(report) {
   }))).sort((left, right) => right.impressions - left.impressions).slice(0, 6)
 }
 
-export function renderMarkdown(report) {
+function bingBriefStatus(site) {
+  if (site?.availability === 'not_verified') return '已添加，未验证'
+  if (site?.availability === 'not_added') return '未添加'
+  if (site?.status === 'not_run' || site?.status === 'unavailable') return statusLabel(site.status)
+  if (site?.availability === 'empty') return '已验证，等待数据'
+  return site?.status === 'ok' ? '正常' : statusLabel(site?.status)
+}
+
+function bingBriefPair(value) {
+  return value && Number.isFinite(value.clicks) && Number.isFinite(value.impressions)
+    ? `${value.clicks} / ${value.impressions}`
+    : 'N/A'
+}
+
+function bingBriefDelta(value) {
+  return value && Number.isFinite(value.clicks) && Number.isFinite(value.impressions)
+    ? `${value.clicks > 0 ? '+' : ''}${value.clicks} / ${value.impressions > 0 ? '+' : ''}${value.impressions}`
+    : 'N/A'
+}
+
+function bingBriefFeed(site) {
+  const feed = site?.feeds?.[0]
+  if (!feed) return 'N/A'
+  return `${feed.status ?? 'N/A'}${Number.isFinite(feed.urlCount) ? ` · ${feed.urlCount} URLs` : ''}`
+}
+
+function chinaSearchPlatform(source) {
+  return source?.platform === 'baidu' ? '百度' : source?.platform === '360' ? '360' : source?.platform ?? 'N/A'
+}
+
+function chinaSearchStatus(source) {
+  if (source?.status === 'not_run' || source?.status === 'unavailable') return statusLabel(source.status)
+  if (source?.availability === 'empty') return '文件无可识别数据'
+  return source?.status === 'ok' ? '正常' : statusLabel(source?.status)
+}
+
+function chinaSearchTopKeyword(source) {
+  const item = source?.keywords?.[0]
+  if (!item) return 'N/A'
+  return `${item.keyword}${Number.isFinite(item.clicks) || Number.isFinite(item.impressions) ? ` · ${item.clicks ?? 'N/A'}/${item.impressions ?? 'N/A'}` : ''}`
+}
+
+function renderBriefMarkdown(report) {
   const gscWindows = report.sites.find(site => site.gsc?.windows?.recent7 || site.gsc?.windows?.previous7)?.gsc?.windows
   const ga4Windows = report.sites.find(site => site.ga4?.windows?.recent7 || site.ga4?.windows?.previous7)?.ga4?.windows
   const lines = [
-    `# N.E.K.O 双站 SEO / GEO 日报 · ${report.reportDate}`,
+    `# N.E.K.O SEO / GEO 日报 · ${report.reportDate}`,
     '',
-    `> 生成：${report.generatedAt}（${report.timezone}） · ${report.mode === 'free' ? '免费观测模式' : '完整观测模式'}`,
+    `> 生成：${report.generatedAt}（${report.timezone}） · 免费观测模式`,
     '',
     '## 🚨 需要优先关注',
     '',
@@ -1456,6 +1613,38 @@ export function renderMarkdown(report) {
     lines.push(`| ${escapeCell(site.label)} | ${periodValue(gsc, 'clicks')} | ${trend(site.gsc?.trend7?.clicks)} | ${periodValue(gsc, 'impressions')} | ${trend(site.gsc?.trend7?.impressions)} | ${percentage(gsc?.ctr)} | ${display(gsc?.position, 2)} |`)
   }
 
+  const bingSites = report.bingWebmasterSites ?? []
+  if (bingSites.length > 0) {
+    lines.push(
+      '',
+      '## Bing 搜索与收录',
+      '',
+      '| 站点 | 近 7 日点击 / 曝光 | 较前 7 日 | 收录 | Sitemap | 数据截止 | 状态 |',
+      '|---|---:|---:|---:|---|---|---|',
+    )
+    for (const site of bingSites) {
+      lines.push(`| ${escapeCell(site.label)} | ${bingBriefPair(site.traffic?.recent7)} | ${bingBriefDelta(site.traffic?.trend7)} | ${display(site.crawl?.latestDay?.inIndex, 0)} | ${escapeCell(bingBriefFeed(site))} | ${site.traffic?.dataThrough ?? site.crawl?.dataThrough ?? 'N/A'} | ${bingBriefStatus(site)} |`)
+    }
+    const topQueries = bingSites
+      .filter(site => site.queries?.items?.[0])
+      .map(site => `${site.label}「${site.queries.items[0].query}」${bingBriefPair(site.queries.items[0])}`)
+    if (topQueries.length > 0) lines.push(`- 最新周快照 Top 查询：${topQueries.join('；')}。`)
+  }
+
+  const chinaSearchSources = report.chinaSearchSources ?? []
+  if (chinaSearchSources.length > 0) {
+    lines.push(
+      '',
+      '## 百度与 360 搜索（本地导出）',
+      '',
+      '| 平台 | 站点 | 近 7 日点击 / 展现 | 较前 7 日 | Top 查询 | 索引量 | 数据截止 | 状态 |',
+      '|---|---|---:|---:|---|---:|---|---|',
+    )
+    for (const source of chinaSearchSources) {
+      lines.push(`| ${chinaSearchPlatform(source)} | ${escapeCell(source.label)} | ${bingBriefPair(source.traffic?.recent7)} | ${bingBriefDelta(source.traffic?.trend7)} | ${escapeCell(chinaSearchTopKeyword(source))} | ${display(source.latestIndexed, 0)} | ${source.traffic?.dataThrough ?? 'N/A'} | ${chinaSearchStatus(source)} |`)
+    }
+  }
+
   const lowCtr = lowCtrOpportunities(report)
   const striking = strikingDistanceOpportunities(report)
   const newQueries = recentQueries(report)
@@ -1469,7 +1658,7 @@ export function renderMarkdown(report) {
     striking.forEach(item => lines.push(`- ${item.site}「${item.query}」：排名 ${display(item.position, 2)}，${item.impressions} 曝光，落地页 ${item.page}。`))
   }
   if (newQueries.length > 0) {
-    lines.push('', `### 新出现的搜索词`, `- ${newQueries.map(item => `${item.query}（${item.impressions} 曝光）`).join('；')}`)
+    lines.push('', '### 新出现的搜索词', `- ${newQueries.map(item => `${item.query}（${item.impressions} 曝光）`).join('；')}`)
   }
   if (lowCtr.length === 0 && striking.length === 0 && newQueries.length === 0) {
     lines.push('', '- 本次没有足够证据支持新的内容优化动作。')
@@ -1497,15 +1686,20 @@ export function renderMarkdown(report) {
     '|---|---|---|---|',
   )
   for (const site of report.sites) {
-    lines.push(`| ${escapeCell(site.label)} | ${technicalCell(site.technical?.home)} | ${technicalCell(site.technical?.robots, site.technical?.robots?.declaresSitemap ? '正常' : '缺 sitemap') } / ${technicalCell(site.technical?.sitemap)} | ${aiCrawlerCell(site)} |`)
+    lines.push(`| ${escapeCell(site.label)} | ${technicalCell(site.technical?.home)} | ${technicalCell(site.technical?.robots, site.technical?.robots?.declaresSitemap ? '正常' : '缺 sitemap')} / ${technicalCell(site.technical?.sitemap)} | ${aiCrawlerCell(site)} |`)
   }
 
-  lines.push('', '## 范围说明', '')
-  if (report.mode === 'free') {
-    lines.push('- 本日报只使用 GSC、GA4 和公开技术检查。关键词逐词排名、月搜索量、AIO 与 IndexNow 提交本次主动未运行，**不属于故障，也不会占用今日待办**。')
-  } else {
-    lines.push('- 完整模式要求 DataForSEO 与 IndexNow 证据；缺失时会明确列为数据阻塞。')
-  }
-  lines.push('- JSON 文件保留完整原始证据；此 Markdown 只保留需要人看的结论。')
+  lines.push(
+    '',
+    '## 范围说明',
+    '',
+    '- 本日报使用 GSC、GA4、Bing Webmaster、百度/360 本地官方导出和公开技术检查。关键词逐词排名、月搜索量、AIO 与 IndexNow 提交本次主动未运行，**不属于故障，也不会占用今日待办**。',
+    '- 百度/360 没有公开的统计查询 API；本地日报只读取最新导出文件，不保存登录态。',
+    '- JSON 文件保留完整原始证据；此 Markdown 只保留需要人看的结论。',
+  )
   return `${lines.join('\n')}\n`
+}
+
+export function renderMarkdown(report) {
+  return report.mode === 'free' ? renderBriefMarkdown(report) : renderDetailedMarkdown(report)
 }
