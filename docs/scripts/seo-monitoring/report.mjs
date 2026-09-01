@@ -696,17 +696,19 @@ function buildActions(sites, segments) {
   }
 }
 
-function sourceBlockers(sites, segments) {
+function sourceBlockers(sites, segments, { mode = 'full' } = {}) {
   const blockers = []
-  for (const segment of segments) {
-    if (!['complete'].includes(segment.rankingStatus)) {
-      blockers.push(`DataForSEO ${segment.id}: ${segment.rankingStatus}${segment.reason ? ` — ${segment.reason}` : ''}`)
-    }
-    if (!['complete'].includes(segment.keywordMetricsStatus)) {
-      blockers.push(`DataForSEO ${segment.id} search volume: ${segment.keywordMetricsStatus}`)
-    }
-    if (!['complete'].includes(segment.aiOverviewStatus)) {
-      blockers.push(`DataForSEO ${segment.id} AI Overview: ${segment.aiOverviewStatus}`)
+  if (mode !== 'free') {
+    for (const segment of segments) {
+      if (!['complete'].includes(segment.rankingStatus)) {
+        blockers.push(`DataForSEO ${segment.id}: ${segment.rankingStatus}${segment.reason ? ` — ${segment.reason}` : ''}`)
+      }
+      if (!['complete'].includes(segment.keywordMetricsStatus)) {
+        blockers.push(`DataForSEO ${segment.id} search volume: ${segment.keywordMetricsStatus}`)
+      }
+      if (!['complete'].includes(segment.aiOverviewStatus)) {
+        blockers.push(`DataForSEO ${segment.id} AI Overview: ${segment.aiOverviewStatus}`)
+      }
     }
   }
   for (const site of sites) {
@@ -716,7 +718,7 @@ function sourceBlockers(sites, segments) {
     if (siteStatus(site.gsc) === 'partial') blockers.push(`GSC ${site.id}: partial — sitemap or a sub-check failed`)
     if (siteStatus(site.ga4) !== 'ok') blockers.push(`GA4 ${site.id}: ${site.ga4?.reason ?? siteStatus(site.ga4)}`)
     if (siteStatus(site.technical) !== 'ok') blockers.push(`Technical SEO ${site.id}: ${site.technical?.reason ?? siteStatus(site.technical)}`)
-    if (!['complete'].includes(siteStatus(site.indexNow))) {
+    if (mode !== 'free' && !['complete'].includes(siteStatus(site.indexNow))) {
       blockers.push(`IndexNow ${site.id}: ${site.indexNow?.reason ?? siteStatus(site.indexNow)}`)
     }
   }
@@ -821,7 +823,9 @@ export function buildMonitoringReport({
   siteInputs,
   previousReport = null,
   previousReportEvidence = null,
+  mode = 'full',
 }) {
+  if (!['free', 'full'].includes(mode)) throw new TypeError('Monitoring mode must be free or full')
   const summarizedSegments = dataForSeoInputs.map(input => summarizeDataForSeoSegment(
     input.definition,
     input.report,
@@ -851,7 +855,7 @@ export function buildMonitoringReport({
   const keywordMaster = segments.flatMap(segment => segment.keywordRows)
   const searchFrequency = buildSearchFrequency(segments, sites)
   const aiCitationFrequency = buildAiCitationFrequency(segments)
-  const blockers = sourceBlockers(sites, segments)
+  const blockers = sourceBlockers(sites, segments, { mode })
   const growthActions = buildActions(sites, segments)
   const dataBlockers = buildBlockerActions(
     blockers,
@@ -872,9 +876,10 @@ export function buildMonitoringReport({
     totalSegments: segments.length,
     complete: reportedCostSegments.length === segments.length,
   }
-  const partial = blockers.length > 0 || segments.some(segment => segment.status === 'partial')
+  const partial = blockers.length > 0 || (mode === 'full' && segments.some(segment => segment.status === 'partial'))
   return {
     schemaVersion: 2,
+    mode,
     generatedAt,
     reportDate: reportDateInTimeZone(generatedAt, config.timezone),
     timezone: config.timezone,
@@ -1096,7 +1101,7 @@ function aiCrawlerCell(site) {
   return `允许 ${policy.checked} 个监测爬虫（${explicit} 个显式规则，其余继承通用规则）`
 }
 
-export function renderMarkdown(report) {
+export function renderDetailedMarkdown(report) {
   const cn = siteById(report, 'cn')
   const online = siteById(report, 'online')
   const totalRanks = rankBuckets(report.keywordMaster, { maxRank: 100 })
@@ -1352,5 +1357,155 @@ export function renderMarkdown(report) {
     '',
     '同一 artifact 内的 JSON 是本报告的机器可读真相源；Markdown 不重复嵌入可能过期的大段 JSON。',
   )
+  return `${lines.join('\n')}\n`
+}
+
+function briefSourceStatus(value) {
+  const status = siteStatus(value)
+  if (status === 'ok') return '正常'
+  return `${statusLabel(status)}${value?.reason ? `：${value.reason}` : ''}`
+}
+
+function briefGsc(site) {
+  const period = site?.gsc?.recent7
+  if (siteStatus(site?.gsc) !== 'ok' || !period) return briefSourceStatus(site?.gsc)
+  return `${period.clicks} 点击 / ${period.impressions} 曝光 · CTR ${percentage(period.ctr)} · 平均排名 ${display(period.position, 2)}`
+}
+
+function briefGa4(site) {
+  const period = site?.ga4?.recent7
+  if (siteStatus(site?.ga4) !== 'ok' || !period) return briefSourceStatus(site?.ga4)
+  return `${period.organicSessions} 自然会话 · ${period.aiReferralSessions} AI 引荐 · ${period.totalSteamCtaClicks} Steam CTA`
+}
+
+function pagePath(url) {
+  try {
+    return new URL(url).pathname || '/'
+  } catch {
+    return url ?? 'N/A'
+  }
+}
+
+function lowCtrOpportunities(report) {
+  return report.sites.flatMap(site => (site.gsc?.lowCtrPages ?? []).map(page => ({
+    site: site.label,
+    page: pagePath(page.page),
+    impressions: page.impressions ?? 0,
+    clicks: page.clicks ?? 0,
+    ctr: page.ctr ?? null,
+    position: page.position ?? null,
+  }))).sort((left, right) => right.impressions - left.impressions).slice(0, 3)
+}
+
+function strikingDistanceOpportunities(report) {
+  return report.sites.flatMap(site => (site.gsc?.strikingDistanceQueries ?? []).map(query => ({
+    site: site.label,
+    query: query.query,
+    page: pagePath(query.page),
+    impressions: query.impressions,
+    position: query.position,
+  }))).sort((left, right) => right.impressions - left.impressions).slice(0, 3)
+}
+
+function recentQueries(report) {
+  return report.sites.flatMap(site => (site.gsc?.newQueries ?? []).map(query => ({
+    site: site.label,
+    query: query.query,
+    impressions: query.impressions,
+  }))).sort((left, right) => right.impressions - left.impressions).slice(0, 6)
+}
+
+export function renderMarkdown(report) {
+  const gscWindows = report.sites.find(site => site.gsc?.windows?.recent7 || site.gsc?.windows?.previous7)?.gsc?.windows
+  const ga4Windows = report.sites.find(site => site.ga4?.windows?.recent7 || site.ga4?.windows?.previous7)?.ga4?.windows
+  const lines = [
+    `# N.E.K.O 双站 SEO / GEO 日报 · ${report.reportDate}`,
+    '',
+    `> 生成：${report.generatedAt}（${report.timezone}） · ${report.mode === 'free' ? '免费观测模式' : '完整观测模式'}`,
+    '',
+    '## 🚨 需要优先关注',
+    '',
+  ]
+
+  if (report.blockers.length > 0) {
+    lines.push('**数据或技术阻塞**')
+    report.blockers.forEach(blocker => lines.push(`- **P0/P1**：${blocker}`))
+  }
+  if (report.actions.selected.length === 0) {
+    if (report.blockers.length === 0) {
+      lines.push('- 今天没有需要立即处理的事项；数据正常，且没有足够证据支持修改页面。')
+    }
+  } else {
+    if (report.blockers.length > 0) lines.push('')
+    lines.push('**今天可以直接执行**')
+    report.actions.selected.forEach((action, index) => {
+      lines.push(`${index + 1}. **${action.priority}**：${action.action}（依据：${action.evidence}）`)
+    })
+  }
+
+  lines.push(
+    '',
+    '## 搜索表现（近 7 天）',
+    `- **本期范围**：${dateRangeLabel(gscWindows?.recent7)}；**对比范围**：${dateRangeLabel(gscWindows?.previous7)}。`,
+    '',
+    '| 站点 | 点击 | 较前 7 天 | 曝光 | 较前 7 天 | CTR | 平均排名 |',
+    '|---|---:|---:|---:|---:|---:|---:|',
+  )
+  for (const site of report.sites) {
+    const gsc = site.gsc?.recent7
+    lines.push(`| ${escapeCell(site.label)} | ${periodValue(gsc, 'clicks')} | ${trend(site.gsc?.trend7?.clicks)} | ${periodValue(gsc, 'impressions')} | ${trend(site.gsc?.trend7?.impressions)} | ${percentage(gsc?.ctr)} | ${display(gsc?.position, 2)} |`)
+  }
+
+  const lowCtr = lowCtrOpportunities(report)
+  const striking = strikingDistanceOpportunities(report)
+  const newQueries = recentQueries(report)
+  lines.push('', '## 搜索机会明细')
+  if (lowCtr.length > 0) {
+    lines.push('', '### 高曝光但低点击')
+    lowCtr.forEach(item => lines.push(`- ${item.site} ${item.page}：${item.impressions} 曝光、${item.clicks} 点击、CTR ${percentage(item.ctr)}、平均排名 ${display(item.position, 2)}。`))
+  }
+  if (striking.length > 0) {
+    lines.push('', '### 接近首页（排名 11–20）')
+    striking.forEach(item => lines.push(`- ${item.site}「${item.query}」：排名 ${display(item.position, 2)}，${item.impressions} 曝光，落地页 ${item.page}。`))
+  }
+  if (newQueries.length > 0) {
+    lines.push('', `### 新出现的搜索词`, `- ${newQueries.map(item => `${item.query}（${item.impressions} 曝光）`).join('；')}`)
+  }
+  if (lowCtr.length === 0 && striking.length === 0 && newQueries.length === 0) {
+    lines.push('', '- 本次没有足够证据支持新的内容优化动作。')
+  }
+
+  lines.push(
+    '',
+    '## 访问与转化（近 7 天）',
+    `- **本期范围**：${dateRangeLabel(ga4Windows?.recent7)}；**对比范围**：${dateRangeLabel(ga4Windows?.previous7)}。`,
+    '',
+    '| 站点 | 自然会话 | 较前 7 天 | 自然浏览 | Steam CTA | 较前 7 天 | AI 引荐会话 | 文档→主页 |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|',
+  )
+  for (const site of report.sites) {
+    const ga4 = site.ga4?.recent7
+    lines.push(`| ${escapeCell(site.label)} | ${periodValue(ga4, 'organicSessions')} | ${trend(site.ga4?.trend7?.organicSessions)} | ${periodValue(ga4, 'organicPageViews')} | ${periodValue(ga4, 'totalSteamCtaClicks')} | ${trend(site.ga4?.trend7?.totalSteamCtaClicks)} | ${periodValue(ga4, 'aiReferralSessions')} | ${periodValue(ga4, 'totalDocsHomeClicks')} |`)
+  }
+  lines.push('- `Steam CTA` 是全站 CTA 点击；`.online` 的“文档→主页”是辅助转化，`.cn` 不适用时显示 N/A。')
+
+  lines.push(
+    '',
+    '## 技术健康',
+    '',
+    '| 站点 | 首页 | robots / sitemap | AI 爬虫 |',
+    '|---|---|---|---|',
+  )
+  for (const site of report.sites) {
+    lines.push(`| ${escapeCell(site.label)} | ${technicalCell(site.technical?.home)} | ${technicalCell(site.technical?.robots, site.technical?.robots?.declaresSitemap ? '正常' : '缺 sitemap') } / ${technicalCell(site.technical?.sitemap)} | ${aiCrawlerCell(site)} |`)
+  }
+
+  lines.push('', '## 范围说明', '')
+  if (report.mode === 'free') {
+    lines.push('- 本日报只使用 GSC、GA4 和公开技术检查。关键词逐词排名、月搜索量、AIO 与 IndexNow 提交本次主动未运行，**不属于故障，也不会占用今日待办**。')
+  } else {
+    lines.push('- 完整模式要求 DataForSEO 与 IndexNow 证据；缺失时会明确列为数据阻塞。')
+  }
+  lines.push('- JSON 文件保留完整原始证据；此 Markdown 只保留需要人看的结论。')
   return `${lines.join('\n')}\n`
 }

@@ -432,32 +432,32 @@ async function collectGa4Range(config, range, { accessToken, fetchImpl }) {
     ? exactFilter('eventName', config.docsToHomeEvent)
     : null
   const requests = [
-    gaRun(config.propertyId, {
+    () => gaRun(config.propertyId, {
       dateRanges,
       metrics: [{ name: 'sessions' }],
       dimensionFilter: hostFilter,
     }, accessToken, fetchImpl),
-    gaRun(config.propertyId, {
+    () => gaRun(config.propertyId, {
       dateRanges,
       metrics: [{ name: 'sessions' }, { name: 'screenPageViews' }],
       dimensionFilter: andFilter([hostFilter, organicFilter]),
     }, accessToken, fetchImpl),
-    gaRun(config.propertyId, {
+    () => gaRun(config.propertyId, {
       dateRanges,
       metrics: [{ name: 'sessions' }],
       dimensionFilter: andFilter([hostFilter, aiFilter]),
     }, accessToken, fetchImpl),
-    gaRun(config.propertyId, {
+    () => gaRun(config.propertyId, {
       dateRanges,
       metrics: [{ name: 'eventCount' }],
       dimensionFilter: andFilter([hostFilter, eventFilter]),
     }, accessToken, fetchImpl),
-    gaRun(config.propertyId, {
+    () => gaRun(config.propertyId, {
       dateRanges,
       metrics: [{ name: 'eventCount' }],
       dimensionFilter: andFilter([hostFilter, organicFilter, eventFilter]),
     }, accessToken, fetchImpl),
-    gaRun(config.propertyId, {
+    () => gaRun(config.propertyId, {
       dateRanges,
       metrics: [{ name: 'eventCount' }],
       dimensionFilter: andFilter([hostFilter, aiFilter, eventFilter]),
@@ -465,17 +465,17 @@ async function collectGa4Range(config, range, { accessToken, fetchImpl }) {
   ]
   if (docsHomeEventFilter) {
     requests.push(
-      gaRun(config.propertyId, {
+      () => gaRun(config.propertyId, {
         dateRanges,
         metrics: [{ name: 'eventCount' }],
         dimensionFilter: andFilter([hostFilter, docsHomeEventFilter]),
       }, accessToken, fetchImpl),
-      gaRun(config.propertyId, {
+      () => gaRun(config.propertyId, {
         dateRanges,
         metrics: [{ name: 'eventCount' }],
         dimensionFilter: andFilter([hostFilter, organicFilter, docsHomeEventFilter]),
       }, accessToken, fetchImpl),
-      gaRun(config.propertyId, {
+      () => gaRun(config.propertyId, {
         dateRanges,
         metrics: [{ name: 'eventCount' }],
         dimensionFilter: andFilter([hostFilter, aiFilter, docsHomeEventFilter]),
@@ -492,7 +492,11 @@ async function collectGa4Range(config, range, { accessToken, fetchImpl }) {
     totalDocsHome,
     organicDocsHome,
     aiDocsHome,
-  ] = await Promise.all(requests)
+  ] = await requests.reduce(async (pending, request) => {
+    const responses = await pending
+    responses.push(await request())
+    return responses
+  }, Promise.resolve([]))
 
   return {
     totalSessions: metricValue(total),
@@ -534,11 +538,9 @@ export async function collectGa4({
   docsToHomeEvent = null,
 }, window, { accessToken, fetchImpl = globalThis.fetch } = {}) {
   const config = { propertyId, hostname, aiReferralRegex, ctaEvent, docsToHomeEvent }
-  const [latest, recent7, previous7] = await Promise.all([
-    collectGa4Range(config, window.ga4.latest, { accessToken, fetchImpl }),
-    collectGa4Range(config, window.ga4.recent7, { accessToken, fetchImpl }),
-    collectGa4Range(config, window.ga4.previous7, { accessToken, fetchImpl }),
-  ])
+  const latest = await collectGa4Range(config, window.ga4.latest, { accessToken, fetchImpl })
+  const recent7 = await collectGa4Range(config, window.ga4.recent7, { accessToken, fetchImpl })
+  const previous7 = await collectGa4Range(config, window.ga4.previous7, { accessToken, fetchImpl })
   return {
     status: 'ok',
     collectedAt: new Date().toISOString(),

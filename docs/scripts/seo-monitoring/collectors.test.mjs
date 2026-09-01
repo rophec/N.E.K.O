@@ -171,6 +171,8 @@ test('GSC collector paginates each requested period', async () => {
 
 test('GA4 collector returns latest day and 7-day organic, AI, and CTA trends', async () => {
   const window = reportingWindow(new Date('2026-07-23T08:00:00Z'))
+  let activeRequests = 0
+  let peakRequests = 0
   const result = await collectGa4({
     propertyId: '546216550',
     hostname: 'project-neko.online',
@@ -180,6 +182,9 @@ test('GA4 collector returns latest day and 7-day organic, AI, and CTA trends', a
   }, window, {
     accessToken: 'token',
     fetchImpl: async (_url, options) => {
+      activeRequests += 1
+      peakRequests = Math.max(peakRequests, activeRequests)
+      await Promise.resolve()
       const body = JSON.parse(options.body)
       const range = body.dateRanges[0]
       const multiplier = range.startDate === window.ga4.latest.startDate
@@ -191,25 +196,29 @@ test('GA4 collector returns latest day and 7-day organic, AI, and CTA trends', a
       const fields = expressions.map(item => item.filter.fieldName)
       const eventName = expressions.find(item => item.filter.fieldName === 'eventName')
         ?.filter.stringFilter.value
-      if (fields.length === 1 && fields[0] === 'hostName') {
-        return jsonResponse({ rows: [{ metricValues: [{ value: String(30 * multiplier) }] }] })
+      try {
+        if (fields.length === 1 && fields[0] === 'hostName') {
+          return jsonResponse({ rows: [{ metricValues: [{ value: String(30 * multiplier) }] }] })
+        }
+        if (body.metrics.length === 2) {
+          return jsonResponse({ rows: [{ metricValues: [{ value: String(10 * multiplier) }, { value: String(20 * multiplier) }] }] })
+        }
+        if (eventName === 'docs_home_click' && fields.includes('sessionSource')) {
+          return jsonResponse({ rows: [{ metricValues: [{ value: String(2 * multiplier) }] }] })
+        }
+        if (eventName === 'docs_home_click') {
+          return jsonResponse({ rows: [{ metricValues: [{ value: String(4 * multiplier) }] }] })
+        }
+        if (fields.includes('eventName') && fields.includes('sessionSource')) {
+          return jsonResponse({ rows: [{ metricValues: [{ value: String(multiplier) }] }] })
+        }
+        if (fields.includes('eventName')) {
+          return jsonResponse({ rows: [{ metricValues: [{ value: String(2 * multiplier) }] }] })
+        }
+        return jsonResponse({ rows: [{ metricValues: [{ value: String(3 * multiplier) }] }] })
+      } finally {
+        activeRequests -= 1
       }
-      if (body.metrics.length === 2) {
-        return jsonResponse({ rows: [{ metricValues: [{ value: String(10 * multiplier) }, { value: String(20 * multiplier) }] }] })
-      }
-      if (eventName === 'docs_home_click' && fields.includes('sessionSource')) {
-        return jsonResponse({ rows: [{ metricValues: [{ value: String(2 * multiplier) }] }] })
-      }
-      if (eventName === 'docs_home_click') {
-        return jsonResponse({ rows: [{ metricValues: [{ value: String(4 * multiplier) }] }] })
-      }
-      if (fields.includes('eventName') && fields.includes('sessionSource')) {
-        return jsonResponse({ rows: [{ metricValues: [{ value: String(multiplier) }] }] })
-      }
-      if (fields.includes('eventName')) {
-        return jsonResponse({ rows: [{ metricValues: [{ value: String(2 * multiplier) }] }] })
-      }
-      return jsonResponse({ rows: [{ metricValues: [{ value: String(3 * multiplier) }] }] })
     },
   })
 
@@ -227,6 +236,7 @@ test('GA4 collector returns latest day and 7-day organic, AI, and CTA trends', a
   assert.equal(result.recent7.organicDocsHomeClicks, 28)
   assert.equal(result.recent7.aiDocsHomeClicks, 14)
   assert.equal(result.docsToHomeEvent, 'docs_home_click')
+  assert.equal(peakRequests, 1)
 })
 
 test('GA4 keeps docs-to-home metrics N/A when the event is not applicable to a site', async () => {

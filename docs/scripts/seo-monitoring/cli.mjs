@@ -45,6 +45,7 @@ function parseArgs(argv) {
     indexNow: new Map(),
     previousReport: null,
     requireComplete: false,
+    mode: process.env.SEO_REPORT_MODE === 'free' ? 'free' : 'full',
   }
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
@@ -63,6 +64,10 @@ function parseArgs(argv) {
     } else if (argument === '--previous-report') {
       options.previousReport = valueAfter(argv, index++, argument)
     } else if (argument === '--require-complete') options.requireComplete = true
+    else if (argument === '--mode') {
+      options.mode = valueAfter(argv, index++, argument)
+      if (!['free', 'full'].includes(options.mode)) throw new TypeError('--mode must be free or full')
+    }
     else throw new TypeError(`Unknown argument: ${argument}`)
   }
   return options
@@ -208,6 +213,7 @@ async function main() {
     siteInputs,
     previousReport: previousReport?.status === 'unavailable' ? null : previousReport,
     previousReportEvidence: process.env.PREVIOUS_REPORT_EVIDENCE ?? options.previousReport,
+    mode: options.mode,
   })
   const outputJson = resolve(options.outputJson)
   const outputMarkdown = resolve(options.outputMarkdown)
