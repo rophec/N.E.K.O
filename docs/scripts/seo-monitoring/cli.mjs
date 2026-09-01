@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { collectBingWebmasterSite, readBingWebmasterApiKey } from './bing-webmaster.mjs'
+import { collectChinaSearchExport } from './china-search-exports.mjs'
 import {
   collectGa4,
   collectGsc,
@@ -43,8 +46,11 @@ function parseArgs(argv) {
     dataForSeo: new Map(),
     dataForSeoStatus: new Map(),
     indexNow: new Map(),
+    chinaSearchExport: new Map(),
     previousReport: null,
+    bingApiKeyFile: null,
     requireComplete: false,
+    mode: process.env.SEO_REPORT_MODE === 'free' ? 'free' : 'full',
   }
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
@@ -60,9 +66,18 @@ function parseArgs(argv) {
     } else if (argument === '--indexnow') {
       const [id, path] = assignment(valueAfter(argv, index++, argument), argument)
       options.indexNow.set(id, path)
+    } else if (argument === '--china-search-export') {
+      const [id, path] = assignment(valueAfter(argv, index++, argument), argument)
+      options.chinaSearchExport.set(id, path)
     } else if (argument === '--previous-report') {
       options.previousReport = valueAfter(argv, index++, argument)
+    } else if (argument === '--bing-api-key-file') {
+      options.bingApiKeyFile = valueAfter(argv, index++, argument)
     } else if (argument === '--require-complete') options.requireComplete = true
+    else if (argument === '--mode') {
+      options.mode = valueAfter(argv, index++, argument)
+      if (!['free', 'full'].includes(options.mode)) throw new TypeError('--mode must be free or full')
+    }
     else throw new TypeError(`Unknown argument: ${argument}`)
   }
   return options
@@ -200,14 +215,57 @@ async function main() {
     return { definition, gsc, ga4, technical, indexNow }
   }))
 
+  const bingDefinitions = config.bingWebmaster?.sites ?? []
+  const bingKeyPath = options.bingApiKeyFile
+    || process.env[config.bingWebmaster?.apiKeyPathEnv]
+    || join(homedir(), '.codex', 'secrets', 'bing-webmaster-api-key.txt')
+  let bingApiKey = null
+  let bingKeyError = 'Bing Webmaster API key is not configured'
+  if (bingDefinitions.length > 0) {
+    try {
+      bingApiKey = await readBingWebmasterApiKey(bingKeyPath)
+      bingKeyError = null
+    } catch (error) {
+      if (error?.code !== 'ENOENT') bingKeyError = error.message
+    }
+  }
+  const bingInputs = []
+  for (const definition of bingDefinitions) {
+    bingInputs.push({
+      definition,
+      data: bingApiKey
+        ? await safely(() => collectBingWebmasterSite(definition, { apiKey: bingApiKey }))
+        : notRun(bingKeyError),
+    })
+  }
+
+  const chinaSearchInputs = []
+  for (const definition of config.chinaSearchExports ?? []) {
+    const exportPath = options.chinaSearchExport.get(definition.id)
+      || process.env[definition.pathEnv]
+      || join(homedir(), '.codex', 'seo-imports', definition.platform)
+    let data
+    try {
+      data = await collectChinaSearchExport(definition, { exportPath })
+    } catch (error) {
+      data = error?.code === 'ENOENT'
+        ? notRun(`等待本地导出：${exportPath}`)
+        : unavailable(error?.message ?? `无法读取 ${definition.platform} 本地导出`)
+    }
+    chinaSearchInputs.push({ definition, data })
+  }
+
   const report = buildMonitoringReport({
     config,
     generatedAt: new Date().toISOString(),
     window,
     dataForSeoInputs,
     siteInputs,
+    bingInputs,
+    chinaSearchInputs,
     previousReport: previousReport?.status === 'unavailable' ? null : previousReport,
     previousReportEvidence: process.env.PREVIOUS_REPORT_EVIDENCE ?? options.previousReport,
+    mode: options.mode,
   })
   const outputJson = resolve(options.outputJson)
   const outputMarkdown = resolve(options.outputMarkdown)
