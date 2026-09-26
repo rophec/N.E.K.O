@@ -1,0 +1,34 @@
+[project]
+name = "mahjong-coach-plugin"
+version = "0.3.30"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "numpy==1.26.4",
+  "opencv-python-headless==4.11.0.86",
+]
+
+[tool.neko.build]
+exclude_dirs = [
+  "docs",
+  "live_frames",
+  "tests",
+  "tools",
+]
+exclude_files = [
+  ".overlay-preview.json",
+  "coach_preferences.json",
+  "overlay_prefs.json",
+]
+
+[tool.neko.pack]
+exclude_dirs = [
+  "docs",
+  "live_frames",
+  "tests",
+  "tools",
+]
+exclude_files = [
+  ".overlay-preview.json",
+  "coach_preferences.json",
+  "overlay_prefs.json",
+]

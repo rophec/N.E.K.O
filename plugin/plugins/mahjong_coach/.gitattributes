@@ -1,0 +1,9 @@
+* text=auto
+
+*.dll binary
+*.onnx binary
+*.pyd binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.webp binary

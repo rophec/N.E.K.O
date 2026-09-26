@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+store.db
+.env
+.DS_Store
+
+# Runtime state and diagnostic captures must never enter the source repository.
+data/live_frames/
+live_frames/
+.overlay-preview.json
+coach_preferences.json
+overlay_prefs.json
+*.log
+
+# Local package outputs are published through GitHub Releases instead.
+artifacts/
+*.neko-plugin
+*.neko-bundle
