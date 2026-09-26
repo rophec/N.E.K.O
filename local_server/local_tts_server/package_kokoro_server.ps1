@@ -4,7 +4,8 @@ param(
     [string]$PackageName = "neko-kokoro-local-tts",
     [switch]$NoZip,
     [switch]$SkipEnv,
-    [switch]$SkipModels
+    [switch]$SkipModels,
+    [switch]$CpuOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -100,6 +101,7 @@ function New-MinimalVenv {
         "fastapi",
         "uvicorn[standard]",
         "numpy",
+        "torch",
         "websockets",
         "soundfile",
         "spacy",
@@ -110,14 +112,18 @@ function New-MinimalVenv {
     Write-Host "Installing minimal Kokoro server dependencies..." -ForegroundColor Yellow
     Invoke-Uv (@("pip", "install", "--python", $venvPython) + $basePackages)
 
-    Write-Host "Installing CUDA torch into package venv..." -ForegroundColor Yellow
-    Invoke-Uv @(
-        "pip", "install",
-        "--python", $venvPython,
-        "--index-url", "https://download.pytorch.org/whl/cu128",
-        "--force-reinstall",
-        "torch==2.11.0+cu128"
-    )
+    if ($CpuOnly) {
+        Write-Host "CPU-only package requested; keeping the default CPU torch wheel." -ForegroundColor Yellow
+    } else {
+        Write-Host "Installing CUDA torch into package venv..." -ForegroundColor Yellow
+        Invoke-Uv @(
+            "pip", "install",
+            "--python", $venvPython,
+            "--index-url", "https://download.pytorch.org/whl/cu128",
+            "--force-reinstall",
+            "torch"
+        )
+    }
 
     Write-Host "Installing spaCy English model..." -ForegroundColor Yellow
     Invoke-Uv @(
@@ -188,6 +194,11 @@ $readme += ''
 $readme += 'This package contains a standalone Kokoro local TTS server.'
 if (-not $SkipEnv) {
     $readme += 'It includes a bundled Python environment for offline start.'
+    if ($CpuOnly) {
+        $readme += 'This build is CPU-first and does not require NVIDIA CUDA.'
+    } else {
+        $readme += 'This build includes a CUDA torch install attempt during packaging.'
+    }
 } else {
     $readme += 'This build does not include a bundled Python environment.'
 }
@@ -196,6 +207,15 @@ if (-not $SkipModels) {
 } else {
     $readme += 'Local model files are not bundled in this build; place them under local_server\local_tts_server\kokoro_models or point LOCAL_TTS_KOKORO_MODEL_DIR at a local directory.'
 }
+$readme += ''
+$readme += '## Quick Start for NEKO Users'
+$readme += ''
+$readme += '1. Unzip the package to any folder.'
+$readme += '2. Double click start_kokoro_local_tts.bat.'
+$readme += '3. Keep the server window open.'
+$readme += '4. In NEKO custom API TTS, use ws://127.0.0.1:50000.'
+$readme += ''
+$readme += 'You do not need to install Python, uv, CUDA, or Kokoro separately for this CPU-first build.'
 $readme += ''
 $readme += '## Start'
 $readme += ''

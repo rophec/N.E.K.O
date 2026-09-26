@@ -91,12 +91,12 @@ local voice metadata.
 ### Windows examples
 
 ```powershell
-set LOCAL_TTS_KOKORO_MODEL_DIR=F:\models\Kokoro-82M-v1.1-zh
+set LOCAL_TTS_KOKORO_MODEL_DIR=<path-to>\Kokoro-82M-v1.1-zh
 set LOCAL_TTS_KOKORO_REPO_ID=hexgrad/Kokoro-82M-v1.1-zh
 set LOCAL_TTS_KOKORO_DEFAULT_VOICE=zf_001
-set LOCAL_TTS_KOKORO_CMD=python F:\tts_wrappers\kokoro_cli.py "{text_file}" "{out_file}" "{voice}" {speed}
-set LOCAL_TTS_MELOTTS_CMD=python F:\tts_wrappers\melotts_cli.py --text-file "{text_file}" --out "{out_file}" --voice "{voice}" --speed {speed}
-set LOCAL_TTS_CHATTTS_CMD=python F:\tts_wrappers\chattts_cli.py --text-file "{text_file}" --out "{out_file}" --voice "{voice}" --speed {speed}
+set LOCAL_TTS_KOKORO_CMD=python <path-to>\tts_wrappers\kokoro_cli.py "{text_file}" "{out_file}" "{voice}" {speed}
+set LOCAL_TTS_MELOTTS_CMD=python <path-to>\tts_wrappers\melotts_cli.py --text-file "{text_file}" --out "{out_file}" --voice "{voice}" --speed {speed}
+set LOCAL_TTS_CHATTTS_CMD=python <path-to>\tts_wrappers\chattts_cli.py --text-file "{text_file}" --out "{out_file}" --voice "{voice}" --speed {speed}
 ```
 
 ### Linux / macOS examples
