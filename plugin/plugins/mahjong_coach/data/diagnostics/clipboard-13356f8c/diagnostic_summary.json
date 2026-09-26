@@ -1,0 +1,1177 @@
+{
+  "source": "C:\\Users\\19079\\AppData\\Local\\Temp\\codex-clipboard-13356f8c-cf24-48b0-9caa-f910e8a112b6.png",
+  "input_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\00_input_as_received.png",
+  "image_size": [
+    1261,
+    754
+  ],
+  "calibration": {
+    "profile_id": "majsoul-pc-manual-2026.05-vit-discard-1920x1080-scaled-1261x754",
+    "enabled": true,
+    "screen_width": 1261,
+    "screen_height": 754,
+    "content_left": 0,
+    "content_top": 22,
+    "content_width": 1261,
+    "content_height": 709,
+    "confidence": 0.864,
+    "hand_offsets": {
+      "x_px": -30,
+      "y_px": 95,
+      "width_px": 16,
+      "height_px": 24,
+      "gap_px": -6,
+      "draw_gap_px": 20
+    }
+  },
+  "hand_result": {
+    "ok": true,
+    "hand_tiles": [
+      "2m",
+      "3m",
+      "5m",
+      "9m",
+      "9m",
+      "1p",
+      "1s",
+      "5s",
+      "6s",
+      "9s",
+      "1z",
+      "2z",
+      "5z",
+      "0s"
+    ],
+    "confidence": 1.0,
+    "reason": "matched_14_hand_tiles",
+    "elapsed_ms": 1259.0,
+    "raw_detections": [
+      {
+        "slot_id": "hand_1",
+        "candidate_tile": "2m",
+        "confidence": 1.0,
+        "box": {
+          "name": "hand_1",
+          "left": 146,
+          "top": 627,
+          "width": 61,
+          "height": 103
+        },
+        "occupied": true,
+        "source": "legacy_fast_hand_path",
+        "template_distance": 0.0,
+        "runner_up_tile": "8m",
+        "runner_up_distance": 82.0,
+        "accepted": true
+      },
+      {
+        "slot_id": "hand_2",
+        "candidate_tile": "3m",
+        "confidence": 1.0,
+        "box": {
+          "name": "hand_2",
+          "left": 208,
+          "top": 627,
+          "width": 61,
+          "height": 103
+        },
+        "occupied": true,
+        "source": "legacy_fast_hand_path",
+        "template_distance": 0.0,
+        "runner_up_tile": "6m",
+        "runner_up_distance": 82.0,
+        "accepted": true
+      },
+      {
+        "slot_id": "hand_3",
+        "candidate_tile": "5m",
+        "confidence": 1.0,
+        "box": {
+          "name": "hand_3",
+          "left": 270,
+          "top": 627,
+          "width": 61,
+          "height": 103
+        },
+        "occupied": true,
+        "source": "legacy_fast_hand_path",
+        "template_distance": 0.0,
+        "runner_up_tile": "1z",
+        "runner_up_distance": 82.0,
+        "accepted": true
+      },
+      {
+        "slot_id": "hand_4",
+        "candidate_tile": "9m",
+        "confidence": 1.0,
+        "box": {
+          "name": "hand_4",
+          "left": 332,
+          "top": 627,
+          "width": 61,
+          "height": 103
+        },
+        "occupied": true,
+        "source": "legacy_fast_hand_path",
+        "template_distance": 0.0,
+        "runner_up_tile": "4z",
+        "runner_up_distance": 82.0,
+        "accepted": true
+      },
+      {
+        "slot_id": "hand_5",
+        "candidate_tile": "9m",
+        "confidence": 1.0,
+        "box": {
+          "name": "hand_5",
+          "left": 394,
+          "top": 627,
+          "width": 61,
+          "height": 103
+        },
+        "occupied": true,
+        "source": "legacy_fast_hand_path",
+        "template_distance": 0.0,
+        "runner_up_tile": "4z",
+        "runner_up_distance": 82.0,
+        "accepted": true
+      },
+      {
+        "slot_id": "hand_6",
+        "candidate_tile": "1p",
+        "confidence": 1.0,
+        "box": {
+          "name": "hand_6",
+          "left": 456,
+          "top": 627,
+          "width": 61,
+          "height": 103
+        },
+        "occupied": true,
+        "source": "legacy_fast_hand_path",
+        "template_distance": 0.0,
+        "runner_up_tile": "1s",
+        "runner_up_distance": 82.0,
+        "accepted": true
+      },
+      {
+        "slot_id": "hand_7",
+        "candidate_tile": "1s",
+        "confidence": 1.0,
+        "box": {
+          "name": "hand_7",
+          "left": 518,
+          "top": 627,
+          "width": 61,
+          "height": 103
+        },
+        "occupied": true,
+        "source": "legacy_fast_hand_path",
+        "template_distance": 0.0,
+        "runner_up_tile": "2p",
+        "runner_up_distance": 82.0,
+        "accepted": true
+      },
+      {
+        "slot_id": "hand_8",
+        "candidate_tile": "5s",
+        "confidence": 1.0,
+        "box": {
+          "name": "hand_8",
+          "left": 580,
+          "top": 627,
+          "width": 61,
+          "height": 103
+        },
+        "occupied": true,
+        "source": "legacy_fast_hand_path",
+        "template_distance": 0.0,
+        "runner_up_tile": "9s",
+        "runner_up_distance": 82.0,
+        "accepted": true
+      },
+      {
+        "slot_id": "hand_9",
+        "candidate_tile": "6s",
+        "confidence": 1.0,
+        "box": {
+          "name": "hand_9",
+          "left": 642,
+          "top": 627,
+          "width": 61,
+          "height": 103
+        },
+        "occupied": true,
+        "source": "legacy_fast_hand_path",
+        "template_distance": 0.0,
+        "runner_up_tile": "4s",
+        "runner_up_distance": 82.0,
+        "accepted": true
+      },
+      {
+        "slot_id": "hand_10",
+        "candidate_tile": "9s",
+        "confidence": 1.0,
+        "box": {
+          "name": "hand_10",
+          "left": 704,
+          "top": 627,
+          "width": 61,
+          "height": 103
+        },
+        "occupied": true,
+        "source": "legacy_fast_hand_path",
+        "template_distance": 0.0,
+        "runner_up_tile": "5p",
+        "runner_up_distance": 82.0,
+        "accepted": true
+      },
+      {
+        "slot_id": "hand_11",
+        "candidate_tile": "1z",
+        "confidence": 1.0,
+        "box": {
+          "name": "hand_11",
+          "left": 766,
+          "top": 627,
+          "width": 61,
+          "height": 103
+        },
+        "occupied": true,
+        "source": "legacy_fast_hand_path",
+        "template_distance": 0.0,
+        "runner_up_tile": "2z",
+        "runner_up_distance": 82.0,
+        "accepted": true
+      },
+      {
+        "slot_id": "hand_12",
+        "candidate_tile": "2z",
+        "confidence": 1.0,
+        "box": {
+          "name": "hand_12",
+          "left": 828,
+          "top": 627,
+          "width": 61,
+          "height": 103
+        },
+        "occupied": true,
+        "source": "legacy_fast_hand_path",
+        "template_distance": 0.0,
+        "runner_up_tile": "empty",
+        "runner_up_distance": 82.0,
+        "accepted": true
+      },
+      {
+        "slot_id": "hand_13",
+        "candidate_tile": "5z",
+        "confidence": 0.9999,
+        "box": {
+          "name": "hand_13",
+          "left": 890,
+          "top": 627,
+          "width": 61,
+          "height": 103
+        },
+        "occupied": true,
+        "source": "legacy_fast_hand_path",
+        "template_distance": 0.008199999999999097,
+        "runner_up_tile": "2s",
+        "runner_up_distance": 81.9918,
+        "accepted": true
+      },
+      {
+        "slot_id": "hand_14",
+        "candidate_tile": "0s",
+        "confidence": 1.0,
+        "box": {
+          "name": "hand_14",
+          "left": 972,
+          "top": 627,
+          "width": 61,
+          "height": 103
+        },
+        "occupied": true,
+        "source": "legacy_fast_hand_path",
+        "template_distance": 0.0,
+        "runner_up_tile": "6s",
+        "runner_up_distance": 82.0,
+        "accepted": true
+      }
+    ],
+    "draw_slot_index": 14
+  },
+  "hand_rows": [
+    {
+      "index": 1,
+      "slot_id": "hand_1",
+      "bbox": [
+        146,
+        627,
+        207,
+        730
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "2m",
+      "confidence": 1.0,
+      "rejection_reason": "",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_01_hand_1.png"
+    },
+    {
+      "index": 2,
+      "slot_id": "hand_2",
+      "bbox": [
+        208,
+        627,
+        269,
+        730
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "3m",
+      "confidence": 1.0,
+      "rejection_reason": "",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_02_hand_2.png"
+    },
+    {
+      "index": 3,
+      "slot_id": "hand_3",
+      "bbox": [
+        270,
+        627,
+        331,
+        730
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "5m",
+      "confidence": 1.0,
+      "rejection_reason": "",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_03_hand_3.png"
+    },
+    {
+      "index": 4,
+      "slot_id": "hand_4",
+      "bbox": [
+        332,
+        627,
+        393,
+        730
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "9m",
+      "confidence": 1.0,
+      "rejection_reason": "",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_04_hand_4.png"
+    },
+    {
+      "index": 5,
+      "slot_id": "hand_5",
+      "bbox": [
+        394,
+        627,
+        455,
+        730
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "9m",
+      "confidence": 1.0,
+      "rejection_reason": "",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_05_hand_5.png"
+    },
+    {
+      "index": 6,
+      "slot_id": "hand_6",
+      "bbox": [
+        456,
+        627,
+        517,
+        730
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "1p",
+      "confidence": 1.0,
+      "rejection_reason": "",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_06_hand_6.png"
+    },
+    {
+      "index": 7,
+      "slot_id": "hand_7",
+      "bbox": [
+        518,
+        627,
+        579,
+        730
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "1s",
+      "confidence": 1.0,
+      "rejection_reason": "",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_07_hand_7.png"
+    },
+    {
+      "index": 8,
+      "slot_id": "hand_8",
+      "bbox": [
+        580,
+        627,
+        641,
+        730
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "5s",
+      "confidence": 1.0,
+      "rejection_reason": "",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_08_hand_8.png"
+    },
+    {
+      "index": 9,
+      "slot_id": "hand_9",
+      "bbox": [
+        642,
+        627,
+        703,
+        730
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "6s",
+      "confidence": 1.0,
+      "rejection_reason": "",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_09_hand_9.png"
+    },
+    {
+      "index": 10,
+      "slot_id": "hand_10",
+      "bbox": [
+        704,
+        627,
+        765,
+        730
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "9s",
+      "confidence": 1.0,
+      "rejection_reason": "",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_10_hand_10.png"
+    },
+    {
+      "index": 11,
+      "slot_id": "hand_11",
+      "bbox": [
+        766,
+        627,
+        827,
+        730
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "1z",
+      "confidence": 1.0,
+      "rejection_reason": "",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_11_hand_11.png"
+    },
+    {
+      "index": 12,
+      "slot_id": "hand_12",
+      "bbox": [
+        828,
+        627,
+        889,
+        730
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "2z",
+      "confidence": 1.0,
+      "rejection_reason": "",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_12_hand_12.png"
+    },
+    {
+      "index": 13,
+      "slot_id": "hand_13",
+      "bbox": [
+        890,
+        627,
+        951,
+        730
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "5z",
+      "confidence": 0.9999,
+      "rejection_reason": "",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_13_hand_13.png"
+    },
+    {
+      "index": 14,
+      "slot_id": "hand_14",
+      "bbox": [
+        972,
+        627,
+        1033,
+        730
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "0s",
+      "confidence": 1.0,
+      "rejection_reason": "",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_14_hand_14.png"
+    }
+  ],
+  "river_result": {
+    "ok": true,
+    "discard_piles": {
+      "left_opponent": [
+        {
+          "tile": "7s",
+          "player": "left_opponent",
+          "turn_index": 8,
+          "bbox": [
+            458,
+            246,
+            519,
+            286
+          ],
+          "quad": [
+            [
+              464,
+              246
+            ],
+            [
+              458,
+              286
+            ],
+            [
+              513,
+              286
+            ],
+            [
+              519,
+              246
+            ]
+          ],
+          "confidence": 1.0,
+          "orientation": "left",
+          "source": "onnx_discard_model",
+          "slot_id": "discard_left_opponent_08"
+        }
+      ]
+    },
+    "visible_tiles": [
+      "7s"
+    ],
+    "confidence": 1.0,
+    "reason": "recognized_discards",
+    "elapsed_ms": 616.6,
+    "raw_detections": [
+      {
+        "slot_id": "discard_self_01",
+        "group": "discard",
+        "player": "self",
+        "turn_index": 1,
+        "candidate_tile": "empty",
+        "confidence": 0.8531,
+        "box": {
+          "name": "discard_self_01",
+          "left": 500,
+          "top": 378,
+          "width": 38,
+          "height": 49
+        },
+        "bbox": [
+          500,
+          378,
+          538,
+          427
+        ],
+        "quad": [
+          [
+            500,
+            378
+          ],
+          [
+            500,
+            427
+          ],
+          [
+            538,
+            427
+          ],
+          [
+            538,
+            378
+          ]
+        ],
+        "orientation": "bottom",
+        "occupied": true,
+        "source": "discard_parser",
+        "slot_mean_luma": 114.53398461538461,
+        "slot_bright_ratio": 0.2,
+        "slot_dark_ratio": 0.2923076923076923,
+        "slot_colorful_ratio": 0.5153846153846153,
+        "slot_stddev": 63.99241664675643,
+        "template_distance": 12.045800000000003,
+        "runner_up_tile": "9p",
+        "runner_up_distance": 73.4556,
+        "accepted": false,
+        "rejection_reason": "empty_tile_class"
+      },
+      {
+        "slot_id": "discard_self_07",
+        "group": "discard",
+        "player": "self",
+        "turn_index": 7,
+        "candidate_tile": "empty",
+        "confidence": 1.0,
+        "box": {
+          "name": "discard_self_07",
+          "left": 500,
+          "top": 427,
+          "width": 38,
+          "height": 49
+        },
+        "bbox": [
+          500,
+          427,
+          538,
+          476
+        ],
+        "quad": [
+          [
+            500,
+            427
+          ],
+          [
+            500,
+            476
+          ],
+          [
+            538,
+            476
+          ],
+          [
+            538,
+            427
+          ]
+        ],
+        "orientation": "bottom",
+        "occupied": true,
+        "source": "discard_parser",
+        "slot_mean_luma": 115.70513846153844,
+        "slot_bright_ratio": 0.23846153846153847,
+        "slot_dark_ratio": 0.18461538461538463,
+        "slot_colorful_ratio": 0.6846153846153846,
+        "slot_stddev": 53.46430610485032,
+        "template_distance": 0.0,
+        "runner_up_tile": "5z",
+        "runner_up_distance": 82.0,
+        "accepted": false,
+        "rejection_reason": "empty_tile_class"
+      },
+      {
+        "slot_id": "discard_left_opponent_08",
+        "group": "discard",
+        "player": "left_opponent",
+        "turn_index": 8,
+        "candidate_tile": "7s",
+        "confidence": 1.0,
+        "box": {
+          "name": "discard_left_opponent_08",
+          "left": 458,
+          "top": 246,
+          "width": 61,
+          "height": 40
+        },
+        "bbox": [
+          458,
+          246,
+          519,
+          286
+        ],
+        "quad": [
+          [
+            464,
+            246
+          ],
+          [
+            458,
+            286
+          ],
+          [
+            513,
+            286
+          ],
+          [
+            519,
+            246
+          ]
+        ],
+        "orientation": "left",
+        "occupied": true,
+        "source": "discard_parser",
+        "slot_mean_luma": 146.46208124999998,
+        "slot_bright_ratio": 0.44375,
+        "slot_dark_ratio": 0.16875,
+        "slot_colorful_ratio": 0.40625,
+        "slot_stddev": 64.35034129784898,
+        "template_distance": 0.0,
+        "runner_up_tile": "9s",
+        "runner_up_distance": 82.0,
+        "accepted": true
+      },
+      {
+        "slot_id": "discard_left_opponent_17",
+        "group": "discard",
+        "player": "left_opponent",
+        "turn_index": 17,
+        "candidate_tile": "empty",
+        "confidence": 0.8842,
+        "box": {
+          "name": "discard_left_opponent_17",
+          "left": 512,
+          "top": 376,
+          "width": 61,
+          "height": 40
+        },
+        "bbox": [
+          512,
+          376,
+          573,
+          416
+        ],
+        "quad": [
+          [
+            518,
+            376
+          ],
+          [
+            512,
+            416
+          ],
+          [
+            567,
+            416
+          ],
+          [
+            573,
+            376
+          ]
+        ],
+        "orientation": "left",
+        "occupied": true,
+        "source": "discard_parser",
+        "slot_mean_luma": 98.1428,
+        "slot_bright_ratio": 0.1375,
+        "slot_dark_ratio": 0.475,
+        "slot_colorful_ratio": 0.35625,
+        "slot_stddev": 59.217375517431535,
+        "template_distance": 9.495600000000001,
+        "runner_up_tile": "8p",
+        "runner_up_distance": 77.285,
+        "accepted": false,
+        "rejection_reason": "empty_tile_class"
+      },
+      {
+        "slot_id": "discard_left_opponent_18",
+        "group": "discard",
+        "player": "left_opponent",
+        "turn_index": 18,
+        "candidate_tile": "empty",
+        "confidence": 0.6506,
+        "box": {
+          "name": "discard_left_opponent_18",
+          "left": 512,
+          "top": 419,
+          "width": 61,
+          "height": 40
+        },
+        "bbox": [
+          512,
+          419,
+          573,
+          459
+        ],
+        "quad": [
+          [
+            518,
+            419
+          ],
+          [
+            512,
+            459
+          ],
+          [
+            567,
+            459
+          ],
+          [
+            573,
+            419
+          ]
+        ],
+        "orientation": "left",
+        "occupied": true,
+        "source": "discard_parser",
+        "slot_mean_luma": 126.1775375,
+        "slot_bright_ratio": 0.28125,
+        "slot_dark_ratio": 0.16875,
+        "slot_colorful_ratio": 0.61875,
+        "slot_stddev": 55.77712967022051,
+        "template_distance": 28.650800000000004,
+        "runner_up_tile": "1m",
+        "runner_up_distance": 70.6758,
+        "accepted": false,
+        "rejection_reason": "empty_tile_class"
+      },
+      {
+        "slot_id": "discard_top_opponent_04",
+        "group": "discard",
+        "player": "top_opponent",
+        "turn_index": 4,
+        "candidate_tile": "empty",
+        "confidence": 0.6202,
+        "box": {
+          "name": "discard_top_opponent_04",
+          "left": 653,
+          "top": 169,
+          "width": 38,
+          "height": 49
+        },
+        "bbox": [
+          653,
+          169,
+          691,
+          218
+        ],
+        "quad": [
+          [
+            656,
+            169
+          ],
+          [
+            653,
+            218
+          ],
+          [
+            691,
+            218
+          ],
+          [
+            688,
+            169
+          ]
+        ],
+        "orientation": "top",
+        "occupied": true,
+        "source": "discard_parser",
+        "slot_mean_luma": 104.64442307692306,
+        "slot_bright_ratio": 0.13076923076923078,
+        "slot_dark_ratio": 0.046153846153846156,
+        "slot_colorful_ratio": 0.8153846153846154,
+        "slot_stddev": 46.8567550232154,
+        "template_distance": 31.143600000000003,
+        "runner_up_tile": "4p",
+        "runner_up_distance": 63.43520000000001,
+        "accepted": false,
+        "rejection_reason": "empty_tile_class"
+      },
+      {
+        "slot_id": "discard_top_opponent_05",
+        "group": "discard",
+        "player": "top_opponent",
+        "turn_index": 5,
+        "candidate_tile": "empty",
+        "confidence": 1.0,
+        "box": {
+          "name": "discard_top_opponent_05",
+          "left": 695,
+          "top": 169,
+          "width": 38,
+          "height": 49
+        },
+        "bbox": [
+          695,
+          169,
+          733,
+          218
+        ],
+        "quad": [
+          [
+            698,
+            169
+          ],
+          [
+            695,
+            218
+          ],
+          [
+            733,
+            218
+          ],
+          [
+            730,
+            169
+          ]
+        ],
+        "orientation": "top",
+        "occupied": true,
+        "source": "discard_parser",
+        "slot_mean_luma": 123.92863846153845,
+        "slot_bright_ratio": 0.27692307692307694,
+        "slot_dark_ratio": 0.023076923076923078,
+        "slot_colorful_ratio": 0.7,
+        "slot_stddev": 61.03075425629579,
+        "template_distance": 0.0,
+        "runner_up_tile": "5z",
+        "runner_up_distance": 82.0,
+        "accepted": false,
+        "rejection_reason": "empty_tile_class"
+      },
+      {
+        "slot_id": "discard_right_opponent_05",
+        "group": "discard",
+        "player": "right_opponent",
+        "turn_index": 5,
+        "candidate_tile": "5z",
+        "confidence": 0.4596,
+        "box": {
+          "name": "discard_right_opponent_05",
+          "left": 754,
+          "top": 376,
+          "width": 61,
+          "height": 40
+        },
+        "bbox": [
+          754,
+          376,
+          815,
+          416
+        ],
+        "quad": [
+          [
+            760,
+            376
+          ],
+          [
+            754,
+            416
+          ],
+          [
+            809,
+            416
+          ],
+          [
+            815,
+            376
+          ]
+        ],
+        "orientation": "right",
+        "occupied": true,
+        "source": "discard_parser",
+        "slot_mean_luma": 133.54366875,
+        "slot_bright_ratio": 0.425,
+        "slot_dark_ratio": 0.29375,
+        "slot_colorful_ratio": 0.4625,
+        "slot_stddev": 67.67723938368441,
+        "template_distance": 44.312799999999996,
+        "runner_up_tile": "empty",
+        "runner_up_distance": 50.8892,
+        "accepted": false,
+        "rejection_reason": "low_confidence"
+      }
+    ],
+    "analysis_hints": {
+      "discard_parser_available": true,
+      "discard_parser_source": "onnx_discard_model",
+      "discard_slot_count": 72,
+      "occupied_discard_slot_count": 8,
+      "recognized_discard_tile_count": 1,
+      "discard_analysis_confidence": 1.0
+    }
+  },
+  "river_rows": [
+    {
+      "player": "self",
+      "turn_index": 1,
+      "slot_id": "discard_self_01",
+      "bbox": [
+        500,
+        378,
+        538,
+        427
+      ],
+      "occupied": true,
+      "accepted": false,
+      "candidate_tile": "empty",
+      "confidence": 0.8531,
+      "rejection_reason": "empty_tile_class",
+      "orientation": "bottom",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_self_01_discard_self_01.png"
+    },
+    {
+      "player": "self",
+      "turn_index": 7,
+      "slot_id": "discard_self_07",
+      "bbox": [
+        500,
+        427,
+        538,
+        476
+      ],
+      "occupied": true,
+      "accepted": false,
+      "candidate_tile": "empty",
+      "confidence": 1.0,
+      "rejection_reason": "empty_tile_class",
+      "orientation": "bottom",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_self_07_discard_self_07.png"
+    },
+    {
+      "player": "left_opponent",
+      "turn_index": 8,
+      "slot_id": "discard_left_opponent_08",
+      "bbox": [
+        458,
+        246,
+        519,
+        286
+      ],
+      "occupied": true,
+      "accepted": true,
+      "candidate_tile": "7s",
+      "confidence": 1.0,
+      "rejection_reason": "",
+      "orientation": "left",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_left_opponent_08_discard_left_opponent_08.png"
+    },
+    {
+      "player": "left_opponent",
+      "turn_index": 17,
+      "slot_id": "discard_left_opponent_17",
+      "bbox": [
+        512,
+        376,
+        573,
+        416
+      ],
+      "occupied": true,
+      "accepted": false,
+      "candidate_tile": "empty",
+      "confidence": 0.8842,
+      "rejection_reason": "empty_tile_class",
+      "orientation": "left",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_left_opponent_17_discard_left_opponent_17.png"
+    },
+    {
+      "player": "left_opponent",
+      "turn_index": 18,
+      "slot_id": "discard_left_opponent_18",
+      "bbox": [
+        512,
+        419,
+        573,
+        459
+      ],
+      "occupied": true,
+      "accepted": false,
+      "candidate_tile": "empty",
+      "confidence": 0.6506,
+      "rejection_reason": "empty_tile_class",
+      "orientation": "left",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_left_opponent_18_discard_left_opponent_18.png"
+    },
+    {
+      "player": "top_opponent",
+      "turn_index": 4,
+      "slot_id": "discard_top_opponent_04",
+      "bbox": [
+        653,
+        169,
+        691,
+        218
+      ],
+      "occupied": true,
+      "accepted": false,
+      "candidate_tile": "empty",
+      "confidence": 0.6202,
+      "rejection_reason": "empty_tile_class",
+      "orientation": "top",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_top_opponent_04_discard_top_opponent_04.png"
+    },
+    {
+      "player": "top_opponent",
+      "turn_index": 5,
+      "slot_id": "discard_top_opponent_05",
+      "bbox": [
+        695,
+        169,
+        733,
+        218
+      ],
+      "occupied": true,
+      "accepted": false,
+      "candidate_tile": "empty",
+      "confidence": 1.0,
+      "rejection_reason": "empty_tile_class",
+      "orientation": "top",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_top_opponent_05_discard_top_opponent_05.png"
+    },
+    {
+      "player": "right_opponent",
+      "turn_index": 5,
+      "slot_id": "discard_right_opponent_05",
+      "bbox": [
+        754,
+        376,
+        815,
+        416
+      ],
+      "occupied": true,
+      "accepted": false,
+      "candidate_tile": "5z",
+      "confidence": 0.4596,
+      "rejection_reason": "low_confidence",
+      "orientation": "right",
+      "crop_path": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_right_opponent_05_discard_right_opponent_05.png"
+    }
+  ],
+  "outputs": [
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\00_input_as_received.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\01_input_marked.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\02_hand_slots_overlay.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\03_hand_crops_contact_sheet.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\04_river_occupied_slots_overlay.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\05_river_crops_contact_sheet.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_01_hand_1.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_02_hand_2.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_03_hand_3.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_04_hand_4.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_05_hand_5.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_06_hand_6.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_07_hand_7.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_08_hand_8.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_09_hand_9.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_10_hand_10.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_11_hand_11.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_12_hand_12.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_13_hand_13.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\hand_14_hand_14.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_left_opponent_08_discard_left_opponent_08.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_left_opponent_17_discard_left_opponent_17.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_left_opponent_18_discard_left_opponent_18.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_right_opponent_05_discard_right_opponent_05.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_self_01_discard_self_01.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_self_07_discard_self_07.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_top_opponent_04_discard_top_opponent_04.png",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\mahjong-coach-followup-20260616\\plugin\\plugins\\mahjong_coach\\data\\diagnostics\\clipboard-13356f8c\\river_top_opponent_05_discard_top_opponent_05.png"
+  ]
+}
