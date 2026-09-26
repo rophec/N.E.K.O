@@ -1,0 +1,69 @@
+[plugin]
+id = "mahjong_coach"
+name = "Mahjong Coach"
+description = "A screenshot-only Mahjong Soul banter companion that reacts to public table events without gameplay recommendations."
+short_description = "Mahjong Soul event observer and banter companion."
+keywords = ["mahjong", "majsoul", "coach", "screenshot"]
+version = "0.3.31"
+type = "plugin"
+entry = "plugin.plugins.mahjong_coach:MahjongCoachPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.store]
+enabled = false
+
+[plugin.ui]
+enabled = true
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[decision]
+live_advice_mode = "companion"
+neko_companion_enabled = true
+absurd_banter_enabled = false
+coach_checkpoint_self_turns = 3
+critical_action_interrupts = true
+per_turn_discard_prompt = false
+play_style = "riichi"
+strategy_preset = "simple"
+
+[profile]
+rank = "unknown"
+room = "unknown"
+risk_tolerance = "balanced"
+goal_bias = "balanced"
+call_bias = "closed"
+source = "manual"
+
+[perception]
+hand_recognition_backend = "legacy_templates"
+onnx_hand_enabled = false
+meld_recognition_enabled = true
+meld_min_confidence = 0.72
+river_recognition_enabled = true
+river_tracking_mode = "checkpoint"
+river_min_confidence = 0.90
+tile_recognition_mode = "yolo26"
+inference_provider = "speed"
+opponent_riichi_recognition_enabled = true
+settlement_recognition_enabled = true
+settlement_min_confidence = 0.72
+settlement_confirm_frames = 2
+settlement_confirm_max_gap_ms = 2500
+
+[live]
+window_keywords = ["雀魂", "Mahjong Soul"]
+interval_ms = 400
+fast_interval_ms = 300
+keep_frames = 0
+checkpoint_interval_seconds = 20
+overlay_enabled = true
+save_format = "jpg"
