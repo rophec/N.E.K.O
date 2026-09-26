@@ -1,4 +1,19 @@
-# Live2D models
+---
+title: Live2D AI Companion | Project N.E.K.O.
+titleTemplate: false
+description: Use Live2D in the Project N.E.K.O. AI companion, including Cubism model loading, emotion-to-motion mapping, user imports, Workshop assets, and APIs.
+seoFaq:
+  - question: Can Project N.E.K.O. be used as a Live2D AI companion?
+    answer: Yes. N.E.K.O. renders Live2D Cubism models in its main desktop-pet interface and connects conversation emotions to configured motions and expressions.
+  - question: Can I import my own Live2D model into N.E.K.O.?
+    answer: Yes. The model manager and Live2D APIs support user model imports. The Cubism model file and its referenced textures, motions, expressions, and physics files must keep their relative directory structure.
+  - question: Does the Live2D avatar also appear in the chat and subtitle windows?
+    answer: No. The avatar renders in the main page and Electron pet window. The standalone chat and subtitle pages intentionally do not initialize a second Live2D renderer.
+---
+
+# Live2D AI companion
+
+Project N.E.K.O. can run as a **Live2D AI companion**: the main desktop-pet interface renders a Cubism character and maps conversational emotions to configured motions and expressions. This page explains both the user-facing avatar capability and the current developer interfaces behind it.
 
 ## Runtime
 
@@ -65,3 +80,19 @@ ID-based variants (`model_config_by_id` and `model_files_by_id`) support Worksho
 ## Host boundary
 
 Live2D assets and initialization run in `index.html`, including the Electron pet window that loads that template. Standalone `/chat` and `/subtitle` pages do not render a second avatar. Cross-window commands must be forwarded to the main page rather than initializing another Live2D manager.
+
+## Frequently asked questions
+
+### Can Project N.E.K.O. be used as a Live2D AI companion?
+
+Yes. N.E.K.O. renders Live2D Cubism models in its main desktop-pet interface and connects conversation emotions to configured motions and expressions.
+
+### Can I import my own Live2D model into N.E.K.O.?
+
+Yes. The model manager and Live2D APIs support user model imports. The Cubism model file and its referenced textures, motions, expressions, and physics files must keep their relative directory structure.
+
+### Does the Live2D avatar also appear in the chat and subtitle windows?
+
+No. The avatar renders in the main page and Electron pet window. The standalone chat and subtitle pages intentionally do not initialize a second Live2D renderer.
+
+Explore the full [AI desktop pet and open-source companion overview](/guide/ai-desktop-pet), compare [VRM avatars](./vrm), or [view Project N.E.K.O. on Steam](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=avatar_features&utm_content=live2d_en).

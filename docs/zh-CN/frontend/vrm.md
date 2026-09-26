@@ -1,4 +1,19 @@
-# VRM 模型
+---
+title: VRM AI 虚拟伴侣｜Project N.E.K.O.
+titleTemplate: false
+description: 了解 Project N.E.K.O. VRM AI 虚拟伴侣的 VRM 与 VRMA 导入、情绪映射、光照、VMC 动作输出及模型 API。
+seoFaq:
+  - question: Project N.E.K.O. 可以使用 VRM 形象作为 AI 虚拟伴侣吗？
+    answer: 可以。N.E.K.O. 使用 Three.js 与 three-vrm 渲染 VRM 形象，把对话情绪连接到模型表情，并支持 VRMA 动画文件。
+  - question: 可以上传自己的 VRM 模型和动画吗？
+    answer: 可以。N.E.K.O. 通过模型 API 接收 VRM 模型与 VRMA 动画，每个上传文件上限为 200 MB。
+  - question: N.E.K.O. 能把 VRM 动作发送给其他应用吗？
+    answer: 可以。可选 VMC 输出能通过 WebSocket 到 OSC 的流水线，把当前人形姿态发送给兼容 VMC Protocol 的接收端。
+---
+
+# VRM AI 虚拟伴侣
+
+Project N.E.K.O. 支持以 3D 人形 Avatar 构建 **VRM AI 虚拟伴侣**，包括情绪联动表情、VRMA 动画、可配置光照和可选 VMC 动作输出。本页说明当前模型流水线与 API。
 
 ## 运行时与格式
 
@@ -82,3 +97,19 @@ VMC 根节点独立于 `vrm.scene`，因此桌宠布局变换不会被导出。�
 ## 宿主边界
 
 VRM 在 `index.html` 中渲染，也包括 Electron 桌宠窗口。独立聊天与字幕模板有意不创建第二个 VRM 场景；原生窗口通过共享跨窗口桥接与主页面协调。
+
+## 常见问题
+
+### Project N.E.K.O. 可以使用 VRM 形象作为 AI 虚拟伴侣吗？
+
+可以。N.E.K.O. 使用 Three.js 与 `three-vrm` 渲染 VRM 形象，把对话情绪连接到模型表情，并支持 VRMA 动画文件。
+
+### 可以上传自己的 VRM 模型和动画吗？
+
+可以。N.E.K.O. 通过模型 API 接收 VRM 模型与 VRMA 动画，每个上传文件上限为 200 MB。
+
+### N.E.K.O. 能把 VRM 动作发送给其他应用吗？
+
+可以。可选 VMC 输出能通过 WebSocket 到 OSC 的流水线，把当前人形姿态发送给兼容 VMC Protocol 的接收端。
+
+继续阅读 [AI 桌宠与虚拟伴侣总览](/zh-CN/guide/ai-desktop-pet)，对比 [Live2D 形象](./live2d)，或[前往 Steam 查看 Project N.E.K.O.](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=avatar_features&utm_content=vrm_zh_cn)。

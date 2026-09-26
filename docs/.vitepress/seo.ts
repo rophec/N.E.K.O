@@ -19,6 +19,11 @@ type LocaleDefinition = (typeof LOCALES)[number]
 type LocaleKey = LocaleDefinition['key']
 type PageSchemaType = 'WebPage' | 'CollectionPage' | 'TechArticle'
 
+interface SeoFaqItem {
+  question: string
+  answer: string
+}
+
 interface AlternatePage {
   locale: LocaleDefinition
   route: string
@@ -426,9 +431,42 @@ function pageStructuredData(
       }
   if (dateModified) page.dateModified = dateModified
 
+  const faqItems = Array.isArray(context.pageData.frontmatter.seoFaq)
+    ? context.pageData.frontmatter.seoFaq.flatMap((item: unknown) => {
+        if (!item || typeof item !== 'object') return []
+        const question = 'question' in item && typeof item.question === 'string'
+          ? item.question.trim()
+          : ''
+        const answer = 'answer' in item && typeof item.answer === 'string'
+          ? item.answer.trim()
+          : ''
+        return question && answer ? [{ question, answer }] : []
+      }) as SeoFaqItem[]
+    : []
+
+  const faq = faqItems.length
+    ? {
+        '@type': 'FAQPage',
+        '@id': `${canonical}#faq`,
+        inLanguage: locale.htmlLang,
+        mainEntity: faqItems.map((item) => ({
+          '@type': 'Question',
+          name: item.question,
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: item.answer,
+          },
+        })),
+      }
+    : undefined
+
+  const graph = [page]
+  if (breadcrumb) graph.push(breadcrumb)
+  if (faq) graph.push(faq)
+
   return {
     '@context': 'https://schema.org',
-    '@graph': breadcrumb ? [page, breadcrumb] : [page],
+    '@graph': graph,
   }
 }
 

@@ -1,4 +1,19 @@
-# Memory System
+---
+title: AI Companion with Long Term Memory | N.E.K.O.
+titleTemplate: false
+description: How Project N.E.K.O. gives each AI companion long-term memory through recent context, facts, reflections, persona knowledge, local storage, and recall.
+seoFaq:
+  - question: Does the Project N.E.K.O. AI companion have long-term memory?
+    answer: Yes. Each character has recent memory, extracted facts, reflections, persona knowledge, and explicit recall paths, with different retention and prompt-injection rules.
+  - question: Is N.E.K.O. memory just a vector database?
+    answer: No. N.E.K.O. uses structured local stores and BM25 retrieval as core paths. Optional local embeddings can assist semantic matching, but memory continues to work without vector support.
+  - question: Is long-term memory stored locally?
+    answer: Memory files are stored locally by default. However, configured providers may receive relevant conversation or memory text when summaries, extraction, reflection, correction, or active conversation tasks run.
+  - question: Is memory shared between N.E.K.O. characters?
+    answer: No by default. Memory stores and their recent-history and database paths are scoped by the character name.
+---
+
+# AI companion with long term memory
 
 N.E.K.O.'s memory is a per-character pipeline, not a single vector database. It keeps a bounded working context for the next conversation, a chronological record of turns, extracted facts, higher-level reflections, and durable persona knowledge. These layers have different write paths, retention rules, and prompt-injection behavior.
 
@@ -208,3 +223,23 @@ Open `http://localhost:48911/memory_browser` to browse and edit **recent convers
 For the user-facing main-server routes, see the [Memory REST API](/api/rest/memory). For service-to-service details, see the [Memory Server API](/api/memory-server). Internal memory-server paths such as `/cache`, `/process`, `/settle`, `/new_dialog`, and `/query_memory` are implementation interfaces between N.E.K.O. processes, not externally supported public endpoints.
 
 For the user-level boundary between local storage and provider processing, read [Where does N.E.K.O send conversations and memory?](/guide/data-and-privacy) and [Can N.E.K.O run completely offline?](/guide/local-and-offline).
+
+## Frequently asked questions
+
+### Does the Project N.E.K.O. AI companion have long-term memory?
+
+Yes. Each character has recent memory, extracted facts, reflections, persona knowledge, and explicit recall paths, with different retention and prompt-injection rules.
+
+### Is N.E.K.O. memory just a vector database?
+
+No. N.E.K.O. uses structured local stores and BM25 retrieval as core paths. Optional local embeddings can assist semantic matching, but memory continues to work without vector support.
+
+### Is long-term memory stored locally?
+
+Memory files are stored locally by default. However, configured providers may receive relevant conversation or memory text when summaries, extraction, reflection, correction, or active conversation tasks run.
+
+### Is memory shared between N.E.K.O. characters?
+
+No by default. Memory stores and their recent-history and database paths are scoped by the character name.
+
+See how memory fits into the complete [AI desktop pet and open-source companion](/guide/ai-desktop-pet), or [view N.E.K.O. on Steam](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=memory_features&utm_content=memory_en).

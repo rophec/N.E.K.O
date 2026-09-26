@@ -26,6 +26,11 @@ hero:
       link: https://github.com/Project-N-E-K-O/N.E.K.O
 
 features:
+  - icon: 🐈
+    title: 开源 AI 桌宠与虚拟伴侣
+    details: 支持动画形象、语音文字对话、持久记忆、可选 Agent 与开放插件系统的猫娘桌面宠物。
+    link: /zh-CN/guide/ai-desktop-pet
+    linkText: 了解 AI 桌面宠物
   - icon: 🎮
     title: Steam 创意工坊与社区
     details: 已上架 Steam，创意工坊支持分享角色卡、受支持的 Avatar 资源、预览图与可选参考语音。

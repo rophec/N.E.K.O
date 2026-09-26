@@ -26,6 +26,11 @@ hero:
       link: https://github.com/Project-N-E-K-O/N.E.K.O
 
 features:
+  - icon: 🐈
+    title: Open-Source AI Desktop Pet
+    details: A Neko desktop pet with animated avatars, voice and text conversation, persistent memory, optional agents, and an open plugin system.
+    link: /guide/ai-desktop-pet
+    linkText: See the AI companion
   - icon: 🎮
     title: Steam Workshop & Community
     details: Available on Steam with Workshop support for sharing character cards, supported avatar assets, previews, and optional reference voice samples.

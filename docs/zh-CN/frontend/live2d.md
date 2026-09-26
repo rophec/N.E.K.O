@@ -1,4 +1,19 @@
-# Live2D 模型
+---
+title: Live2D AI 助手与桌宠｜Project N.E.K.O.
+titleTemplate: false
+description: 了解 Project N.E.K.O. Live2D AI 助手与桌宠的 Cubism 模型加载、情绪动作映射、用户导入、创意工坊资源及 API。
+seoFaq:
+  - question: Project N.E.K.O. 可以作为 Live2D AI 桌宠吗？
+    answer: 可以。N.E.K.O. 在主桌宠界面渲染 Live2D Cubism 模型，并把对话情绪连接到配置的动作和表情。
+  - question: 可以把自己的 Live2D 模型导入 N.E.K.O. 吗？
+    answer: 可以。模型管理器和 Live2D API 支持导入用户模型；Cubism 模型文件与它引用的纹理、动作、表情和物理文件必须保持相对目录结构。
+  - question: 独立聊天和字幕窗口也会显示 Live2D 角色吗？
+    answer: 不会。角色在主页面和 Electron 桌宠窗口中渲染，独立聊天与字幕页面不会再初始化第二套 Live2D 渲染器。
+---
+
+# Live2D AI 助手与桌宠
+
+Project N.E.K.O. 可以作为 **Live2D AI 助手和桌宠**运行：主桌宠界面负责渲染 Cubism 角色，并将对话中的情绪映射到配置的动作与表情。本页同时说明用户可见的形象能力和当前开发接口。
 
 ## 运行时
 
@@ -65,3 +80,19 @@ ID 版本（`model_config_by_id` 与 `model_files_by_id`）用于以发布物品
 ## 宿主边界
 
 Live2D 资源与初始化运行在 `index.html` 中，也包括加载该模板的 Electron 桌宠窗口。独立 `/chat` 与 `/subtitle` 页面不会渲染第二个角色；跨窗口命令应转发给主页面，而不是再初始化一个 Live2D 管理器。
+
+## 常见问题
+
+### Project N.E.K.O. 可以作为 Live2D AI 桌宠吗？
+
+可以。N.E.K.O. 在主桌宠界面渲染 Live2D Cubism 模型，并把对话情绪连接到配置的动作和表情。
+
+### 可以把自己的 Live2D 模型导入 N.E.K.O. 吗？
+
+可以。模型管理器和 Live2D API 支持导入用户模型；Cubism 模型文件与它引用的纹理、动作、表情和物理文件必须保持相对目录结构。
+
+### 独立聊天和字幕窗口也会显示 Live2D 角色吗？
+
+不会。角色在主页面和 Electron 桌宠窗口中渲染，独立聊天与字幕页面不会再初始化第二套 Live2D 渲染器。
+
+继续阅读 [AI 桌宠与虚拟伴侣总览](/zh-CN/guide/ai-desktop-pet)，对比 [VRM 形象](./vrm)，或[前往 Steam 查看 Project N.E.K.O.](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=avatar_features&utm_content=live2d_zh_cn)。

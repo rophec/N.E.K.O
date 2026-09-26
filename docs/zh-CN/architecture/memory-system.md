@@ -1,4 +1,19 @@
-# 记忆系统
+---
+title: 具备长期记忆的 AI 伴侣｜Project N.E.K.O.
+titleTemplate: false
+description: Project N.E.K.O. 如何通过近期上下文、事实、反思、Persona 知识、本地存储与召回，为 AI 伴侣提供长期记忆。
+seoFaq:
+  - question: Project N.E.K.O. AI 伴侣有长期记忆吗？
+    answer: 有。每个角色都有近期记忆、抽取事实、反思、Persona 知识和显式召回路径，各层采用不同的保留与提示词注入规则。
+  - question: N.E.K.O. 记忆只是向量数据库吗？
+    answer: 不是。N.E.K.O. 的核心路径使用结构化本地存储与 BM25 检索；可选的本地 Embedding 能辅助语义匹配，但没有向量支持时记忆仍可工作。
+  - question: 长期记忆保存在本机吗？
+    answer: 记忆文件默认保存在本机；但执行摘要、抽取、反思、纠错或当前对话任务时，配置的 Provider 可能收到相关对话或记忆文本。
+  - question: 不同 N.E.K.O. 角色会共享记忆吗？
+    answer: 默认不会。记忆存储、近期历史与数据库路径都按角色名称隔离。
+---
+
+# 具备长期记忆的 AI 伴侣
 
 N.E.K.O. 的记忆不是单一向量数据库，而是一条按角色隔离的处理流水线。它同时维护下一轮对话所需的有限工作上下文、按时间排列的对话原文、提取出的事实、更高层的反思，以及持久的人格知识。这些层的写入路径、保留规则和提示词注入方式各不相同。
 
@@ -208,3 +223,23 @@ JSON 视图文件仍是可编辑状态，因此这里不是完整事件溯源。
 面向用户的主服务器路由请参阅[记忆 REST API](/zh-CN/api/rest/memory)。进程间接口请参阅[记忆服务器 API](/zh-CN/api/memory-server)。`/cache`、`/process`、`/settle`、`/new_dialog` 和 `/query_memory` 等内部记忆服务器路径属于 N.E.K.O. 进程之间的实现接口，不是对外承诺兼容的公共端点。
 
 关于本地存储与 Provider 处理的用户层边界，请阅读[对话与记忆的数据流向](/zh-CN/guide/data-and-privacy)和[本地与离线边界](/zh-CN/guide/local-and-offline)。
+
+## 常见问题
+
+### Project N.E.K.O. AI 伴侣有长期记忆吗？
+
+有。每个角色都有近期记忆、抽取事实、反思、Persona 知识和显式召回路径，各层采用不同的保留与提示词注入规则。
+
+### N.E.K.O. 记忆只是向量数据库吗？
+
+不是。N.E.K.O. 的核心路径使用结构化本地存储与 BM25 检索；可选的本地 Embedding 能辅助语义匹配，但没有向量支持时记忆仍可工作。
+
+### 长期记忆保存在本机吗？
+
+记忆文件默认保存在本机；但执行摘要、抽取、反思、纠错或当前对话任务时，配置的 Provider 可能收到相关对话或记忆文本。
+
+### 不同 N.E.K.O. 角色会共享记忆吗？
+
+默认不会。记忆存储、近期历史与数据库路径都按角色名称隔离。
+
+继续了解完整的 [AI 桌宠与虚拟伴侣](/zh-CN/guide/ai-desktop-pet)，或[前往 Steam 查看 N.E.K.O.](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=memory_features&utm_content=memory_zh_cn)。

@@ -16,6 +16,7 @@ Project N.E.K.O. is an open-source AI companion platform with avatar rendering, 
 
 | Question | Buyer guide |
 | --- | --- |
+| What is N.E.K.O. as a desktop product? | [AI desktop pet and open-source companion](./ai-desktop-pet) |
 | Is the app free, and what can AI services cost? | [Cost and providers](./cost-and-providers) |
 | Can it run completely offline? | [Local and offline boundaries](./local-and-offline) |
 | Where can conversations and memory be sent? | [Technical data flow and privacy controls](./data-and-privacy) |

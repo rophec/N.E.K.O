@@ -6,6 +6,30 @@
   "serpDepth": 100,
   "keywords": [
     {
+      "keyword": "AI桌宠",
+      "landingPage": "/zh-CN/guide/ai-desktop-pet",
+      "intent": "BOFU 核心品类词",
+      "cta": "阅读 AI 桌宠总览 → Steam"
+    },
+    {
+      "keyword": "AI桌面宠物",
+      "landingPage": "/zh-CN/guide/ai-desktop-pet",
+      "intent": "BOFU 核心品类词",
+      "cta": "阅读 AI 桌宠总览 → Steam"
+    },
+    {
+      "keyword": "猫娘桌宠",
+      "landingPage": "/zh-CN/guide/ai-desktop-pet",
+      "intent": "BOFU 角色桌宠词",
+      "cta": "阅读 AI 桌宠总览 → Steam"
+    },
+    {
+      "keyword": "虚拟伴侣 AI",
+      "landingPage": "/zh-CN/guide/ai-desktop-pet",
+      "intent": "MOFU 虚拟伴侣词",
+      "cta": "阅读 AI 桌宠总览 → Steam"
+    },
+    {
       "keyword": "本地 AI 助手",
       "landingPage": "/zh-CN/guide/local-and-offline",
       "intent": "MOFU 本地部署教程",

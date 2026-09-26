@@ -55,7 +55,7 @@
       "gsc": {
         "siteUrlEnv": "GSC_SITE_URL",
         "defaultSiteUrl": "https://project-neko.online/",
-        "categoryQueryRegex": "(?:ai\\s+desktop\\s+pet|desktop\\s+ai\\s+companion|ai\\s+desktop\\s+companion|desktop\\s+companion|desktop\\s+pet|ai桌宠|开源ai桌宠|ai桌面伴侣|桌面ai伴侣|本地\\s*AI\\s*助手|Live2D\\s*AI\\s*助手|长期记忆\\s*AI\\s*助手)",
+        "categoryQueryRegex": "(?:ai\\s+desktop\\s+pet|neko\\s+desktop\\s+pet|desktop\\s+pet\\s+with\\s+ai|open\\s+source\\s+ai\\s+companion|live2d\\s+ai\\s+companion|ai\\s+companion\\s+vrm|ai\\s+companion\\s+with\\s+long[-\\s]+term\\s+memory|desktop\\s+ai\\s+companion|ai\\s+desktop\\s+companion|desktop\\s+companion|desktop\\s+pet|ai\\s*桌宠|ai\\s*桌面宠物|猫娘桌宠|虚拟伴侣\\s*ai|开源ai桌宠|ai桌面伴侣|桌面ai伴侣|本地\\s*AI\\s*助手|Live2D\\s*AI\\s*助手|长期记忆\\s*AI\\s*助手)",
         "lowCtrThreshold": 0.03,
         "lowCtrMinImpressions": 10
       },

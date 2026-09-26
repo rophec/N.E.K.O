@@ -28,7 +28,7 @@ test('committed configs keep each location/language/domain segment fixed', async
 
   assert.deepEqual(
     [onlineEn.targetDomain, onlineEn.locationCode, onlineEn.languageCode, onlineEn.serpDepth, onlineEn.keywords.length],
-    ['project-neko.online', 2840, 'en', 100, 19],
+    ['project-neko.online', 2840, 'en', 100, 24],
   )
   assert.deepEqual(
     [cn.targetDomain, cn.locationCode, cn.languageCode, cn.serpDepth, cn.keywords.length],
@@ -36,8 +36,45 @@ test('committed configs keep each location/language/domain segment fixed', async
   )
   assert.deepEqual(
     [onlineZh.targetDomain, onlineZh.locationCode, onlineZh.languageCode, onlineZh.serpDepth, onlineZh.keywords.length],
-    ['project-neko.online', 2156, 'zh-CN', 100, 3],
+    ['project-neko.online', 2156, 'zh-CN', 100, 7],
   )
+})
+
+test('broad discovery queries map to one intent-matched landing page', async () => {
+  const [onlineEn, onlineZh] = await Promise.all([
+    readConfig('dataforseo.config.json'),
+    readConfig('dataforseo.online-zh.config.json'),
+  ])
+  const englishMappings = new Map(
+    onlineEn.keywords.map(item => [item.keyword.toLowerCase(), item.landingPage]),
+  )
+  const chineseMappings = new Map(
+    onlineZh.keywords.map(item => [item.keyword, item.landingPage]),
+  )
+
+  const expectedEnglish = {
+    'ai desktop pet': '/guide/ai-desktop-pet',
+    'neko desktop pet': '/guide/ai-desktop-pet',
+    'open source ai companion': '/guide/ai-desktop-pet',
+    'desktop pet with ai': '/guide/ai-desktop-pet',
+    'live2d ai companion': '/frontend/live2d',
+    'ai companion vrm': '/frontend/vrm',
+    'ai companion with long term memory': '/architecture/memory-system',
+  }
+  const expectedChinese = {
+    'AI桌宠': '/zh-CN/guide/ai-desktop-pet',
+    'AI桌面宠物': '/zh-CN/guide/ai-desktop-pet',
+    '猫娘桌宠': '/zh-CN/guide/ai-desktop-pet',
+    '虚拟伴侣 AI': '/zh-CN/guide/ai-desktop-pet',
+    '本地 AI 助手': '/zh-CN/guide/local-and-offline',
+  }
+
+  for (const [keyword, landingPage] of Object.entries(expectedEnglish)) {
+    assert.equal(englishMappings.get(keyword), landingPage)
+  }
+  for (const [keyword, landingPage] of Object.entries(expectedChinese)) {
+    assert.equal(chineseMappings.get(keyword), landingPage)
+  }
 })
 
 test('three feature queries track both the .cn homepage and their concrete documentation pages', async () => {
@@ -86,7 +123,21 @@ test('monitoring config binds both sites and all three DataForSEO segments', asy
 test('GSC category matching retains English and Chinese product terms', async () => {
   const config = await readMonitoringConfig()
   const patterns = config.sites.map(site => new RegExp(site.gsc.categoryQueryRegex, 'iu'))
-  for (const query of ['best AI desktop pet', 'AI桌宠', 'AI 桌面助手', '长期记忆 AI 助手']) {
+  for (const query of [
+    'AI desktop pet',
+    'neko desktop pet',
+    'open source AI companion',
+    'AI companion with long term memory',
+    'Live2D AI companion',
+    'AI companion VRM',
+    'desktop pet with AI',
+    'AI桌宠',
+    'AI桌面宠物',
+    '猫娘桌宠',
+    '虚拟伴侣 AI',
+    '本地 AI 助手',
+    '长期记忆 AI 助手',
+  ]) {
     assert.equal(patterns.some(pattern => pattern.test(query)), true, `${query} must match a site segment`)
   }
   assert.equal(patterns.some(pattern => pattern.test('python api framework')), false)

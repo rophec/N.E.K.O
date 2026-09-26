@@ -1,4 +1,19 @@
-# VRM models
+---
+title: AI Companion with VRM Avatars | Project N.E.K.O.
+titleTemplate: false
+description: Explore AI companion VRM support in Project N.E.K.O., including VRM and VRMA imports, emotion mapping, lighting, VMC motion output, and model APIs.
+seoFaq:
+  - question: Can Project N.E.K.O. use a VRM avatar as an AI companion?
+    answer: Yes. N.E.K.O. renders VRM avatars with Three.js and three-vrm, connects conversation emotions to model expressions, and supports VRMA animation files.
+  - question: Can I upload my own VRM model and animations?
+    answer: Yes. N.E.K.O. accepts VRM models and VRMA animations through its model APIs, with a 200 MB limit per uploaded file.
+  - question: Can N.E.K.O. send VRM motion to another application?
+    answer: Yes. Optional VMC output can publish the active humanoid pose through a WebSocket-to-OSC pipeline to a VMC-compatible receiver.
+---
+
+# AI companion with VRM avatars
+
+Project N.E.K.O. supports a **VRM AI companion** experience with 3D humanoid avatars, emotion-linked expressions, VRMA animations, configurable lighting, and optional VMC motion output. This page documents the current model pipeline and APIs.
 
 ## Runtime and formats
 
@@ -82,3 +97,19 @@ The current renderer clamps frame delta after long stalls, reduces imported spri
 ## Host boundary
 
 VRM renders in `index.html`, including the Electron pet window. The standalone chat and subtitle templates intentionally provide no second VRM scene; native windows use the shared cross-window bridge to coordinate with the main page.
+
+## Frequently asked questions
+
+### Can Project N.E.K.O. use a VRM avatar as an AI companion?
+
+Yes. N.E.K.O. renders VRM avatars with Three.js and `three-vrm`, connects conversation emotions to model expressions, and supports VRMA animation files.
+
+### Can I upload my own VRM model and animations?
+
+Yes. N.E.K.O. accepts VRM models and VRMA animations through its model APIs, with a 200 MB limit per uploaded file.
+
+### Can N.E.K.O. send VRM motion to another application?
+
+Yes. Optional VMC output can publish the active humanoid pose through a WebSocket-to-OSC pipeline to a VMC-compatible receiver.
+
+Explore the [AI desktop pet and open-source companion overview](/guide/ai-desktop-pet), compare [Live2D avatars](./live2d), or [view Project N.E.K.O. on Steam](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=avatar_features&utm_content=vrm_en).

@@ -1,12 +1,20 @@
 ---
-title: N.E.K.O 能完全离线运行吗，哪些组件仍需要联网？
-description: 了解 Project N.E.K.O 哪些组件在本地存储或运行、哪些功能会连接远端服务，以及为什么 OmniOfflineClient 不代表断网模式。
+title: N.E.K.O. 本地 AI 助手与离线运行边界
+titleTemplate: false
+description: 了解 Project N.E.K.O. 本地 AI 助手哪些组件在本机运行、哪些功能连接远端服务，以及为什么 OfflineClient 仍需模型端点。
 seoSchemaType: WebPage
+seoFaq:
+  - question: Project N.E.K.O. 是完全本地的 AI 助手吗？
+    answer: 默认不是。界面与记忆存储在本机，部分端点可以自托管，但常用模型、语音、Steam、浏览器、信息源和 Agent 功能仍可能访问网络服务。
+  - question: OmniOfflineClient 是否代表 N.E.K.O. 可以断网工作？
+    answer: 不代表。OmniOfflineClient 指非 Realtime 的文本 Chat Completions 路径，它仍会调用配置的模型端点。
+  - question: 哪些能力默认保留在本机？
+    answer: 主界面、Avatar 渲染、按角色记忆文件、BM25 检索与可选 CPU ONNX Embedding 默认在本机运行或保存。
 ---
 
-# N.E.K.O 能完全离线运行吗，哪些组件仍需要联网？
+# N.E.K.O. 本地 AI 助手与离线运行边界
 
-N.E.K.O 目前不是开箱即用的完全离线产品。界面和默认记忆存储在本机，部分组件可以自托管；但常用的免费路径，以及许多模型、语音、Steam、Cloud、Workshop、在线内容、浏览器和 Agent 功能仍需要网络。
+N.E.K.O. 可以配置为更本地化的 **AI 助手**，但目前不是开箱即用的完全离线产品。界面和默认记忆存储在本机，部分组件可以自托管；常用免费路径，以及许多模型、语音、Steam、Cloud、Workshop、在线内容、浏览器和 Agent 功能仍需要网络。
 
 事实最后核验于 **2026-07-23**。
 
@@ -86,3 +94,19 @@ Project N.E.K.O 当前没有一个经过验证、可以一次完成上述工作�
 - [TTS 流水线](/zh-CN/architecture/tts-pipeline)
 - [部署概览](/zh-CN/deployment/)
 - [费用与 Provider 选择](./cost-and-providers)
+
+## 常见问题
+
+### Project N.E.K.O. 是完全本地的 AI 助手吗？
+
+默认不是。界面与记忆存储在本机，部分端点可以自托管，但常用模型、语音、Steam、浏览器、信息源和 Agent 功能仍可能访问网络服务。
+
+### OmniOfflineClient 是否代表 N.E.K.O. 可以断网工作？
+
+不代表。`OmniOfflineClient` 指非 Realtime 的文本 Chat Completions 路径，它仍会调用配置的模型端点。
+
+### 哪些能力默认保留在本机？
+
+主界面、Avatar 渲染、按角色记忆文件、BM25 检索与可选 CPU ONNX Embedding 默认在本机运行或保存。
+
+继续了解这些边界在完整 [AI 桌宠与虚拟伴侣](/zh-CN/guide/ai-desktop-pet)中的位置。

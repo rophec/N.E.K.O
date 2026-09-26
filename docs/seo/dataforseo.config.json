@@ -7,7 +7,7 @@
   "keywords": [
     {
       "keyword": "open source ai companion",
-      "landingPage": "/",
+      "landingPage": "/guide/ai-desktop-pet",
       "intent": "BOFU category"
     },
     {
@@ -27,7 +27,17 @@
     },
     {
       "keyword": "ai desktop pet",
-      "landingPage": "/",
+      "landingPage": "/guide/ai-desktop-pet",
+      "intent": "BOFU category"
+    },
+    {
+      "keyword": "neko desktop pet",
+      "landingPage": "/guide/ai-desktop-pet",
+      "intent": "BOFU category"
+    },
+    {
+      "keyword": "desktop pet with ai",
+      "landingPage": "/guide/ai-desktop-pet",
       "intent": "BOFU category"
     },
     {
@@ -81,6 +91,11 @@
       "intent": "MOFU feature"
     },
     {
+      "keyword": "live2d ai companion",
+      "landingPage": "/frontend/live2d",
+      "intent": "MOFU feature"
+    },
+    {
       "keyword": "live2d ai assistant",
       "landingPage": "/frontend/live2d",
       "intent": "MOFU feature"
@@ -88,6 +103,16 @@
     {
       "keyword": "ai companion long term memory",
       "landingPage": "/architecture/memory-system",
+      "intent": "MOFU feature"
+    },
+    {
+      "keyword": "ai companion with long term memory",
+      "landingPage": "/architecture/memory-system",
+      "intent": "MOFU feature"
+    },
+    {
+      "keyword": "ai companion vrm",
+      "landingPage": "/frontend/vrm",
       "intent": "MOFU feature"
     },
     {

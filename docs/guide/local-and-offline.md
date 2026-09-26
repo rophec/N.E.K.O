@@ -1,12 +1,20 @@
 ---
-title: Can N.E.K.O run completely offline?
-description: See which Project N.E.K.O components store or run locally, which features contact remote services, and why OmniOfflineClient is not a no-network mode.
+title: Local AI Assistant and Offline Boundaries | N.E.K.O.
+titleTemplate: false
+description: See which Project N.E.K.O. local AI assistant components run on-device, which features contact remote services, and why OfflineClient still needs a model endpoint.
 seoSchemaType: WebPage
+seoFaq:
+  - question: Is Project N.E.K.O. a fully local AI assistant?
+    answer: Not by default. Its interface and memory storage are local, and selected endpoints can be self-hosted, but common model, voice, Steam, browser, feed, and agent features may contact network services.
+  - question: Does OmniOfflineClient mean N.E.K.O. works without a network?
+    answer: No. OmniOfflineClient names the non-realtime text Chat Completions path. It still calls the configured model endpoint.
+  - question: What remains local by default?
+    answer: The main interface, avatar rendering, per-character memory files, BM25 retrieval, and optional CPU ONNX embeddings run or remain on the local device by default.
 ---
 
-# Can N.E.K.O run completely offline?
+# Local AI assistant and offline boundaries
 
-N.E.K.O is not an out-of-the-box, fully offline product. Its interface and default memory storage are local, and selected components can be self-hosted, but the normal free path and many model, voice, Steam, Cloud, Workshop, feed, browser, and Agent features require a network connection.
+N.E.K.O. can be configured as a more **local AI assistant**, but it is not an out-of-the-box, fully offline product. Its interface and default memory storage are local, and selected components can be self-hosted, while the normal free path and many model, voice, Steam, Cloud, Workshop, feed, browser, and Agent features require a network connection.
 
 Last fact review: **2026-07-23**.
 
@@ -86,3 +94,19 @@ The exact result depends on configuration. Local rendering and stored files may 
 - [TTS Pipeline](/architecture/tts-pipeline)
 - [Deployment Overview](/deployment/)
 - [Cost and provider choices](./cost-and-providers)
+
+## Frequently asked questions
+
+### Is Project N.E.K.O. a fully local AI assistant?
+
+Not by default. Its interface and memory storage are local, and selected endpoints can be self-hosted, but common model, voice, Steam, browser, feed, and agent features may contact network services.
+
+### Does OmniOfflineClient mean N.E.K.O. works without a network?
+
+No. `OmniOfflineClient` names the non-realtime text Chat Completions path. It still calls the configured model endpoint.
+
+### What remains local by default?
+
+The main interface, avatar rendering, per-character memory files, BM25 retrieval, and optional CPU ONNX embeddings run or remain on the local device by default.
+
+See where these boundaries fit into the full [AI desktop pet and open-source companion](/guide/ai-desktop-pet).
