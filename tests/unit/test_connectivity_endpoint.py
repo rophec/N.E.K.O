@@ -1430,6 +1430,27 @@ class TestVllmOmniWsHandshake:
         mock_handshake.assert_awaited_once()
         mock_realtime_ws.assert_not_called()
 
+    async def test_endpoint_dispatches_qwen3_tts_gguf_to_handshake(self):
+        """The dedicated CustomVoice provider uses the same speech WS probe."""
+        with patch(
+            "main_routers.config_router.connectivity._test_vllm_omni_ws_handshake",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_handshake, patch(
+            "main_routers.config_router.connectivity._test_websocket",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_realtime_ws:
+            req = ConnectivityTestRequest(
+                url="ws://127.0.0.1:8091/v1/audio/speech/stream",
+                api_key="",
+                model="Qwen3-TTS",
+                provider_type="websocket",
+                sub_type="qwen3_tts_gguf",
+            )
+            await _endpoint_test_connectivity(req)
+
+        mock_handshake.assert_awaited_once()
+        mock_realtime_ws.assert_not_called()
+
     async def test_endpoint_dispatches_doubao_tts_probe(self, monkeypatch):
         captured = {}
 

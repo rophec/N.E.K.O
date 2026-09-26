@@ -291,6 +291,20 @@
       "vision_model": "google/gemini-2.5-flash",
       "agent_model": "google/gemini-3-flash-preview"
     },
+    "qwen3_tts_gguf": {
+      "key": "qwen3_tts_gguf",
+      "name": "Qwen3-TTS-GGUF (CustomVoice)",
+      "description": "本地 Qwen3-TTS GGUF + ONNX Runtime 服务，仅使用 SFT/CustomVoice 预置说话人",
+      "openrouter_url": "ws://127.0.0.1:8091/v1",
+      "conversation_model": "",
+      "summary_model": "",
+      "correction_model": "",
+      "emotion_model": "",
+      "vision_model": "",
+      "agent_model": "",
+      "tts_default_model": "Qwen3-TTS",
+      "tts_default_voice": "default"
+    },
     "vllm_omni": {
       "key": "vllm_omni",
       "name": "vLLM-Omni (TTS)",
@@ -429,6 +443,10 @@
     "openrouter": {
       "config_field": "assistApiKeyOpenrouter",
       "restricted": true
+    },
+    "qwen3_tts_gguf": {
+      "config_field": "ttsModelApiKey",
+      "restricted": false
     },
     "vllm_omni": {
       "config_field": "ttsModelApiKey",

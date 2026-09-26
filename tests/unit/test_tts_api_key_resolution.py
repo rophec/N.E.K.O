@@ -12,6 +12,19 @@ def test_resolve_tts_api_key_blocks_fallback_for_vllm_omni():
     )
 
 
+def test_resolve_tts_api_key_blocks_fallback_for_qwen3_tts_gguf():
+    tts_config = {"api_key": "default-tts-key"}
+
+    assert LLMSessionManager.resolve_tts_api_key("qwen3_tts_gguf", None, tts_config) == ""
+    assert LLMSessionManager.resolve_tts_api_key("qwen3_tts_gguf", "", tts_config) == ""
+    assert (
+        LLMSessionManager.resolve_tts_api_key(
+            "qwen3_tts_gguf", "local-key", tts_config
+        )
+        == "local-key"
+    )
+
+
 def test_resolve_tts_api_key_uses_default_fallback_for_other_providers():
     tts_config = {"api_key": "default-tts-key"}
 

@@ -490,7 +490,8 @@ async def _test_connectivity_candidates(
 ) -> dict:
     """Probe the candidate URLs concurrently; return the first that succeeds.
 
-    When sub_type='vllm_omni_tts' the OpenAI Realtime session.update probe in
+    When sub_type identifies the Qwen3/vLLM speech endpoint, the OpenAI
+    Realtime session.update probe in
     _test_websocket is bypassed in favour of a lightweight handshake-and-close
     probe, because vLLM-Omni's /v1/audio/speech/stream does not understand
     Realtime protocol frames — sending session.update would trigger an early
@@ -501,7 +502,7 @@ async def _test_connectivity_candidates(
 
     async def _run_one(candidate_url: str) -> tuple[str, dict]:
         if provider_type == "websocket":
-            if sub_type == "vllm_omni_tts":
+            if sub_type in {"vllm_omni_tts", "qwen3_tts_gguf"}:
                 result = await _test_vllm_omni_ws_handshake(candidate_url, api_key)
             else:
                 result = await _test_websocket(candidate_url, api_key, model=model)

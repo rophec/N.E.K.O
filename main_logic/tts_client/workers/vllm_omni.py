@@ -87,7 +87,8 @@ def _vllm_omni_normalize_ws_endpoint(base_url: str) -> str:
 
 
 def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
-                          base_url='', model='', voice='', ref_audio='', ref_text=''):
+                          base_url='', model='', voice='', ref_audio='', ref_text='',
+                          provider_key='vllm_omni', prefer_bound_voice=False):
     """vLLM-Omni TTS worker — full-duplex WebSocket streaming synthesis.
 
     Protocol: ``ws://{base_url}/v1/audio/speech/stream``
@@ -122,7 +123,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         logger.error("[vLLM-Omni TTS] 未配置 base_url（TTS_MODEL_URL 为空）")
         _enqueue_error(response_queue, {
             "code": "TTS_CONFIG_INVALID",
-            "provider": "vllm_omni",
+            "provider": provider_key,
             "message": "vLLM-Omni TTS 未配置 URL",
         })
         response_queue.put(("__ready__", False))
@@ -144,15 +145,19 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
     # 1. 克隆模式（ref_audio 非空）：忽略 voice_id（N.E.K.O. 内部存储标识如
     #    vllm-omni-clone-ch-xxx，不是 vLLM-Omni 服务端认识的预制音色名），
     #    只使用 voice 参数（clone resolve 传入 'default'）。
-    # 2. voice_id 看起来像克隆 ID 但 ref_audio 为空：这是异常状态（resolve 应该
+    # 2. prefer_bound_voice 用于明确配置 speaker_name 的 provider；这类 provider
+    #    必须使用绑定的 voice，不能被角色卡里的其他 voice_id 覆盖。
+    # 3. voice_id 看起来像克隆 ID 但 ref_audio 为空：这是异常状态（resolve 应该
     #    走 clone 分支带 ref_audio，但可能因 voice_meta 缓存/时序问题漏传）。
     #    强制回退到 default voice + 发 warning，避免把克隆 ID 发给服务端导致
     #    Invalid Voice / 服务端崩溃（vLLM-Omni 会把该 ID 解析为 speaker name 并
     #    期望 ref_audio，缺失则 ValueError 崩溃）。
-    # 3. 正常 preset：voice_id 优先（对偶其他 worker 的 voice_id→voice 回落）。
+    # 4. 正常 preset：voice_id 优先（对偶其他 worker 的 voice_id→voice 回落）。
     _voice_id_is_clone_id = bool(voice_id and str(voice_id).startswith('vllm-omni-clone-'))
     if is_clone:
         effective_voice = (voice or '').strip() or 'default'
+    elif prefer_bound_voice:
+        effective_voice = (voice or '').strip() or (voice_id or '').strip() or 'default'
     elif _voice_id_is_clone_id:
         logger.warning(
             "[vLLM-Omni TTS] voice_id='%s' 是克隆音色 ID 但 ref_audio 为空，"
@@ -304,7 +309,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 if was_awaiting_done:
                     _enqueue_error(response_queue, {
                         "code": "TTS_CONNECTION_FAILED",
-                        "provider": "vllm_omni",
+                        "provider": provider_key,
                         "message": "vLLM-Omni TTS 连接在 session.done 前关闭",
                     })
                     response_queue.put(("__ready__", False))
@@ -317,7 +322,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 if was_awaiting_done:
                     _enqueue_error(response_queue, {
                         "code": "TTS_CONNECTION_FAILED",
-                        "provider": "vllm_omni",
+                        "provider": provider_key,
                         "message": "vLLM-Omni TTS 接收异常，session.done 未完成",
                     })
                     response_queue.put(("__ready__", False))
@@ -326,7 +331,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         if not await _connect_and_config():
             _enqueue_error(response_queue, {
                 "code": "TTS_CONNECTION_FAILED",
-                "provider": "vllm_omni",
+                "provider": provider_key,
                 "message": "vLLM-Omni TTS 初始连接失败",
             })
             response_queue.put(("__ready__", False))
@@ -400,7 +405,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
             session_state["speech_id"] = None
             _enqueue_error(response_queue, {
                 "code": "TTS_CONNECTION_FAILED",
-                "provider": "vllm_omni",
+                "provider": provider_key,
                 "message": message,
             })
             response_queue.put(("__ready__", False))
@@ -510,7 +515,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     logger.error("[vLLM-Omni TTS] 重建会话失败，标记 worker 未就绪")
                     _enqueue_error(response_queue, {
                         "code": "TTS_CONNECTION_FAILED",
-                        "provider": "vllm_omni",
+                        "provider": provider_key,
                         "message": "vLLM-Omni TTS 重连失败",
                     })
                     response_queue.put(("__ready__", False))
@@ -562,7 +567,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                             session_state["active"] = False
                             _enqueue_error(response_queue, {
                                 "code": "TTS_CONNECTION_FAILED",
-                                "provider": "vllm_omni",
+                                "provider": provider_key,
                                 "message": "vLLM-Omni TTS 发送失败",
                             })
                             response_queue.put(("__ready__", False))
@@ -570,7 +575,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     else:
                         _enqueue_error(response_queue, {
                             "code": "TTS_CONNECTION_FAILED",
-                            "provider": "vllm_omni",
+                            "provider": provider_key,
                             "message": "vLLM-Omni TTS 重连失败",
                         })
                         response_queue.put(("__ready__", False))

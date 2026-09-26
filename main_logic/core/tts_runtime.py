@@ -38,6 +38,9 @@ from main_logic.tts_client import (
     TTS_PROVIDER_REGISTRY,
     VLLM_OMNI_DEFAULT_BASE_URL,
     VLLM_OMNI_DEFAULT_MODEL,
+    QWEN3_TTS_GGUF_DEFAULT_BASE_URL,
+    QWEN3_TTS_GGUF_DEFAULT_MODEL,
+    QWEN3_TTS_GGUF_DEFAULT_VOICE,
 )
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from utils.config_manager import _as_bool, get_reserved
@@ -274,7 +277,7 @@ class TtsRuntimeMixin:
 
     @staticmethod
     def resolve_tts_api_key(provider_key: str | None, api_key_override: str | None, tts_config: dict) -> str:
-        if provider_key == 'vllm_omni':
+        if provider_key in {'vllm_omni', 'qwen3_tts_gguf'}:
             return api_key_override or ''
         return api_key_override or tts_config.get('api_key', '')
 
@@ -295,6 +298,25 @@ class TtsRuntimeMixin:
             or VLLM_OMNI_DEFAULT_MODEL,
             str(core_config.get('ttsVoiceId') or '').strip()
             or 'default',
+        )
+
+    @staticmethod
+    def _is_qwen3_tts_gguf_enabled(core_config: dict) -> bool:
+        return _as_bool(core_config.get('ENABLE_CUSTOM_API'), False) and (
+            str(core_config.get('ttsModelProvider') or '').strip() == 'qwen3_tts_gguf'
+        )
+
+    @classmethod
+    def _resolve_qwen3_tts_gguf_runtime_config(cls, core_config: dict) -> tuple[str, str, str]:
+        if not cls._is_qwen3_tts_gguf_enabled(core_config):
+            return ('', '', '')
+        return (
+            str(core_config.get('ttsModelUrl') or '').strip()
+            or QWEN3_TTS_GGUF_DEFAULT_BASE_URL,
+            str(core_config.get('ttsModelId') or '').strip()
+            or QWEN3_TTS_GGUF_DEFAULT_MODEL,
+            str(core_config.get('ttsVoiceId') or '').strip()
+            or QWEN3_TTS_GGUF_DEFAULT_VOICE,
         )
 
     def _build_tts_runtime_key(self) -> tuple:
@@ -322,6 +344,7 @@ class TtsRuntimeMixin:
                 tts_config.get('base_url', ''),
                 tts_config.get('model', ''),
                 self._resolve_vllm_omni_runtime_config(core_config),
+                self._resolve_qwen3_tts_gguf_runtime_config(core_config),
                 api_key,
             )
         except Exception:
@@ -640,6 +663,9 @@ class TtsRuntimeMixin:
             return False
         if self._is_vllm_omni_tts_enabled(core_config_snapshot):
             logger.info(f"{log_prefix}🔊 语音模式：检测到 vLLM-Omni TTS provider，将使用外部 TTS")
+            return True
+        if self._is_qwen3_tts_gguf_enabled(core_config_snapshot):
+            logger.info(f"{log_prefix}🔊 语音模式：检测到 Qwen3-TTS GGUF CustomVoice provider，将使用外部 TTS")
             return True
         base_url = realtime_config.get('base_url', '')
         _, uses_provider_native_voice = resolve_native_voice_for_routing(

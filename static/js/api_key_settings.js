@@ -1291,8 +1291,8 @@ function onCustomModelProviderChange(modelType) {
 
     if (
         modelType === 'tts'
-        && previousProvider === 'vllm_omni'
-        && provider !== 'vllm_omni'
+        && ['vllm_omni', 'qwen3_tts_gguf'].includes(previousProvider)
+        && !['vllm_omni', 'qwen3_tts_gguf'].includes(provider)
         && !_isLoadingSavedConfig
         && voiceInput
     ) {

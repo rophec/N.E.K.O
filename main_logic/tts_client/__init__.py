@@ -87,6 +87,15 @@ from .workers.vllm_omni import (
     _vllm_omni_clone_is_selected,
     _vllm_omni_clone_resolve,
 )
+from .workers.qwen3_tts_gguf import (
+    qwen3_tts_gguf_tts_worker,
+    QWEN3_TTS_GGUF_DEFAULT_BASE_URL,
+    QWEN3_TTS_GGUF_DEFAULT_MODEL,
+    QWEN3_TTS_GGUF_DEFAULT_VOICE,
+    _qwen3_tts_gguf_normalize_ws_endpoint,
+    _qwen3_tts_gguf_is_selected,
+    _qwen3_tts_gguf_resolve,
+)
 from .workers.mimo import (
     mimo_tts_worker,
     _get_mimo_chat_completions_url,
@@ -149,12 +158,14 @@ __all__ = [
     # workers
     "step_realtime_tts_worker", "grok_streaming_tts_worker", "qwen_realtime_tts_worker",
     "cosyvoice_vc_tts_worker", "cogtts_tts_worker", "gemini_tts_worker",
-    "openai_tts_worker", "vllm_omni_tts_worker", "mimo_tts_worker",
+    "openai_tts_worker", "vllm_omni_tts_worker", "qwen3_tts_gguf_tts_worker", "mimo_tts_worker",
     "doubao_tts_worker",
     "gptsovits_tts_worker", "minimax_tts_worker", "elevenlabs_tts_worker",
     "local_cosyvoice_worker", "dummy_tts_worker",
     # provider constants
     "VLLM_OMNI_DEFAULT_BASE_URL", "VLLM_OMNI_DEFAULT_MODEL",
+    "QWEN3_TTS_GGUF_DEFAULT_BASE_URL", "QWEN3_TTS_GGUF_DEFAULT_MODEL",
+    "QWEN3_TTS_GGUF_DEFAULT_VOICE",
     "_QWEN_REALTIME_TTS_MODEL", "_DASHSCOPE_DEFAULT_REALTIME_WS_URL",
     "_XAI_TTS_DELTA_CAP", "_ELEVENLABS_WS_CHUNK_SCHEDULE", "_GSV_ALLOWED_PUNCT",
     # custom-voice fetch (used by characters_router)
@@ -172,6 +183,8 @@ __all__ = [
     "_vllm_omni_is_selected", "_vllm_omni_resolve",
     "_vllm_omni_clone_is_selected", "_vllm_omni_clone_resolve",
     "_vllm_omni_normalize_ws_endpoint",
+    "_qwen3_tts_gguf_is_selected", "_qwen3_tts_gguf_resolve",
+    "_qwen3_tts_gguf_normalize_ws_endpoint",
     "_gptsovits_is_selected", "_gptsovits_resolve",
     "_minimax_clone_is_selected", "_minimax_clone_resolve",
     "_elevenlabs_clone_is_selected", "_elevenlabs_clone_resolve",
@@ -422,9 +435,25 @@ _tts_providers.register(_tts_providers.TTSProvider(
 ))
 
 _tts_providers.register(_tts_providers.TTSProvider(
-    key='vllm_omni',
+    key='qwen3_tts_gguf',
     kind='local',
     priority=20,
+    capabilities=frozenset({'preset'}),
+    is_selected=_qwen3_tts_gguf_is_selected,
+    resolve=_qwen3_tts_gguf_resolve,
+    default_url=QWEN3_TTS_GGUF_DEFAULT_BASE_URL,
+    default_model=QWEN3_TTS_GGUF_DEFAULT_MODEL,
+    default_voice=QWEN3_TTS_GGUF_DEFAULT_VOICE,
+    editable_endpoint=True,
+    probe_kind='ws_handshake',
+    probe_sub_type='qwen3_tts_gguf',
+    probe_ws_path='/audio/speech/stream',
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='vllm_omni',
+    kind='local',
+    priority=21,
     # vLLM-Omni = 选预制音色 id（preset）+ 内联参考音频克隆（clone）。两种选中机制
     # 合并在 _vllm_omni_is_selected/_vllm_omni_resolve 里分流（对偶 MiMo 的单条目双机制）。
     capabilities=frozenset({'preset', 'clone'}),
