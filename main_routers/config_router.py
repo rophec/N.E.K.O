@@ -552,6 +552,11 @@ async def get_steam_language():
     ui_language = None
     try:
         try:
+            from config import GEOIP_FORCE_NON_MAINLAND
+        except Exception:
+            GEOIP_FORCE_NON_MAINLAND = None
+
+        try:
             ui_language = await aload_ui_language_override()
         except Exception:
             logger.debug("读取 UI 语言覆盖失败", exc_info=True)
@@ -612,6 +617,9 @@ async def get_steam_language():
             if ip_country:
                 ip_country = ip_country.upper()
                 is_mainland_china = (ip_country == "CN")
+
+            if GEOIP_FORCE_NON_MAINLAND is not None:
+                is_mainland_china = not bool(GEOIP_FORCE_NON_MAINLAND)
             
             if not getattr(get_steam_language, '_logged', False) or not get_steam_language._logged:
                 get_steam_language._logged = True
@@ -719,6 +727,32 @@ async def get_core_config_api():
             """Fall back to coreApiKey only when the provider matches the user-selected coreApi/assistApi."""
             return fallback_key if provider in _fallback_providers else ''
 
+        try:
+            runtime_core_config = await config_manager.aget_core_config()
+        except Exception:
+            logger.debug("读取运行时 core config 失败，使用落盘配置返回", exc_info=True)
+            runtime_core_config = {}
+
+        resolved_provider_urls = (
+            dict(core_cfg.get('resolvedProviderUrls', {}))
+            if isinstance(core_cfg.get('resolvedProviderUrls'), dict)
+            else {}
+        )
+        model_fields = {
+            f'{mt}Model{suffix}': core_cfg.get(f'{mt}Model{suffix}', '')
+            for mt in ('conversation', 'summary', 'correction', 'emotion',
+                       'vision', 'agent', 'omni', 'tts')
+            for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
+        }
+
+        if _core_api_provider == 'free':
+            runtime_core_url = str(runtime_core_config.get('CORE_URL') or '').strip()
+            if runtime_core_url:
+                resolved_provider_urls['core:free'] = runtime_core_url
+                model_fields['omniModelUrl'] = runtime_core_url
+                if 'lanlan.app' in runtime_core_url:
+                    resolved_provider_urls['assist:free'] = 'https://www.lanlan.app/text/v1'
+
         return {
             "api_key": api_key,
             "coreApi": _core_api_provider,
@@ -749,14 +783,9 @@ async def get_core_config_api():
             "openclawTimeout": core_cfg.get('openclawTimeout'),
             "openclawDefaultSenderId": core_cfg.get('openclawDefaultSenderId'),
             "enableCustomApi": core_cfg.get('enableCustomApi', False),
-            "resolvedProviderUrls": core_cfg.get('resolvedProviderUrls', {}) if isinstance(core_cfg.get('resolvedProviderUrls'), dict) else {},
+            "resolvedProviderUrls": resolved_provider_urls,
             # 自定义API相关字段（Provider / Url / Id / ApiKey per model type）
-            **{
-                f'{mt}Model{suffix}': core_cfg.get(f'{mt}Model{suffix}', '')
-                for mt in ('conversation', 'summary', 'correction', 'emotion',
-                           'vision', 'agent', 'omni', 'tts')
-                for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
-            },
+            **model_fields,
             "gptsovitsEnabled": core_cfg.get('gptsovitsEnabled'),
             "ttsProvider": core_cfg.get('ttsProvider', ''),
             "ttsVoiceId": core_cfg.get('ttsVoiceId', ''),

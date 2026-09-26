@@ -38,7 +38,7 @@ GSV_VOICE_PREFIX = "gsv:"
 #   True  → 强制判定为非中国大陆（走 lanlan.app 免费路径）
 #   False → 强制判定为中国大陆
 # 调试时改这里即可，不用动 config_manager 的检测逻辑；上线保持 None。
-GEOIP_FORCE_NON_MAINLAND = None
+GEOIP_FORCE_NON_MAINLAND = True
 
 # 角色档案保留字段（统一管理）
 # - system: 由系统指定功能维护，不允许通用角色编辑接口直接修改
