@@ -1,0 +1,24 @@
+{
+  "updated_at": "2026-07-13",
+  "policy": "Keep the current derived training dataset and its immediate reproducibility baseline.",
+  "canonical_manual_ground_truth": "../manual_ground_truth_canonical_20260712",
+  "current_training_dataset": "15_balanced_dragon_features_20260713",
+  "entries": [
+    {
+      "id": "14_real_slot_synthetic_20260712",
+      "role": "previous_training_baseline",
+      "train_images": 836,
+      "validation_images": 11,
+      "use_for_training": false
+    },
+    {
+      "id": "15_balanced_dragon_features_20260713",
+      "role": "current_train_and_validation",
+      "train_images": 1236,
+      "validation_images": 311,
+      "train_percent": 79.8966,
+      "validation_percent": 20.1034,
+      "use_for_training": true
+    }
+  ]
+}

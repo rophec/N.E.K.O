@@ -1,0 +1,34 @@
+{
+  "image": "C:\\Users\\19079\\Desktop\\识别图\\牌.png",
+  "case_id": "case_007",
+  "screen": "INGAME",
+  "method": "edges",
+  "quad_order": [
+    "top_left",
+    "top_right",
+    "bottom_left",
+    "bottom_right"
+  ],
+  "quad": [
+    [
+      18.0,
+      60.0
+    ],
+    [
+      2419.0,
+      47.0
+    ],
+    [
+      128.0,
+      1444.0
+    ],
+    [
+      2473.0,
+      1445.0
+    ]
+  ],
+  "automajsoul_debug_dir": "tools\\automajhong_reference\\output_ascii\\case_007\\automajsoul_debug",
+  "source": "tools\\automajhong_reference\\output_ascii\\case_007\\case_007-source.png",
+  "warp": "tools\\automajhong_reference\\output_ascii\\case_007\\case_007-automajsoul-warp.png",
+  "proof_sheet": "tools\\automajhong_reference\\output_ascii\\case_007\\case_007-proof-sheet.png"
+}

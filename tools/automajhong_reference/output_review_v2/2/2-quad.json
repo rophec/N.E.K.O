@@ -1,0 +1,35 @@
+{
+  "image": "C:\\Users\\19079\\Desktop\\识别图\\2.png",
+  "case_id": "2",
+  "screen": "INGAME",
+  "method": "color",
+  "quad_order": [
+    "top_left",
+    "top_right",
+    "bottom_left",
+    "bottom_right"
+  ],
+  "quad": [
+    [
+      43.0,
+      58.0
+    ],
+    [
+      2158.0,
+      0.0
+    ],
+    [
+      0.0,
+      1493.0
+    ],
+    [
+      2559.0,
+      1493.0
+    ]
+  ],
+  "automajsoul_debug_dir": "tools\\automajhong_reference\\output_review_v2\\2\\automajsoul_debug",
+  "source": "tools\\automajhong_reference\\output_review_v2\\2\\2-source.png",
+  "warp": "tools\\automajhong_reference\\output_review_v2\\2\\2-automajsoul-warp.png",
+  "review_overlay": "tools\\automajhong_reference\\output_review_v2\\2\\2-review-overlay.png",
+  "proof_sheet": "tools\\automajhong_reference\\output_review_v2\\2\\2-proof-sheet.png"
+}

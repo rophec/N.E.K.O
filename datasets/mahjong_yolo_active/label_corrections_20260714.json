@@ -1,0 +1,212 @@
+{
+  "applied": true,
+  "canonical_source_correction": {
+    "image": "manual_ground_truth_canonical_20260712/images/train/37.png",
+    "label": "manual_ground_truth_canonical_20260712/labels/train/37.txt",
+    "label_line": 29,
+    "old_class": "6z",
+    "new_class": "5z"
+  },
+  "initial_propagated_correction_count": 76,
+  "initial_counts_by_dataset": {
+    "14_real_slot_synthetic_20260712": 18,
+    "15_balanced_dragon_features_20260713": 24,
+    "16_real_val_face_detail_20260714": 34
+  },
+  "hard_link_propagated_during_first_pass": 66,
+  "direct_second_pass_correction_count": 10,
+  "verification_remaining_count": 0,
+  "source_prefix": "37",
+  "max_green_ratio": 0.02,
+  "datasets": [
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\14_real_slot_synthetic_20260712",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\15_balanced_dragon_features_20260713",
+    "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714"
+  ],
+  "correction_count": 10,
+  "counts_by_dataset": {
+    "16_real_val_face_detail_20260714": 10
+  },
+  "corrections": [
+    {
+      "dataset": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714",
+      "split": "train",
+      "image": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\images\\train\\37_face_detail_0067.png",
+      "label": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\labels\\train\\37_face_detail_0067.txt",
+      "label_line": 29,
+      "old_class_id": 32,
+      "old_class_name": "6z",
+      "new_class_id": 31,
+      "new_class_name": "5z",
+      "green_pixel_ratio": 0.0,
+      "box_xyxy": [
+        559,
+        704,
+        600,
+        773
+      ]
+    },
+    {
+      "dataset": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714",
+      "split": "train",
+      "image": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\images\\train\\37_face_detail_0092.png",
+      "label": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\labels\\train\\37_face_detail_0092.txt",
+      "label_line": 29,
+      "old_class_id": 32,
+      "old_class_name": "6z",
+      "new_class_id": 31,
+      "new_class_name": "5z",
+      "green_pixel_ratio": 0.0,
+      "box_xyxy": [
+        559,
+        704,
+        600,
+        773
+      ]
+    },
+    {
+      "dataset": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714",
+      "split": "train",
+      "image": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\images\\train\\37_face_detail_0130.png",
+      "label": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\labels\\train\\37_face_detail_0130.txt",
+      "label_line": 29,
+      "old_class_id": 32,
+      "old_class_name": "6z",
+      "new_class_id": 31,
+      "new_class_name": "5z",
+      "green_pixel_ratio": 0.0,
+      "box_xyxy": [
+        559,
+        704,
+        600,
+        773
+      ]
+    },
+    {
+      "dataset": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714",
+      "split": "train",
+      "image": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\images\\train\\37_face_detail_0144.png",
+      "label": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\labels\\train\\37_face_detail_0144.txt",
+      "label_line": 29,
+      "old_class_id": 32,
+      "old_class_name": "6z",
+      "new_class_id": 31,
+      "new_class_name": "5z",
+      "green_pixel_ratio": 0.0,
+      "box_xyxy": [
+        559,
+        704,
+        600,
+        773
+      ]
+    },
+    {
+      "dataset": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714",
+      "split": "train",
+      "image": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\images\\train\\37_face_detail_0182.png",
+      "label": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\labels\\train\\37_face_detail_0182.txt",
+      "label_line": 29,
+      "old_class_id": 32,
+      "old_class_name": "6z",
+      "new_class_id": 31,
+      "new_class_name": "5z",
+      "green_pixel_ratio": 0.0,
+      "box_xyxy": [
+        559,
+        704,
+        600,
+        773
+      ]
+    },
+    {
+      "dataset": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714",
+      "split": "train",
+      "image": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\images\\train\\37_face_detail_0209.png",
+      "label": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\labels\\train\\37_face_detail_0209.txt",
+      "label_line": 29,
+      "old_class_id": 32,
+      "old_class_name": "6z",
+      "new_class_id": 31,
+      "new_class_name": "5z",
+      "green_pixel_ratio": 0.0,
+      "box_xyxy": [
+        559,
+        704,
+        600,
+        773
+      ]
+    },
+    {
+      "dataset": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714",
+      "split": "train",
+      "image": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\images\\train\\37_face_detail_0247.png",
+      "label": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\labels\\train\\37_face_detail_0247.txt",
+      "label_line": 29,
+      "old_class_id": 32,
+      "old_class_name": "6z",
+      "new_class_id": 31,
+      "new_class_name": "5z",
+      "green_pixel_ratio": 0.0,
+      "box_xyxy": [
+        559,
+        704,
+        600,
+        773
+      ]
+    },
+    {
+      "dataset": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714",
+      "split": "train",
+      "image": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\images\\train\\37_face_detail_0288.png",
+      "label": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\labels\\train\\37_face_detail_0288.txt",
+      "label_line": 29,
+      "old_class_id": 32,
+      "old_class_name": "6z",
+      "new_class_id": 31,
+      "new_class_name": "5z",
+      "green_pixel_ratio": 0.0,
+      "box_xyxy": [
+        559,
+        704,
+        600,
+        773
+      ]
+    },
+    {
+      "dataset": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714",
+      "split": "train",
+      "image": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\images\\train\\37_face_detail_0295.png",
+      "label": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\labels\\train\\37_face_detail_0295.txt",
+      "label_line": 29,
+      "old_class_id": 32,
+      "old_class_name": "6z",
+      "new_class_id": 31,
+      "new_class_name": "5z",
+      "green_pixel_ratio": 0.0,
+      "box_xyxy": [
+        559,
+        704,
+        600,
+        773
+      ]
+    },
+    {
+      "dataset": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714",
+      "split": "train",
+      "image": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\images\\train\\37_face_detail_0343.png",
+      "label": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\16_real_val_face_detail_20260714\\labels\\train\\37_face_detail_0343.txt",
+      "label_line": 29,
+      "old_class_id": 32,
+      "old_class_name": "6z",
+      "new_class_id": 31,
+      "new_class_name": "5z",
+      "green_pixel_ratio": 0.0,
+      "box_xyxy": [
+        559,
+        704,
+        600,
+        773
+      ]
+    }
+  ]
+}

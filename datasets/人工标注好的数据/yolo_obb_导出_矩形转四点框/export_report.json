@@ -1,0 +1,18 @@
+﻿{
+    "source":  "C:\\Users\\19079\\Desktop\\新建文件夹\\09_最终透视变换图",
+    "export_root":  "C:\\Users\\19079\\Desktop\\新建文件夹\\mahjong_yolo_export_20260629-160008\\yolo_obb_rect_as_quad",
+    "json_files":  13,
+    "image_files_copied":  13,
+    "label_files":  13,
+    "label_lines":  608,
+    "annotated_files_with_labels":  13,
+    "alias_count":  1,
+    "alias_examples":  [
+                           "0ACC6D310A334D3E4C2A9C526BE2E41F.json:3w-\u003e3m"
+                       ],
+    "skipped_count":  0,
+    "skipped_examples":  [
+
+                         ],
+    "note":  "YOLO OBB compatible export: rectangle boxes are converted to axis-aligned 4-point quads; rotation/polygon/quadrilateral use first 4 points. Alias 1w-9w is normalized to 1m-9m."
+}

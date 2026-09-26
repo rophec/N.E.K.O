@@ -1,0 +1,261 @@
+[
+  {
+    "image": "C:\\Users\\19079\\Desktop\\识别图\\1.png",
+    "case_id": "1",
+    "screen": "INGAME",
+    "method": "color",
+    "quad_order": [
+      "top_left",
+      "top_right",
+      "bottom_left",
+      "bottom_right"
+    ],
+    "quad": [
+      [
+        43.0,
+        92.0
+      ],
+      [
+        2154.0,
+        34.0
+      ],
+      [
+        0.0,
+        1527.0
+      ],
+      [
+        2559.0,
+        1527.0
+      ]
+    ],
+    "automajsoul_debug_dir": "tools\\automajhong_reference\\output_review\\1\\automajsoul_debug",
+    "source": "tools\\automajhong_reference\\output_review\\1\\1-source.png",
+    "warp": "tools\\automajhong_reference\\output_review\\1\\1-automajsoul-warp.png",
+    "review_overlay": "tools\\automajhong_reference\\output_review\\1\\1-review-overlay.png",
+    "proof_sheet": "tools\\automajhong_reference\\output_review\\1\\1-proof-sheet.png",
+    "image_name": "1.png",
+    "quad_json": "tools\\automajhong_reference\\output_review\\1\\1-quad.json"
+  },
+  {
+    "image": "C:\\Users\\19079\\Desktop\\识别图\\2.png",
+    "case_id": "2",
+    "screen": "INGAME",
+    "method": "color",
+    "quad_order": [
+      "top_left",
+      "top_right",
+      "bottom_left",
+      "bottom_right"
+    ],
+    "quad": [
+      [
+        43.0,
+        58.0
+      ],
+      [
+        2158.0,
+        0.0
+      ],
+      [
+        0.0,
+        1493.0
+      ],
+      [
+        2559.0,
+        1493.0
+      ]
+    ],
+    "automajsoul_debug_dir": "tools\\automajhong_reference\\output_review\\2\\automajsoul_debug",
+    "source": "tools\\automajhong_reference\\output_review\\2\\2-source.png",
+    "warp": "tools\\automajhong_reference\\output_review\\2\\2-automajsoul-warp.png",
+    "review_overlay": "tools\\automajhong_reference\\output_review\\2\\2-review-overlay.png",
+    "proof_sheet": "tools\\automajhong_reference\\output_review\\2\\2-proof-sheet.png",
+    "image_name": "2.png",
+    "quad_json": "tools\\automajhong_reference\\output_review\\2\\2-quad.json"
+  },
+  {
+    "image": "C:\\Users\\19079\\Desktop\\识别图\\3.png",
+    "case_id": "3",
+    "screen": "INGAME",
+    "method": "color",
+    "quad_order": [
+      "top_left",
+      "top_right",
+      "bottom_left",
+      "bottom_right"
+    ],
+    "quad": [
+      [
+        44.0,
+        38.0
+      ],
+      [
+        1621.0,
+        0.0
+      ],
+      [
+        0.0,
+        1079.0
+      ],
+      [
+        1919.0,
+        1079.0
+      ]
+    ],
+    "automajsoul_debug_dir": "tools\\automajhong_reference\\output_review\\3\\automajsoul_debug",
+    "source": "tools\\automajhong_reference\\output_review\\3\\3-source.png",
+    "warp": "tools\\automajhong_reference\\output_review\\3\\3-automajsoul-warp.png",
+    "review_overlay": "tools\\automajhong_reference\\output_review\\3\\3-review-overlay.png",
+    "proof_sheet": "tools\\automajhong_reference\\output_review\\3\\3-proof-sheet.png",
+    "image_name": "3.png",
+    "quad_json": "tools\\automajhong_reference\\output_review\\3\\3-quad.json"
+  },
+  {
+    "image": "C:\\Users\\19079\\Desktop\\识别图\\4.png",
+    "case_id": "4",
+    "screen": "INGAME",
+    "method": "edges",
+    "quad_order": [
+      "top_left",
+      "top_right",
+      "bottom_left",
+      "bottom_right"
+    ],
+    "quad": [
+      [
+        510.0,
+        144.0
+      ],
+      [
+        1475.0,
+        44.0
+      ],
+      [
+        375.0,
+        878.0
+      ],
+      [
+        1537.0,
+        877.0
+      ]
+    ],
+    "automajsoul_debug_dir": "tools\\automajhong_reference\\output_review\\4\\automajsoul_debug",
+    "source": "tools\\automajhong_reference\\output_review\\4\\4-source.png",
+    "warp": "tools\\automajhong_reference\\output_review\\4\\4-automajsoul-warp.png",
+    "review_overlay": "tools\\automajhong_reference\\output_review\\4\\4-review-overlay.png",
+    "proof_sheet": "tools\\automajhong_reference\\output_review\\4\\4-proof-sheet.png",
+    "image_name": "4.png",
+    "quad_json": "tools\\automajhong_reference\\output_review\\4\\4-quad.json"
+  },
+  {
+    "image": "C:\\Users\\19079\\Desktop\\识别图\\5.png",
+    "case_id": "5",
+    "screen": "INGAME",
+    "method": "edges",
+    "quad_order": [
+      "top_left",
+      "top_right",
+      "bottom_left",
+      "bottom_right"
+    ],
+    "quad": [
+      [
+        510.0,
+        144.0
+      ],
+      [
+        1475.0,
+        44.0
+      ],
+      [
+        375.0,
+        878.0
+      ],
+      [
+        1537.0,
+        877.0
+      ]
+    ],
+    "automajsoul_debug_dir": "tools\\automajhong_reference\\output_review\\5\\automajsoul_debug",
+    "source": "tools\\automajhong_reference\\output_review\\5\\5-source.png",
+    "warp": "tools\\automajhong_reference\\output_review\\5\\5-automajsoul-warp.png",
+    "review_overlay": "tools\\automajhong_reference\\output_review\\5\\5-review-overlay.png",
+    "proof_sheet": "tools\\automajhong_reference\\output_review\\5\\5-proof-sheet.png",
+    "image_name": "5.png",
+    "quad_json": "tools\\automajhong_reference\\output_review\\5\\5-quad.json"
+  },
+  {
+    "image": "C:\\Users\\19079\\Desktop\\识别图\\6.png",
+    "case_id": "6",
+    "screen": "INGAME",
+    "method": "color",
+    "quad_order": [
+      "top_left",
+      "top_right",
+      "bottom_left",
+      "bottom_right"
+    ],
+    "quad": [
+      [
+        32.0,
+        44.0
+      ],
+      [
+        1699.0,
+        76.0
+      ],
+      [
+        0.0,
+        1390.0
+      ],
+      [
+        1950.0,
+        1390.0
+      ]
+    ],
+    "automajsoul_debug_dir": "tools\\automajhong_reference\\output_review\\6\\automajsoul_debug",
+    "source": "tools\\automajhong_reference\\output_review\\6\\6-source.png",
+    "warp": "tools\\automajhong_reference\\output_review\\6\\6-automajsoul-warp.png",
+    "review_overlay": "tools\\automajhong_reference\\output_review\\6\\6-review-overlay.png",
+    "proof_sheet": "tools\\automajhong_reference\\output_review\\6\\6-proof-sheet.png",
+    "image_name": "6.png",
+    "quad_json": "tools\\automajhong_reference\\output_review\\6\\6-quad.json"
+  },
+  {
+    "image": "C:\\Users\\19079\\Desktop\\识别图\\牌.png",
+    "case_id": "case_007",
+    "screen": "INGAME",
+    "method": "edges",
+    "quad_order": [
+      "top_left",
+      "top_right",
+      "bottom_left",
+      "bottom_right"
+    ],
+    "quad": [
+      [
+        18.0,
+        60.0
+      ],
+      [
+        2419.0,
+        47.0
+      ],
+      [
+        128.0,
+        1444.0
+      ],
+      [
+        2473.0,
+        1445.0
+      ]
+    ],
+    "automajsoul_debug_dir": "tools\\automajhong_reference\\output_review\\case_007\\automajsoul_debug",
+    "source": "tools\\automajhong_reference\\output_review\\case_007\\case_007-source.png",
+    "warp": "tools\\automajhong_reference\\output_review\\case_007\\case_007-automajsoul-warp.png",
+    "review_overlay": "tools\\automajhong_reference\\output_review\\case_007\\case_007-review-overlay.png",
+    "proof_sheet": "tools\\automajhong_reference\\output_review\\case_007\\case_007-proof-sheet.png",
+    "image_name": "牌.png",
+    "quad_json": "tools\\automajhong_reference\\output_review\\case_007\\case_007-quad.json"
+  }
+]

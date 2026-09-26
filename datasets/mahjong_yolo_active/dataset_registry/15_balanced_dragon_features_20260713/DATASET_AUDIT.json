@@ -1,0 +1,121 @@
+{
+  "dataset": "F:\\NEKO_bugfix\\A_NEKO_Base\\N.E.K.O\\.codexworktree\\automajhong\\datasets\\mahjong_yolo_active\\dataset_registry\\15_balanced_dragon_features_20260713",
+  "summaries": {
+    "train": {
+      "images": 1236,
+      "labels": 1236,
+      "boxes": 55372,
+      "missing_labels": [],
+      "missing_images": [],
+      "bad_labels": [],
+      "source_hits": {
+        "train": 1236,
+        "val": 0,
+        "test": 0
+      },
+      "unmatched_source_names": [],
+      "ambiguous_source_names": []
+    },
+    "val": {
+      "images": 311,
+      "labels": 311,
+      "boxes": 17110,
+      "missing_labels": [],
+      "missing_images": [],
+      "bad_labels": [],
+      "source_hits": {
+        "train": 0,
+        "val": 311,
+        "test": 0
+      },
+      "unmatched_source_names": [],
+      "ambiguous_source_names": []
+    }
+  },
+  "class_counts": {
+    "train": {
+      "0": 2280,
+      "1": 1404,
+      "2": 1429,
+      "3": 1282,
+      "4": 1325,
+      "5": 1234,
+      "6": 1271,
+      "7": 1601,
+      "8": 1713,
+      "9": 2048,
+      "10": 1511,
+      "11": 1224,
+      "12": 1060,
+      "13": 1339,
+      "14": 1605,
+      "15": 1562,
+      "16": 1494,
+      "17": 2169,
+      "18": 1602,
+      "19": 1716,
+      "20": 1089,
+      "21": 725,
+      "22": 1203,
+      "23": 884,
+      "24": 1164,
+      "25": 1260,
+      "26": 1789,
+      "27": 2397,
+      "28": 2097,
+      "29": 2694,
+      "30": 1742,
+      "31": 2872,
+      "32": 2874,
+      "33": 1713
+    },
+    "val": {
+      "0": 680,
+      "1": 465,
+      "2": 490,
+      "3": 403,
+      "4": 449,
+      "5": 391,
+      "6": 401,
+      "7": 473,
+      "8": 517,
+      "9": 487,
+      "10": 393,
+      "11": 493,
+      "12": 435,
+      "13": 356,
+      "14": 329,
+      "15": 614,
+      "16": 443,
+      "17": 571,
+      "18": 713,
+      "19": 438,
+      "20": 283,
+      "21": 330,
+      "22": 321,
+      "23": 182,
+      "24": 245,
+      "25": 225,
+      "26": 411,
+      "27": 700,
+      "28": 663,
+      "29": 745,
+      "30": 561,
+      "31": 1177,
+      "32": 1145,
+      "33": 581
+    }
+  },
+  "image_ratio": {
+    "train": 1236,
+    "val": 311,
+    "train_percent": 79.8966,
+    "val_percent": 20.1034
+  },
+  "source_name_overlap": {
+    "train_val": [],
+    "train_test": [],
+    "val_test": []
+  },
+  "exact_fixed_test_hash_leakage": []
+}
