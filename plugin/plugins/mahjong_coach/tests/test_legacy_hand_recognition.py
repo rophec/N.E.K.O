@@ -250,8 +250,9 @@ def test_action_button_template_scan_detects_pon(tmp_path: Path) -> None:
 
     buttons, meta = detect_action_buttons_fast(frame_path)
 
-    assert "pon" in buttons
+    assert buttons == ["pon"]
     assert meta["templates"]["available"] is True
+    assert meta["templates"]["matcher"] == "fused_rgb_hsv_tm_ccoeff_normed_v2"
 
 
 def test_action_button_template_scan_detects_riichi(tmp_path: Path) -> None:
@@ -270,8 +271,89 @@ def test_action_button_template_scan_detects_riichi(tmp_path: Path) -> None:
 
     buttons, meta = detect_action_buttons_fast(frame_path)
 
-    assert "riichi" in buttons
+    assert buttons == ["riichi"]
     assert meta["templates"]["available"] is True
+
+
+def test_action_button_template_scan_detects_tsumo_at_native_resolution(tmp_path: Path) -> None:
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "perception"
+        / "templates"
+        / "1440x900"
+        / "tsumo.png"
+    )
+    template = Image.open(template_path).convert("RGB")
+    image = Image.new("RGB", (1440, 900), (20, 30, 40))
+    image.paste(template, (600, 560))
+    frame_path = tmp_path / "tsumo_frame.png"
+    image.save(frame_path)
+
+    buttons, _meta = detect_action_buttons_fast(frame_path)
+
+    assert buttons == ["tsumo"]
+
+
+def test_action_button_template_scan_keeps_distinct_chi_and_skip(tmp_path: Path) -> None:
+    template_root = Path(__file__).resolve().parents[1] / "perception" / "templates" / "1920x1080"
+    chi = Image.open(template_root / "chi.png").convert("RGB")
+    skip = Image.open(template_root / "skip.png").convert("RGB")
+    image = Image.new("RGB", (1920, 1080), (20, 30, 40))
+    image.paste(chi, (660, 680))
+    image.paste(skip, (1000, 660))
+    frame_path = tmp_path / "chi_skip_frame.png"
+    image.save(frame_path)
+
+    buttons, _meta = detect_action_buttons_fast(frame_path)
+
+    assert buttons == ["chi", "skip"]
+
+
+def test_action_button_template_scan_rejects_blue_table_structure(tmp_path: Path) -> None:
+    image = Image.new("RGB", (1920, 1080), (43, 82, 126))
+    draw = ImageDraw.Draw(image)
+    draw.line((250, 880, 960, 610, 1670, 880), fill=(32, 61, 98), width=7)
+    for column in range(7):
+        left = 720 + column * 70
+        draw.rounded_rectangle((left, 620, left + 58, 715), radius=5, fill=(188, 196, 193), outline=(45, 53, 57), width=3)
+    frame_path = tmp_path / "blue_table_without_actions.png"
+    image.save(frame_path)
+
+    buttons, meta = detect_action_buttons_fast(frame_path)
+
+    assert buttons == []
+    assert all(not item["accepted"] for item in meta["templates"]["matches"])
+
+
+def test_action_detector_recovers_only_aligned_skip_beside_strong_action() -> None:
+    matches = [
+        {
+            "button_type": "chi",
+            "score": 0.86,
+            "threshold": 0.58,
+            "above_threshold": True,
+            "accepted": False,
+            "box": [900, 630, 1110, 700],
+        },
+        {
+            "button_type": "skip",
+            "score": 0.46,
+            "threshold": 0.58,
+            "above_threshold": False,
+            "accepted": False,
+            "box": [1090, 605, 1390, 705],
+        },
+    ]
+
+    action_detector._recover_contextual_skip(matches)
+
+    assert matches[1]["above_threshold"] is True
+    assert matches[1]["contextual_recovery"]["neighbor"] == "chi"
+
+    isolated_skip = [dict(matches[1], above_threshold=False)]
+    isolated_skip[0].pop("contextual_recovery")
+    action_detector._recover_contextual_skip(isolated_skip)
+    assert isolated_skip[0]["above_threshold"] is False
 
 
 def test_action_detector_rejects_conflicting_button_sets(tmp_path: Path, monkeypatch) -> None:
@@ -317,13 +399,13 @@ def test_riichi_stick_counter_reads_zero(tmp_path: Path) -> None:
     assert result.stick_count == 0
 
 
-def test_riichi_stick_counter_reads_nonzero(tmp_path: Path) -> None:
+def test_riichi_stick_counter_nonzero_is_not_current_player_evidence(tmp_path: Path) -> None:
     frame_path = tmp_path / "riichi_counter_one.png"
     _counter_frame("1").save(frame_path)
 
     result = detect_riichi_sticks(frame_path)
 
-    assert result.riichi_players == ["unknown"]
+    assert result.riichi_players == []
     assert result.stick_count == 1
 
 

@@ -4,6 +4,7 @@ import json
 import os
 import queue
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -55,20 +56,9 @@ _DETAIL_HEIGHT = 870
 _DETAIL_IMAGE_MAX_WIDTH = 540
 _DETAIL_IMAGE_MAX_HEIGHT = 740
 
-# Prefs file
-_PREFS_FILENAME = "overlay_prefs.json"
-
-
-def _prefs_path() -> Path:
-    base = os.environ.get("LOCALAPPDATA", "")
-    if base:
-        return Path(base) / "N.E.K.O" / "plugins" / "mahjong_coach" / "data" / _PREFS_FILENAME
-    return Path(_PREFS_FILENAME)
-
-
-def _load_prefs() -> dict[str, Any]:
+def _load_prefs(path: Path) -> dict[str, Any]:
     try:
-        data = json.loads(_prefs_path().read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             w = int(data.get("width", _DEFAULT_WIDTH))
             h = int(data.get("height", _DEFAULT_HEIGHT))
@@ -85,9 +75,14 @@ def _load_prefs() -> dict[str, Any]:
     return {"width": _DEFAULT_WIDTH, "height": _DEFAULT_HEIGHT, "font_size": _FONT_SIZE, "display_mode": "compact"}
 
 
-def _save_prefs(width: int, height: int, font_size: int, display_mode: str | None = None) -> None:
+def _save_prefs(
+    path: Path,
+    width: int,
+    height: int,
+    font_size: int,
+    display_mode: str | None = None,
+) -> None:
     try:
-        path = _prefs_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         existing_mode = "compact"
         try:
@@ -120,22 +115,434 @@ def _normalize_display_mode(value: Any) -> str:
 class CoachOverlayController:
     def __init__(
         self,
+        *,
+        prefs_path: Path,
         on_start: Callable[[str], None] | None = None,
         on_stop: Callable[[], None] | None = None,
     ) -> None:
         self._queue: queue.Queue[Any] = queue.Queue()
         self._thread: threading.Thread | None = None
+        self._ready_event = threading.Event()
+        self._stop_requested = threading.Event()
+        self._startup_error = ""
         self.last_error = ""
+        self.backend = ""
+        self.window_handle = 0
+        self.window_visible = False
+        self._prefs_path = prefs_path.expanduser().resolve()
         self._on_start = on_start
         self._on_stop = on_stop
 
-    def start(self) -> bool:
+    @property
+    def prefs_path(self) -> Path:
+        return self._prefs_path
+
+    def start(self, timeout: float = 5.0) -> bool:
+        """启动浮窗线程并等待窗口真正建立。 / Start the overlay thread and wait for its window."""
         if self._thread is not None and self._thread.is_alive():
+            if not self._ready_event.wait(timeout=max(0.0, float(timeout))):
+                self.last_error = self.last_error or f"overlay startup timed out ({self.backend or 'unknown backend'})"
+                return False
             return True
+
+        self._discard_pending_commands()
         self.last_error = ""
-        self._thread = threading.Thread(target=self._run, name="MahjongCoachOverlay", daemon=True)
+        self._startup_error = ""
+        self.backend = ""
+        self.window_handle = 0
+        self.window_visible = False
+        self._ready_event.clear()
+        self._stop_requested.clear()
+        self._thread = threading.Thread(target=self._run_guarded, name="MahjongCoachOverlay", daemon=True)
         self._thread.start()
+        if not self._ready_event.wait(timeout=max(0.0, float(timeout))):
+            self.last_error = self.last_error or f"overlay startup timed out ({self.backend or 'unknown backend'})"
+            return False
+        if self._startup_error or self._thread is None or not self._thread.is_alive():
+            self.last_error = self.last_error or "overlay thread exited during startup"
+            return False
         return True
+
+    def _discard_pending_commands(self) -> None:
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                return
+
+    def _run_guarded(self) -> None:
+        """Preserve fatal thread startup errors that threading would otherwise hide."""
+        try:
+            self._run()
+        except BaseException as exc:
+            detail = str(exc).strip() or repr(exc)
+            if os.name == "nt" and "--enable-plugin=tk-inter" in detail:
+                # 中文：Steam 冻结版未打包 Tk 时，自动切换到无需 Tk 的原生 Win32 浮窗。
+                # English: Use the native Win32 overlay when the frozen Steam host omitted Tk.
+                self.backend = "win32:starting"
+                self.last_error = ""
+                self._startup_error = ""
+                try:
+                    self._run_win32()
+                    return
+                except BaseException as native_exc:
+                    native_detail = str(native_exc).strip() or repr(native_exc)
+                    self.last_error = f"Win32 overlay {type(native_exc).__name__}: {native_detail}"
+                    self._startup_error = self.last_error
+                    self._ready_event.set()
+                    return
+            self.last_error = f"{type(exc).__name__}: {detail}"
+            self._startup_error = self.last_error
+            self._ready_event.set()
+
+    def _run_win32(self) -> None:
+        """Run the Windows-native overlay used by frozen hosts without Tk."""
+        import win32api  # type: ignore[import-not-found]
+        import win32con  # type: ignore[import-not-found]
+        import win32gui  # type: ignore[import-not-found]
+
+        self.backend = "win32:imports-ready"
+        prefs = _load_prefs(self._prefs_path)
+        state: dict[str, Any] = {
+            "main": 0,
+            "detail": 0,
+            "mode": "config",
+            "text": "Mahjong Coach",
+            "detail_text": "等待识别详情",
+            "image_path": "",
+            "detail_image": None,
+            "closed": False,
+            "width": prefs["width"],
+            "height": prefs["height"],
+            "font_size": prefs["font_size"],
+            "display_mode": prefs["display_mode"],
+        }
+        class_name = f"NekoMahjongCoachOverlay_{id(self):x}"
+        instance = win32api.GetModuleHandle(None)
+        white_brush = win32gui.CreateSolidBrush(win32api.RGB(255, 255, 255))
+        card_brush = win32gui.CreateSolidBrush(win32api.RGB(245, 245, 245))
+        accent_brush = win32gui.CreateSolidBrush(win32api.RGB(68, 183, 254))
+        border_brush = win32gui.CreateSolidBrush(win32api.RGB(208, 208, 208))
+        def _create_font(height: int, weight: int) -> int:
+            spec = win32gui.LOGFONT()
+            spec.lfFaceName = _FONT
+            spec.lfHeight = -height
+            spec.lfWeight = weight
+            return win32gui.CreateFontIndirect(spec)
+
+        font = _create_font(int(state["font_size"]), 400)
+        small_font = _create_font(14, 600)
+        self.backend = "win32:gdi-ready"
+
+        def _window_rect(hwnd: int) -> tuple[int, int, int, int]:
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            return left, top, max(1, right - left), max(1, bottom - top)
+
+        def _draw_text(hdc: int, value: str, rect: tuple[int, int, int, int], *, color: int, small: bool = False) -> None:
+            previous = win32gui.SelectObject(hdc, small_font if small else font)
+            win32gui.SetBkMode(hdc, win32con.TRANSPARENT)
+            win32gui.SetTextColor(hdc, color)
+            win32gui.DrawText(
+                hdc,
+                str(value or ""),
+                -1,
+                rect,
+                win32con.DT_LEFT | win32con.DT_TOP | win32con.DT_WORDBREAK | win32con.DT_NOPREFIX,
+            )
+            win32gui.SelectObject(hdc, previous)
+
+        def _draw_top_buttons(hdc: int, width: int, *, detail: bool = False) -> None:
+            labels = [("X", width - 28, width)] if detail else [("?", width - 84, width - 56), ("<", width - 56, width - 28), ("X", width - 28, width)]
+            for label, left, right in labels:
+                _draw_text(hdc, label, (left + 8, 8, right, 28), color=win32api.RGB(102, 102, 102), small=True)
+
+        def _paint_main(hwnd: int, hdc: int, rect: tuple[int, int, int, int]) -> None:
+            width, height = rect[2], rect[3]
+            win32gui.FillRect(hdc, (0, 0, width, height), white_brush)
+            win32gui.FillRect(hdc, (0, 0, width, 3), accent_brush)
+            win32gui.FrameRect(hdc, (0, 0, width, height), border_brush)
+            _draw_top_buttons(hdc, width)
+            if state["mode"] == "config":
+                _draw_text(hdc, "打牌风格", (18, 14, width - 100, 40), color=win32api.RGB(30, 30, 30), small=True)
+                mid = width // 2
+                win32gui.FillRect(hdc, (16, 44, mid - 6, 92), accent_brush)
+                win32gui.FillRect(hdc, (mid + 6, 44, width - 16, 92), accent_brush)
+                _draw_text(hdc, "立直（门清憋大牌）", (30, 60, mid - 14, 88), color=win32api.RGB(255, 255, 255), small=True)
+                _draw_text(hdc, "快攻（积极副露）", (mid + 22, 60, width - 24, 88), color=win32api.RGB(255, 255, 255), small=True)
+                compact_brush = accent_brush if state["display_mode"] == "compact" else card_brush
+                beginner_brush = accent_brush if state["display_mode"] == "beginner" else card_brush
+                win32gui.FillRect(hdc, (mid - 126, 108, mid - 10, 144), compact_brush)
+                win32gui.FillRect(hdc, (mid + 10, 108, mid + 126, 144), beginner_brush)
+                _draw_text(hdc, "简洁", (mid - 88, 119, mid - 10, 142), color=win32api.RGB(255, 255, 255) if state["display_mode"] == "compact" else win32api.RGB(30, 30, 30), small=True)
+                _draw_text(hdc, "新手", (mid + 48, 119, mid + 126, 142), color=win32api.RGB(255, 255, 255) if state["display_mode"] == "beginner" else win32api.RGB(30, 30, 30), small=True)
+                return
+            win32gui.FillRect(hdc, (12, 14, 62, 36), accent_brush)
+            _draw_text(hdc, "本地", (22, 18, 62, 36), color=win32api.RGB(255, 255, 255), small=True)
+            win32gui.FillRect(hdc, (12, 42, width - 12, height - 12), card_brush)
+            _draw_text(hdc, str(state["text"]), (24, 54, width - 24, height - 20), color=win32api.RGB(30, 30, 30))
+
+        def _paint_detail(hwnd: int, hdc: int, rect: tuple[int, int, int, int]) -> None:
+            width, height = rect[2], rect[3]
+            win32gui.FillRect(hdc, (0, 0, width, height), white_brush)
+            win32gui.FillRect(hdc, (0, 0, width, 3), accent_brush)
+            win32gui.FrameRect(hdc, (0, 0, width, height), border_brush)
+            _draw_top_buttons(hdc, width, detail=True)
+            _draw_text(hdc, "识别与策略详情", (18, 14, width - 50, 40), color=win32api.RGB(30, 30, 30), small=True)
+            split = max(420, width // 2)
+            win32gui.FillRect(hdc, (12, 44, split - 6, height - 12), card_brush)
+            _draw_text(hdc, str(state["detail_text"]), (24, 56, split - 18, height - 24), color=win32api.RGB(30, 30, 30), small=True)
+            image = state.get("detail_image")
+            if image is not None:
+                try:
+                    from PIL import ImageWin  # type: ignore[import-not-found]
+
+                    target_width = max(1, width - split - 30)
+                    target_height = max(1, height - 72)
+                    copy = image.copy()
+                    copy.thumbnail((target_width, target_height))
+                    left = split + 12 + max(0, (target_width - copy.width) // 2)
+                    top = 52 + max(0, (target_height - copy.height) // 2)
+                    ImageWin.Dib(copy).draw(hdc, (left, top, left + copy.width, top + copy.height))
+                    return
+                except Exception:
+                    pass
+            _draw_text(hdc, "等待截图\n" + str(state["image_path"] or ""), (split + 24, 64, width - 24, height - 24), color=win32api.RGB(102, 102, 102), small=True)
+
+        def _resize_main(mode: str) -> None:
+            hwnd = int(state["main"] or 0)
+            if not hwnd or not win32gui.IsWindow(hwnd):
+                return
+            state["mode"] = mode
+            width = _CONFIG_WIDTH if mode == "config" else int(state["width"])
+            height = _CONFIG_HEIGHT if mode == "config" else int(state["height"])
+            screen_width = win32api.GetSystemMetrics(win32con.SM_CXSCREEN)
+            screen_height = win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
+            x, y = _overlay_geometry(screen_width, screen_height, width, height)
+            win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, x, y, width, height, win32con.SWP_SHOWWINDOW)
+            win32gui.InvalidateRect(hwnd, None, True)
+
+        def _load_detail_image(path_text: str) -> None:
+            state["detail_image"] = None
+            path = Path(path_text) if path_text else None
+            if path is None or not path.exists():
+                return
+            try:
+                from PIL import Image  # type: ignore[import-not-found]
+
+                with Image.open(path) as opened:
+                    state["detail_image"] = opened.convert("RGB").copy()
+            except Exception:
+                state["detail_image"] = None
+
+        def _show_detail() -> None:
+            hwnd = int(state["detail"] or 0)
+            if hwnd and win32gui.IsWindow(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+                win32gui.SetForegroundWindow(hwnd)
+                return
+            main_x, main_y, _, main_h = _window_rect(int(state["main"]))
+            screen_width = win32api.GetSystemMetrics(win32con.SM_CXSCREEN)
+            screen_height = win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
+            width = min(_DETAIL_WIDTH, max(900, screen_width - 80))
+            height = min(_DETAIL_HEIGHT, max(560, screen_height - 100))
+            x = min(max(0, main_x + 24), max(0, screen_width - width - 8))
+            y = min(max(0, main_y + main_h + 8), max(0, screen_height - height - 40))
+            detail_hwnd = win32gui.CreateWindowEx(
+                win32con.WS_EX_TOPMOST | win32con.WS_EX_TOOLWINDOW,
+                class_name,
+                "Mahjong Coach Details",
+                win32con.WS_POPUP | win32con.WS_THICKFRAME,
+                x,
+                y,
+                width,
+                height,
+                0,
+                0,
+                instance,
+                None,
+            )
+            state["detail"] = detail_hwnd
+            win32gui.ShowWindow(detail_hwnd, win32con.SW_SHOW)
+            win32gui.UpdateWindow(detail_hwnd)
+
+        def _close_main() -> None:
+            try:
+                if self._on_stop is not None:
+                    self._on_stop()
+                    return
+            except Exception as exc:
+                self.last_error = f"close click failed: {exc}"
+            self._queue.put(None)
+
+        def _wnd_proc(hwnd: int, message: int, wparam: int, lparam: int) -> int:
+            if message == win32con.WM_PAINT:
+                hdc, paint = win32gui.BeginPaint(hwnd)
+                try:
+                    left, top, right, bottom = win32gui.GetClientRect(hwnd)
+                    rect = (left, top, right, bottom)
+                    if hwnd == state["detail"]:
+                        _paint_detail(hwnd, hdc, rect)
+                    else:
+                        _paint_main(hwnd, hdc, rect)
+                finally:
+                    win32gui.EndPaint(hwnd, paint)
+                return 0
+            if message == win32con.WM_LBUTTONDOWN:
+                x = win32api.LOWORD(lparam)
+                y = win32api.HIWORD(lparam)
+                _, _, width, _ = _window_rect(hwnd)
+                if hwnd == state["detail"]:
+                    if y <= 34 and x >= width - 36:
+                        win32gui.DestroyWindow(hwnd)
+                    else:
+                        win32gui.ReleaseCapture()
+                        win32gui.SendMessage(hwnd, win32con.WM_NCLBUTTONDOWN, win32con.HTCAPTION, 0)
+                    return 0
+                if y <= 34 and x >= width - 32:
+                    _close_main()
+                    return 0
+                if y <= 34 and x >= width - 64:
+                    _resize_main("strategy" if state["mode"] == "config" else "config")
+                    return 0
+                if y <= 34 and x >= width - 96:
+                    _show_detail()
+                    return 0
+                if state["mode"] == "config":
+                    midpoint = width // 2
+                    if 44 <= y <= 96:
+                        try:
+                            if self._on_start is not None:
+                                self._on_start("riichi" if x < midpoint else "fast")
+                        except Exception as exc:
+                            self.last_error = f"button click failed: {exc}"
+                        _resize_main("strategy")
+                        return 0
+                    if 104 <= y <= 150:
+                        state["display_mode"] = "compact" if x < midpoint else "beginner"
+                        _save_prefs(self._prefs_path, int(state["width"]), int(state["height"]), int(state["font_size"]), str(state["display_mode"]))
+                        win32gui.InvalidateRect(hwnd, None, True)
+                        return 0
+                win32gui.ReleaseCapture()
+                win32gui.SendMessage(hwnd, win32con.WM_NCLBUTTONDOWN, win32con.HTCAPTION, 0)
+                return 0
+            if message == win32con.WM_CLOSE:
+                if hwnd == state["detail"]:
+                    win32gui.DestroyWindow(hwnd)
+                else:
+                    _close_main()
+                return 0
+            if message == win32con.WM_DESTROY:
+                if hwnd == state["detail"]:
+                    state["detail"] = 0
+                elif hwnd == state["main"]:
+                    state["closed"] = True
+                    self.window_handle = 0
+                    self.window_visible = False
+                    detail_hwnd = int(state["detail"] or 0)
+                    if detail_hwnd and win32gui.IsWindow(detail_hwnd):
+                        win32gui.DestroyWindow(detail_hwnd)
+                    win32gui.PostQuitMessage(0)
+                return 0
+            return win32gui.DefWindowProc(hwnd, message, wparam, lparam)
+
+        window_class = win32gui.WNDCLASS()
+        window_class.hInstance = instance
+        window_class.lpszClassName = class_name
+        window_class.style = win32con.CS_HREDRAW | win32con.CS_VREDRAW
+        window_class.hCursor = win32gui.LoadCursor(0, win32con.IDC_ARROW)
+        window_class.hbrBackground = white_brush
+        window_class.lpfnWndProc = _wnd_proc
+        try:
+            win32gui.RegisterClass(window_class)
+        except win32gui.error as exc:
+            if int(getattr(exc, "winerror", 0) or (exc.args[0] if exc.args else 0)) != 1410:
+                raise
+            try:
+                win32gui.UnregisterClass(class_name, instance)
+            except win32gui.error:
+                pass
+            win32gui.RegisterClass(window_class)
+        self.backend = "win32:class-ready"
+
+        screen_width = win32api.GetSystemMetrics(win32con.SM_CXSCREEN)
+        screen_height = win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
+        x, y = _overlay_geometry(screen_width, screen_height, _CONFIG_WIDTH, _CONFIG_HEIGHT)
+        main_hwnd = win32gui.CreateWindowEx(
+            win32con.WS_EX_TOPMOST | win32con.WS_EX_TOOLWINDOW,
+            class_name,
+            "Mahjong Coach Overlay",
+            win32con.WS_POPUP | win32con.WS_THICKFRAME,
+            x,
+            y,
+            _CONFIG_WIDTH,
+            _CONFIG_HEIGHT,
+            0,
+            0,
+            instance,
+            None,
+        )
+        self.backend = "win32:window-created"
+        state["main"] = main_hwnd
+        win32gui.ShowWindow(main_hwnd, win32con.SW_SHOW)
+        win32gui.UpdateWindow(main_hwnd)
+        self.backend = "win32"
+        self.window_handle = int(main_hwnd)
+        self.window_visible = bool(win32gui.IsWindowVisible(main_hwnd))
+        self._ready_event.set()
+
+        try:
+            while not state["closed"]:
+                if win32gui.PumpWaitingMessages():
+                    break
+                changed = False
+                while True:
+                    try:
+                        item = self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if item is None:
+                        _, _, width, height = _window_rect(main_hwnd)
+                        if state["mode"] == "strategy":
+                            state["width"], state["height"] = width, height
+                        _save_prefs(self._prefs_path, int(state["width"]), int(state["height"]), int(state["font_size"]), str(state["display_mode"]))
+                        if win32gui.IsWindow(main_hwnd):
+                            win32gui.DestroyWindow(main_hwnd)
+                        changed = True
+                        break
+                    if isinstance(item, dict):
+                        command = item.get("cmd")
+                        if command == "show_config":
+                            _resize_main("config")
+                        elif command == "show_strategy":
+                            _resize_main("strategy")
+                        elif command == "show_detail":
+                            _show_detail()
+                        elif command == "update_payload":
+                            state["text"] = str(item.get("text") or "Mahjong Coach")
+                            state["detail_text"] = str(item.get("detail") or "等待识别详情")
+                            state["image_path"] = str(item.get("image_path") or "")
+                            _load_detail_image(str(state["image_path"]))
+                        changed = True
+                        continue
+                    state["text"] = str(item or "Mahjong Coach")
+                    changed = True
+                if changed:
+                    if win32gui.IsWindow(main_hwnd):
+                        win32gui.InvalidateRect(main_hwnd, None, True)
+                    detail_hwnd = int(state["detail"] or 0)
+                    if detail_hwnd and win32gui.IsWindow(detail_hwnd):
+                        win32gui.InvalidateRect(detail_hwnd, None, True)
+                time.sleep(0.015)
+        finally:
+            try:
+                win32gui.UnregisterClass(class_name, instance)
+            except win32gui.error:
+                pass
+            for handle in (font, small_font, white_brush, card_brush, accent_brush, border_brush):
+                try:
+                    win32gui.DeleteObject(handle)
+                except Exception:
+                    pass
 
     def update(self, text: str) -> None:
         if self._thread is None or not self._thread.is_alive():
@@ -164,20 +571,37 @@ class CoachOverlayController:
         self._queue.put({"cmd": "show_detail"})
 
     def stop(self) -> None:
-        if self._thread is None:
+        thread = self._thread
+        if thread is None:
             return
-        self._queue.put(None)
-        self._thread.join(timeout=1.0)
+        if thread.is_alive():
+            self._stop_requested.set()
+            self._queue.put(None)
+            thread.join(timeout=2.0)
+        if thread.is_alive():
+            self.last_error = self.last_error or "overlay thread did not stop"
+            return
+        self._thread = None
+        self.window_handle = 0
+        self.window_visible = False
+        self._ready_event.clear()
+        self._discard_pending_commands()
 
     def _run(self) -> None:
+        root = None
+        fatal_exit = False
         try:
             import tkinter as tk
         except Exception as exc:
-            self.last_error = f"tkinter unavailable: {exc}"
+            detail = str(exc).strip() or repr(exc)
+            self.last_error = f"tkinter unavailable ({type(exc).__name__}): {detail}"
+            self._startup_error = self.last_error
+            self._ready_event.set()
             return
 
         try:
             root = tk.Tk()
+            self.backend = "tk"
             root.title("Mahjong Coach Overlay")
             root.overrideredirect(True)
             root.attributes("-topmost", True)
@@ -415,7 +839,7 @@ class CoachOverlayController:
             grip.pack(side="bottom", fill="x")
 
             # --- layout state ---
-            prefs = _load_prefs()
+            prefs = _load_prefs(self._prefs_path)
             layout = {
                 "width": prefs["width"],
                 "height": prefs["height"],
@@ -480,7 +904,13 @@ class CoachOverlayController:
 
                 def _on_click(_e):
                     layout["display_mode"] = mode
-                    _save_prefs(layout["width"], layout["height"], layout["font_size"], layout["display_mode"])
+                    _save_prefs(
+                        self._prefs_path,
+                        layout["width"],
+                        layout["height"],
+                        layout["font_size"],
+                        layout["display_mode"],
+                    )
                     _refresh_mode_buttons()
 
                 btn.bind("<Button-1>", _on_click)
@@ -576,7 +1006,13 @@ class CoachOverlayController:
                 _set_geometry()
 
             def end_resize(_event: tk.Event) -> None:
-                _save_prefs(layout["width"], layout["height"], layout["font_size"], layout["display_mode"])
+                _save_prefs(
+                    self._prefs_path,
+                    layout["width"],
+                    layout["height"],
+                    layout["font_size"],
+                    layout["display_mode"],
+                )
 
             grip.bind("<ButtonPress-1>", start_resize)
             grip.bind("<B1-Motion>", do_resize)
@@ -590,7 +1026,13 @@ class CoachOverlayController:
                     layout["font_size"] = new_fs
                     local_label.config(font=(_FONT, new_fs))
                     _recompute_panels()
-                    _save_prefs(layout["width"], layout["height"], layout["font_size"], layout["display_mode"])
+                    _save_prefs(
+                        self._prefs_path,
+                        layout["width"],
+                        layout["height"],
+                        layout["font_size"],
+                        layout["display_mode"],
+                    )
 
             root.bind_all("<MouseWheel>", scroll_font)
 
@@ -659,7 +1101,13 @@ class CoachOverlayController:
                     except queue.Empty:
                         break
                     if item is None:
-                        _save_prefs(layout["width"], layout["height"], layout["font_size"], layout["display_mode"])
+                        _save_prefs(
+                            self._prefs_path,
+                            layout["width"],
+                            layout["height"],
+                            layout["font_size"],
+                            layout["display_mode"],
+                        )
                         root.destroy()
                         return
                     if isinstance(item, dict):
@@ -681,15 +1129,46 @@ class CoachOverlayController:
                 root.after(120, pump)
 
             root.after(120, pump)
-            root.mainloop()
+            root.update_idletasks()
+            root.deiconify()
+            root.lift()
+            root.update()
+            self._ready_event.set()
+            # 中文：冻结后的服务进程里 Tk mainloop 可能立即返回，因此由 Tk 线程主动泵送事件。
+            # English: A frozen host may return from Tk mainloop immediately, so pump events on the Tk thread.
+            while True:
+                try:
+                    if not root.winfo_exists():
+                        break
+                    root.update()
+                except tk.TclError:
+                    break
+                time.sleep(0.015)
+            if not self._stop_requested.is_set() and not self.last_error:
+                self.last_error = "overlay window event loop exited unexpectedly"
         except Exception as exc:
-            self.last_error = str(exc)
+            detail = str(exc).strip() or repr(exc)
+            self.last_error = f"{type(exc).__name__}: {detail}"
+            if not self._ready_event.is_set():
+                self._startup_error = self.last_error
+        except BaseException:
+            fatal_exit = True
+            raise
+        finally:
+            if root is not None:
+                try:
+                    if root.winfo_exists():
+                        root.destroy()
+                except Exception:
+                    pass
+            if not fatal_exit:
+                self._ready_event.set()
 
 
 # ---------- text formatting (unchanged logic) ----------
 
-def overlay_text_from_payload(payload: dict[str, Any]) -> str:
-    display_mode = _overlay_display_mode(payload)
+def overlay_text_from_payload(payload: dict[str, Any], *, prefs_path: Path | None = None) -> str:
+    display_mode = _overlay_display_mode(payload, prefs_path=prefs_path)
     decision = payload.get("last_decision") if isinstance(payload.get("last_decision"), dict) else payload
     state = payload.get("round_state") if isinstance(payload.get("round_state"), dict) else payload.get("coach_state")
     if not isinstance(state, dict):
@@ -697,6 +1176,14 @@ def overlay_text_from_payload(payload: dict[str, Any]) -> str:
     decision_type = str(decision.get("decision_type") or "")
     if decision.get("action_required"):
         return _action_overlay_text(decision_type, decision, display_mode=display_mode)
+    if decision_type == "settlement_candidate":
+        return _format_overlay("检测到结算候选", "正在用下一帧复核", "上一局数据暂不刷新")
+    if decision_type == "round_settlement":
+        settlement = decision.get("perception", {}).get("settlement", {})
+        kind = _settlement_kind_label(str(settlement.get("kind") or "unknown"))
+        return _format_overlay(f"{kind}已确认", "上一局数据已冻结", "等待结算画面结束")
+    if decision_type == "awaiting_next_round":
+        return _format_overlay("等待下一局", "上一局数据仍保留", "新手牌稳定两帧后自动重开")
     if decision_type == "round_idle":
         return _format_overlay("等待下一局", "上一局已结束", "新手牌出现后自动重开")
     has_plan = state.get("local_direction") or state.get("local_plan") or state.get("current_plan") or state.get("opening_plan")
@@ -730,6 +1217,7 @@ def overlay_detail_text_from_payload(payload: dict[str, Any]) -> str:
     meld = perception.get("meld") if isinstance(perception.get("meld"), dict) else {}
     action = perception.get("action") if isinstance(perception.get("action"), dict) else {}
     river = perception.get("river") if isinstance(perception.get("river"), dict) else {}
+    settlement = perception.get("settlement") if isinstance(perception.get("settlement"), dict) else {}
     targets = _string_items(state.get("target_shapes"))
     cautions = _string_items(state.get("caution_points"))
     direction = _direction_text(str(state.get("local_direction") or ""), str(state.get("local_plan") or state.get("current_plan") or ""), targets)
@@ -753,6 +1241,12 @@ def overlay_detail_text_from_payload(payload: dict[str, Any]) -> str:
         f"窗口：{window_title or '未绑定'}；来源：{capture_source or 'unknown'}",
         f"识别流程：{progress}",
         "识别逻辑：capture.py/capture_frame() → coach.py/analyze_frame()",
+        (
+            "结算逻辑：perception/settlement_detector.py/detect_settlement_path()；"
+            f"阶段={str(settlement.get('phase') or state.get('settlement_phase') or 'playing')}；"
+            f"类型={_settlement_kind_label(str(settlement.get('kind') or state.get('settlement_kind') or 'none'))}；"
+            f"置信度={float(settlement.get('confidence') or state.get('settlement_confidence') or 0.0):.0%}"
+        ),
         f"手牌逻辑：perception/fast_hand_path.py/detect_fast_hand_path()；结果={str(hand.get('reason') or '等待')}",
         f"副露逻辑：perception/meld_state.py/detect_meld_state_path()；结果={str(meld.get('reason') or '等待')}",
         f"按钮逻辑：perception/action_detector.py/detect_action_buttons_fast()；结果={str(action.get('source') or '等待')}",
@@ -780,11 +1274,23 @@ def overlay_detail_text_from_payload(payload: dict[str, Any]) -> str:
     return _format_overlay(*parts)
 
 
-def _overlay_display_mode(payload: dict[str, Any]) -> str:
+def _settlement_kind_label(kind: str) -> str:
+    return {
+        "win": "和牌结算",
+        "exhaustive_draw": "荒牌流局",
+        "abortive_draw": "途中流局",
+        "unknown": "小局结算",
+        "none": "未检测",
+    }.get(kind, "小局结算")
+
+
+def _overlay_display_mode(payload: dict[str, Any], *, prefs_path: Path | None = None) -> str:
     explicit = payload.get("overlay_display_mode") or payload.get("display_mode")
     if explicit:
         return _normalize_display_mode(explicit)
-    return _normalize_display_mode(_load_prefs().get("display_mode"))
+    if prefs_path is not None:
+        return _normalize_display_mode(_load_prefs(prefs_path).get("display_mode"))
+    return "compact"
 
 
 def _action_overlay_text(decision_type: str, decision: dict[str, Any], *, display_mode: str = "compact") -> str:
@@ -934,9 +1440,19 @@ def _overlay_progress_text(decision: dict[str, Any], state: dict[str, Any]) -> s
     meld = perception.get("meld") if isinstance(perception.get("meld"), dict) else {}
     action = perception.get("action") if isinstance(perception.get("action"), dict) else {}
     river = perception.get("river") if isinstance(perception.get("river"), dict) else {}
+    settlement = perception.get("settlement") if isinstance(perception.get("settlement"), dict) else {}
     hand_reason = str(hand.get("reason") or "").strip()
 
     capture = "截图✓" if decision.get("engine_meta") or decision.get("decision_type") else "截图待"
+    settlement_phase = str(settlement.get("phase") or state.get("settlement_phase") or "playing")
+    if settlement_phase == "settlement_candidate":
+        settlement_step = "结算复核"
+    elif settlement_phase == "settlement_latched":
+        settlement_step = "结算✓"
+    elif settlement_phase == "awaiting_next_round":
+        settlement_step = "等新局"
+    else:
+        settlement_step = "结算-"
     if hand_reason == "missing_hand_tile_templates":
         calibration = "校准!"
     elif hand_reason in {"image_missing", "image_path_missing"}:
@@ -984,7 +1500,10 @@ def _overlay_progress_text(decision: dict[str, Any], state: dict[str, Any]) -> s
 
     has_plan = state.get("current_plan") or state.get("opening_plan") or state.get("local_plan") or decision.get("suggestion")
     strategy = "策略✓" if has_plan else "策略待"
-    return f"流程：{capture} {calibration} {hand_step} {meld_step} {action_step} {river_step} {strategy}"
+    return (
+        f"流程：{capture} {settlement_step} {calibration} {hand_step} "
+        f"{meld_step} {action_step} {river_step} {strategy}"
+    )
 
 
 def _string_items(value: Any) -> list[str]:

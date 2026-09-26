@@ -11,14 +11,12 @@ from .vit_tile_classifier_onnx import classify_tile_crops_onnx, onnx_tile_classi
 
 
 _RED_FIVE_MAP = {"5m": "0m", "5p": "0p", "5s": "0s", "R5m": "0m", "R5p": "0p", "R5s": "0s"}
-_ONNX_PROBED: dict[str, bool] = {}
 
 
 def onnx_discard_available(*, model_dir: str | os.PathLike[str] | None = None) -> bool:
-    key = str(model_dir or "")
-    if key not in _ONNX_PROBED:
-        _ONNX_PROBED[key] = onnx_tile_classifier_available(model_dir=model_dir)
-    return _ONNX_PROBED[key]
+    # The model loader already caches by artifact identity. Re-probing here is
+    # cheap and lets a missing or broken model recover after it is replaced.
+    return onnx_tile_classifier_available(model_dir=model_dir)
 
 
 def classify_discard_tiles_batch(

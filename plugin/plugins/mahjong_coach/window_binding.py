@@ -3,7 +3,6 @@ from __future__ import annotations
 import platform
 import shutil
 import subprocess
-import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -189,8 +188,7 @@ def _find_matching_window_windows(keywords: list[str]) -> WindowBindingResult | 
             continue
     if not candidates:
         return None
-    _score, window, result = max(candidates, key=lambda item: item[0])
-    _activate_window_best_effort(window)
+    _score, _window, result = max(candidates, key=lambda item: item[0])
     return result
 
 
@@ -345,25 +343,6 @@ def _window_candidate_score(window: Any, result: WindowBindingResult) -> tuple[i
     bounds_score = 100 if result.has_bounds() else 0
     area = int(result.width or 0) * int(result.height or 0)
     return active_score + bounds_score, area
-
-
-def _activate_window_best_effort(window: Any) -> None:
-    try:
-        if bool(getattr(window, "isMinimized", False)) and hasattr(window, "restore"):
-            window.restore()
-    except Exception:
-        pass
-    try:
-        if bool(getattr(window, "isActive", False)):
-            return
-    except Exception:
-        pass
-    try:
-        if hasattr(window, "activate"):
-            window.activate()
-            time.sleep(0.08)
-    except Exception:
-        pass
 
 
 def _coerce_int(value: Any) -> int | None:

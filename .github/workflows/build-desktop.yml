@@ -98,6 +98,8 @@ jobs:
     steps:
       - name: Checkout backend repo
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5

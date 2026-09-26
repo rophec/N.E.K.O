@@ -1,4 +1,24 @@
-const PLUGIN_ID = 'mahjong_coach';
+const DEFAULT_PLUGIN_ID = 'mahjong_coach';
+
+function resolvePluginId(locationLike = window.location) {
+  // 优先使用宿主实际提供的 /plugin/<id>/ui/ 路径，兼容安装器生成的后缀 ID。
+  // Prefer the host-provided /plugin/<id>/ui/ path so installer-suffixed IDs keep working.
+  const pathMatch = String(locationLike?.pathname || '').match(/^\/plugin\/([^/]+)\/ui(?:\/|$)/);
+  if (pathMatch?.[1]) {
+    try {
+      return decodeURIComponent(pathMatch[1]);
+    } catch (_error) {
+      return pathMatch[1];
+    }
+  }
+
+  // 独立打开静态页面时允许显式传入 plugin_id；规范 ID 只作为最后兜底。
+  // Allow an explicit plugin_id for standalone pages; use the canonical ID only as a final fallback.
+  const queryPluginId = new URLSearchParams(String(locationLike?.search || '')).get('plugin_id');
+  return String(queryPluginId || '').trim() || DEFAULT_PLUGIN_ID;
+}
+
+const PLUGIN_ID = resolvePluginId();
 const RUNS_URL = '/runs';
 const RUN_TIMEOUT_MS = 30000;
 
@@ -7,7 +27,11 @@ const refreshBtn = document.getElementById('refreshBtn');
 const resetBtn = document.getElementById('resetBtn');
 const analyzeBtn = document.getElementById('analyzeBtn');
 const startLiveBtn = document.getElementById('startLiveBtn');
+const startYoloLiveBtn = document.getElementById('startYoloLiveBtn');
 const stopLiveBtn = document.getElementById('stopLiveBtn');
+const activeRecognitionMode = document.getElementById('activeRecognitionMode');
+const legacyModeBtn = document.getElementById('legacyModeBtn');
+const yoloModeBtn = document.getElementById('yoloModeBtn');
 const imagePathInput = document.getElementById('imagePathInput');
 const turnInput = document.getElementById('turnInput');
 const buttonsInput = document.getElementById('buttonsInput');
@@ -16,6 +40,12 @@ const keywordsInput = document.getElementById('keywordsInput');
 const intervalInput = document.getElementById('intervalInput');
 const overlayInput = document.getElementById('overlayInput');
 const riverTrackingModeInput = document.getElementById('riverTrackingModeInput');
+const tileRecognitionModeInput = document.getElementById('tileRecognitionModeInput');
+const settlementEnabledInput = document.getElementById('settlementEnabledInput');
+const settlementConfidenceInput = document.getElementById('settlementConfidenceInput');
+const settlementFramesInput = document.getElementById('settlementFramesInput');
+const settlementGapInput = document.getElementById('settlementGapInput');
+const settlementConfigSummary = document.getElementById('settlementConfigSummary');
 const roundWindInput = document.getElementById('roundWindInput');
 const seatWindInput = document.getElementById('seatWindInput');
 const doraTilesInput = document.getElementById('doraTilesInput');
@@ -33,8 +63,29 @@ const targetList = document.getElementById('targetList');
 const cautionList = document.getElementById('cautionList');
 const handTiles = document.getElementById('handTiles');
 const handCount = document.getElementById('handCount');
+const meldTiles = document.getElementById('meldTiles');
+const meldCount = document.getElementById('meldCount');
+const opponentMeldTiles = document.getElementById('opponentMeldTiles');
+const opponentMeldCount = document.getElementById('opponentMeldCount');
 const riverTiles = document.getElementById('riverTiles');
 const riverCount = document.getElementById('riverCount');
+const roundArchiveSummary = document.getElementById('roundArchiveSummary');
+const roundArchiveEmpty = document.getElementById('roundArchiveEmpty');
+const roundArchiveContent = document.getElementById('roundArchiveContent');
+const archiveRoundId = document.getElementById('archiveRoundId');
+const archiveSettlement = document.getElementById('archiveSettlement');
+const archiveTime = document.getElementById('archiveTime');
+const archiveRiichi = document.getElementById('archiveRiichi');
+const archivePlan = document.getElementById('archivePlan');
+const archiveHandTiles = document.getElementById('archiveHandTiles');
+const archiveHandCount = document.getElementById('archiveHandCount');
+const archiveMeldTiles = document.getElementById('archiveMeldTiles');
+const archiveMeldCount = document.getElementById('archiveMeldCount');
+const archiveOpponentMeldTiles = document.getElementById('archiveOpponentMeldTiles');
+const archiveOpponentMeldCount = document.getElementById('archiveOpponentMeldCount');
+const archiveRiverTiles = document.getElementById('archiveRiverTiles');
+const archiveRiverCount = document.getElementById('archiveRiverCount');
+const roundArchiveJson = document.getElementById('roundArchiveJson');
 const decisionType = document.getElementById('decisionType');
 const decisionOutput = document.getElementById('decisionOutput');
 const liveState = document.getElementById('liveState');
@@ -45,10 +96,42 @@ const pipelineSummary = document.getElementById('pipelineSummary');
 const pipelineSteps = document.getElementById('pipelineSteps');
 const timingSummary = document.getElementById('timingSummary');
 const timingLogBody = document.getElementById('timingLogBody');
+const framePreview = document.getElementById('framePreview');
+const framePreviewEmpty = document.getElementById('framePreviewEmpty');
+const framePreviewState = document.getElementById('framePreviewState');
+const framePreviewPath = document.getElementById('framePreviewPath');
+const tableRegionPreview = document.getElementById('tableRegionPreview');
+const tableRegionPreviewEmpty = document.getElementById('tableRegionPreviewEmpty');
+const tableRegionPreviewState = document.getElementById('tableRegionPreviewState');
+const settlementPreview = document.getElementById('settlementPreview');
+const settlementPreviewEmpty = document.getElementById('settlementPreviewEmpty');
+const settlementPreviewState = document.getElementById('settlementPreviewState');
 let autoRefreshTimer = 0;
+let previewLoading = false;
+let lastPreviewPath = '';
+let queuedPreviewPath = null;
 
 function setStatus(text) {
   statusLine.textContent = text || '';
+}
+
+function setRecognitionMode(mode) {
+  const normalized = mode === 'yolo26' ? 'yolo26' : 'legacy';
+  if (tileRecognitionModeInput) {
+    tileRecognitionModeInput.value = normalized;
+  }
+  if (legacyModeBtn) {
+    legacyModeBtn.classList.toggle('is-active', normalized === 'legacy');
+    legacyModeBtn.setAttribute('aria-pressed', String(normalized === 'legacy'));
+  }
+  if (yoloModeBtn) {
+    yoloModeBtn.classList.toggle('is-active', normalized === 'yolo26');
+    yoloModeBtn.setAttribute('aria-pressed', String(normalized === 'yolo26'));
+  }
+  if (activeRecognitionMode) {
+    activeRecognitionMode.textContent = normalized.toUpperCase();
+    activeRecognitionMode.classList.toggle('is-yolo', normalized === 'yolo26');
+  }
 }
 
 function sleep(ms) {
@@ -187,6 +270,37 @@ function percent(value) {
   return `${Math.round(Math.max(0, Math.min(1, number)) * 100)}%`;
 }
 
+function boundedNumber(value, fallback, minimum, maximum) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(minimum, Math.min(maximum, parsed));
+}
+
+function settlementRuntimeArgs() {
+  const enabled = Boolean(settlementEnabledInput?.checked);
+  const minConfidence = boundedNumber(settlementConfidenceInput?.value, 0.72, 0, 1);
+  const confirmFrames = Math.round(boundedNumber(settlementFramesInput?.value, 2, 1, 8));
+  const confirmMaxGapMs = Math.round(boundedNumber(settlementGapInput?.value, 2500, 200, 10000));
+  return {
+    settlement_recognition_enabled: enabled,
+    settlement_min_confidence: minConfidence,
+    settlement_confirm_frames: confirmFrames,
+    settlement_confirm_max_gap_ms: confirmMaxGapMs,
+  };
+}
+
+function renderSettlementConfigSummary() {
+  if (!settlementConfigSummary) {
+    return;
+  }
+  const settings = settlementRuntimeArgs();
+  settlementConfigSummary.textContent = settings.settlement_recognition_enabled
+    ? `已启用 · ${percent(settings.settlement_min_confidence)} · ${settings.settlement_confirm_frames} 帧 · ${settings.settlement_confirm_max_gap_ms} ms`
+    : '已关闭';
+}
+
 async function fetchJson(url, init = {}, timeoutMs = RUN_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -250,35 +364,170 @@ function renderList(node, values, emptyText, className) {
   });
 }
 
-function renderHand(tiles) {
-  handTiles.replaceChildren();
+function renderTileRail(container, countNode, tiles, emptyText) {
+  container.replaceChildren();
   const values = Array.isArray(tiles) ? tiles.filter(Boolean) : [];
-  handCount.textContent = `${values.length} 张`;
+  countNode.textContent = `${values.length} 张`;
   if (!values.length) {
     const empty = document.createElement('span');
     empty.className = 'empty-text';
-    empty.textContent = '暂无手牌';
-    handTiles.appendChild(empty);
+    empty.textContent = emptyText;
+    container.appendChild(empty);
     return;
   }
   values.forEach((tile) => {
     const node = document.createElement('span');
     node.className = `tile tile-${String(tile).slice(-1)}`;
     node.textContent = String(tile);
-    handTiles.appendChild(node);
+    container.appendChild(node);
   });
 }
 
-function renderRiver(piles = {}) {
-  riverTiles.replaceChildren();
+function renderHand(tiles) {
+  renderTileRail(handTiles, handCount, tiles, '暂无手牌');
+}
+
+function renderMeldCollection(container, countNode, melds = [], emptyText = '暂无副露') {
+  container.replaceChildren();
+  const values = Array.isArray(melds) ? melds : [];
+  countNode.textContent = `${values.length} 组`;
+  if (!values.length) {
+    const empty = document.createElement('span');
+    empty.className = 'empty-text';
+    empty.textContent = emptyText;
+    container.appendChild(empty);
+    return;
+  }
+  values.forEach((meld, index) => {
+    const row = document.createElement('div');
+    row.className = 'river-row';
+    const label = document.createElement('span');
+    label.className = 'river-player';
+    label.textContent = `副露 ${index + 1}`;
+    row.appendChild(label);
+    const tiles = Array.isArray(meld?.tiles) ? meld.tiles : [];
+    tiles.forEach((tileValue) => {
+      const tile = String(tileValue || '').trim();
+      if (!tile) {
+        return;
+      }
+      const node = document.createElement('span');
+      node.className = `tile tile-small tile-${tile.slice(-1)}`;
+      node.textContent = tile;
+      row.appendChild(node);
+    });
+    container.appendChild(row);
+  });
+}
+
+function renderMelds(melds = []) {
+  renderMeldCollection(meldTiles, meldCount, melds);
+}
+
+function renderOpponentMeldCollection(
+  container,
+  countNode,
+  meldsByOwner = {},
+  emptyText = '暂无对手副露',
+) {
+  container.replaceChildren();
+  const seatOrder = ['left_opponent', 'top_opponent', 'right_opponent'];
+  const seatLabels = {
+    left_opponent: '上家',
+    top_opponent: '对家',
+    right_opponent: '下家',
+  };
+  const kindLabels = {
+    chi: '吃',
+    pon: '碰',
+    kan: '杠',
+    unknown: '待复核',
+  };
+  const owners = [
+    ...seatOrder,
+    ...Object.keys(meldsByOwner || {}).filter((owner) => !seatOrder.includes(owner)).sort(),
+  ];
+  const groups = owners.flatMap((owner) => (
+    Array.isArray(meldsByOwner?.[owner])
+      ? meldsByOwner[owner].map((meld) => ({ owner, meld }))
+      : []
+  ));
+  countNode.textContent = `${groups.length} 组`;
+  if (!groups.length) {
+    const empty = document.createElement('span');
+    empty.className = 'empty-text';
+    empty.textContent = emptyText;
+    container.appendChild(empty);
+    return;
+  }
+
+  groups.forEach(({ owner, meld }, groupIndex) => {
+    const row = document.createElement('div');
+    row.className = 'river-row opponent-meld-row';
+    row.dataset.owner = owner;
+    const label = document.createElement('span');
+    label.className = 'river-player opponent-meld-label';
+    const kind = String(meld?.kind || 'unknown');
+    const fallbackIndex = groupIndex + 1;
+    label.textContent = `${seatLabels[owner] || owner} · ${kindLabels[kind] || kind} ${Number(meld?.meld_index || fallbackIndex)}`;
+    row.appendChild(label);
+
+    const observed = Array.isArray(meld?.observed_tiles) ? meld.observed_tiles : [];
+    const corrections = Array.isArray(meld?.corrections) ? meld.corrections : [];
+    const tiles = Array.isArray(meld?.tiles) ? meld.tiles : [];
+    const calledTileIndex = meld?.called_tile_index === null || meld?.called_tile_index === undefined
+      ? -1
+      : Number(meld.called_tile_index);
+    tiles.forEach((tileValue, tileIndex) => {
+      const tile = String(tileValue || '').trim();
+      if (!tile) {
+        return;
+      }
+      const node = document.createElement('span');
+      node.className = `tile tile-small tile-${tile.slice(-1)}`;
+      if (calledTileIndex === tileIndex) {
+        node.classList.add('tile-called');
+      }
+      const correction = corrections.find((item) => Number(item?.tile_index) === tileIndex);
+      if (correction) {
+        node.classList.add('tile-corrected');
+        node.title = `原始识别 ${correction.from}，按横置叫牌与合法牌组修正为 ${correction.to}`;
+      } else if (observed[tileIndex] && String(observed[tileIndex]) !== tile) {
+        node.title = `原始识别 ${observed[tileIndex]}，修正为 ${tile}`;
+      }
+      node.textContent = tile;
+      row.appendChild(node);
+    });
+    if (meld?.tile_identity_reliable === false) {
+      row.classList.add('is-unreliable');
+      row.title = '该组几何成立，但牌面组合尚未通过合法性复核';
+    }
+    container.appendChild(row);
+  });
+}
+
+function renderOpponentMelds(meldsByOwner = {}) {
+  renderOpponentMeldCollection(opponentMeldTiles, opponentMeldCount, meldsByOwner);
+}
+
+function renderRiverCollection(container, countNode, piles = {}, emptyText = '暂无牌河') {
+  container.replaceChildren();
   const entries = Object.entries(piles || {});
   const total = entries.reduce((count, [, items]) => count + (Array.isArray(items) ? items.length : 0), 0);
-  riverCount.textContent = `${total} 张`;
+  const claimed = entries.reduce(
+    (count, [, items]) => count + (Array.isArray(items)
+      ? items.filter((item) => Boolean(item?.claimed_into_meld)).length
+      : 0),
+    0,
+  );
+  countNode.textContent = claimed
+    ? `${total} 张历史 · ${total - claimed} 张在河`
+    : `${total} 张`;
   if (!total) {
     const empty = document.createElement('span');
     empty.className = 'empty-text';
-    empty.textContent = '暂无牌河';
-    riverTiles.appendChild(empty);
+    empty.textContent = emptyText;
+    container.appendChild(empty);
     return;
   }
   entries.forEach(([player, items]) => {
@@ -296,10 +545,72 @@ function renderRiver(piles = {}) {
       const node = document.createElement('span');
       node.className = `tile tile-small tile-${tile.slice(-1)}`;
       node.textContent = tile;
+      if (item?.claimed_into_meld) {
+        node.classList.add('tile-claimed');
+        const caller = String(item?.claimed_by || '其他玩家');
+        const kind = String(item?.claimed_meld_kind || '副露');
+        node.title = `${tile} 已被 ${caller} 的 ${kind} 鸣走；仍保留为弃牌历史，不在剩余枚数中重复计数。`;
+      }
       row.appendChild(node);
     });
-    riverTiles.appendChild(row);
+    container.appendChild(row);
   });
+}
+
+function renderRiver(piles = {}) {
+  renderRiverCollection(riverTiles, riverCount, piles);
+}
+
+function renderRoundArchive(data = {}) {
+  const hasArchivePayload = Array.isArray(data.round_history)
+    || Object.prototype.hasOwnProperty.call(data, 'last_round_archive');
+  if (!hasArchivePayload) {
+    return;
+  }
+  const history = Array.isArray(data.round_history) ? data.round_history : [];
+  const archive = data.last_round_archive && typeof data.last_round_archive === 'object'
+    ? data.last_round_archive
+    : history.at(-1) || {};
+  if (!archive.archive_id) {
+    roundArchiveSummary.textContent = '暂无已结束小局';
+    roundArchiveEmpty.hidden = false;
+    roundArchiveContent.hidden = true;
+    return;
+  }
+
+  const state = archive.state && typeof archive.state === 'object' ? archive.state : {};
+  const settlement = archive.settlement && typeof archive.settlement === 'object' ? archive.settlement : {};
+  const kindLabel = {
+    win: '和牌',
+    exhaustive_draw: '荒牌流局',
+    abortive_draw: '途中流局',
+    unknown: '未分类结算',
+  }[settlement.kind] || '结算';
+  const archivedAt = Number(archive.archived_at || 0);
+  const timeLabel = archivedAt > 0 ? new Date(archivedAt * 1000).toLocaleString() : '-';
+  const riichiPlayers = Array.isArray(state.riichi_players) ? state.riichi_players.filter(Boolean) : [];
+
+  roundArchiveEmpty.hidden = true;
+  roundArchiveContent.hidden = false;
+  roundArchiveSummary.textContent = `${compact(archive.round_id, archive.archive_id)} · ${kindLabel} · 共 ${history.length || 1} 局`;
+  archiveRoundId.textContent = `${compact(archive.round_id)} / ${archive.archive_id}`;
+  archiveSettlement.textContent = `${kindLabel} · ${percent(settlement.confidence)}`;
+  archiveTime.textContent = timeLabel;
+  archiveRiichi.textContent = riichiPlayers.length ? riichiPlayers.join('、') : '无';
+  archivePlan.textContent = compact(
+    state.local_direction || state.local_plan || state.current_plan || state.opening_plan,
+    '无已保存策略',
+  );
+  renderTileRail(archiveHandTiles, archiveHandCount, state.last_hand_tiles, '未保存手牌');
+  renderMeldCollection(archiveMeldTiles, archiveMeldCount, state.last_melds, '无副露');
+  renderOpponentMeldCollection(
+    archiveOpponentMeldTiles,
+    archiveOpponentMeldCount,
+    state.last_opponent_melds,
+    '无对手副露',
+  );
+  renderRiverCollection(archiveRiverTiles, archiveRiverCount, state.last_discard_piles, '无牌河数据');
+  roundArchiveJson.textContent = JSON.stringify(archive, null, 2);
 }
 
 function statusText(status) {
@@ -336,6 +647,13 @@ function buildPipelineSteps(data = {}) {
   const meld = perception.meld || {};
   const action = perception.action || {};
   const river = perception.river || {};
+  const settlement = perception.settlement || {};
+  const opponentMeldsByOwner = firstNonEmptyPiles(
+    state.last_opponent_melds,
+    river.opponent_melds,
+  );
+  const opponentMeldCountValue = Object.values(opponentMeldsByOwner)
+    .reduce((count, items) => count + (Array.isArray(items) ? items.length : 0), 0);
   const live = data.live || {};
   const handCountValue = Array.isArray(hand.hand_tiles)
     ? hand.hand_tiles.length
@@ -348,7 +666,19 @@ function buildPipelineSteps(data = {}) {
 
   let captureStatus = 'waiting';
   let captureDetail = '等待实战观察或手动分析';
-  if (live.status === 'error') {
+  if (live.status === 'waiting_for_game') {
+    captureStatus = 'active';
+    captureDetail = '窗口已绑定，等待正式牌桌连续两帧确认';
+  } else if (live.status === 'view_obstructed') {
+    captureStatus = 'blocked';
+    captureDetail = '菜单或其他窗口遮挡牌桌；当前对局数据已保留';
+  } else if (['settlement_candidate', 'round_settlement', 'awaiting_next_round'].includes(live.status)) {
+    captureStatus = 'done';
+    captureDetail = `${live.frame_index || 0} 帧，正在处理小局边界`;
+  } else if (live.status === 'verifying_new_round') {
+    captureStatus = 'active';
+    captureDetail = '遮挡已消失，正在复核是否进入新局';
+  } else if (live.status === 'error') {
     captureStatus = 'blocked';
     captureDetail = live.last_error || '截图循环异常';
   } else if (live.status === 'waiting_for_window') {
@@ -363,6 +693,26 @@ function buildPipelineSteps(data = {}) {
   } else if (running) {
     captureStatus = 'active';
     captureDetail = '等待第一帧截图';
+  }
+
+  const settlementPhase = String(settlement.phase || state.settlement_phase || live.status || 'playing');
+  const settlementKind = {
+    win: '和牌结算',
+    exhaustive_draw: '荒牌流局',
+    abortive_draw: '途中流局',
+    unknown: '小局结算',
+  }[settlement.kind || state.settlement_kind] || '结算';
+  let settlementStatus = hasFrame ? 'done' : 'waiting';
+  let settlementDetail = hasFrame ? '本帧未发现结算，继续跟踪本局' : '等待截图';
+  if (settlementPhase === 'settlement_candidate') {
+    settlementStatus = 'active';
+    settlementDetail = `候选 ${Number(settlement.confirmation_frames || 0)}/${Number(settlement.required_frames || 2)} 帧，正在复核`;
+  } else if (settlementPhase === 'settlement_latched' || live.status === 'round_settlement') {
+    settlementStatus = 'active';
+    settlementDetail = `${settlementKind}已确认；冻结上一局识别结果`;
+  } else if (settlementPhase === 'awaiting_next_round' || live.status === 'awaiting_next_round') {
+    settlementStatus = 'done';
+    settlementDetail = `${settlementKind}已关闭；开始确认下一局手牌`;
   }
 
   let calibrationStatus = 'waiting';
@@ -406,6 +756,11 @@ function buildPipelineSteps(data = {}) {
     meldStatus = meld.reason.includes('unavailable') ? 'blocked' : 'waiting';
     meldDetail = meld.reason;
   }
+  if (opponentMeldCountValue > 0) {
+    const opponentDetail = `对手副露 ${opponentMeldCountValue} 组（已分座位）`;
+    meldDetail = meldStatus === 'done' ? `${meldDetail}；${opponentDetail}` : opponentDetail;
+    meldStatus = 'done';
+  }
 
   let actionStatus = 'waiting';
   let actionDetail = '等待操作按钮';
@@ -447,8 +802,64 @@ function buildPipelineSteps(data = {}) {
     strategyDetail = `操作窗口：${decision.decision_type}`;
   }
 
+  if (live.status === 'waiting_for_game') {
+    calibrationStatus = 'skipped';
+    calibrationDetail = '正式牌桌尚未确认';
+    handStatus = 'skipped';
+    handDetail = '场景门控中，不启动手牌识别';
+    meldStatus = 'skipped';
+    meldDetail = '场景门控中，不启动副露识别';
+    actionStatus = 'skipped';
+    actionDetail = '场景门控中，不采信按钮';
+    riverStatus = 'skipped';
+    riverDetail = '场景门控中，不启动牌河识别';
+    strategyStatus = 'waiting';
+    strategyDetail = '进入正式牌局后再生成策略';
+  } else if (live.status === 'view_obstructed') {
+    handStatus = 'blocked';
+    handDetail = '当前画面不可可靠识别，暂停刷新';
+    meldStatus = 'skipped';
+    meldDetail = '遮挡中，保留上次结果';
+    actionStatus = 'skipped';
+    actionDetail = '遮挡中，不采信按钮';
+    riverStatus = 'skipped';
+    riverDetail = '遮挡中，牌河不清空也不追加';
+    strategyStatus = hasPlan ? 'done' : 'waiting';
+    strategyDetail = hasPlan ? '保留遮挡前的策略，暂不更新' : '等待牌桌重新可见';
+  } else if (live.status === 'verifying_new_round') {
+    handStatus = 'active';
+    handDetail = '已发现显著不同的手牌，等待第二帧确认';
+    strategyStatus = 'waiting';
+    strategyDetail = '新局尚未确认，不覆盖上一局状态';
+  } else if (live.status === 'settlement_candidate' || live.status === 'round_settlement') {
+    calibrationStatus = 'skipped';
+    calibrationDetail = '结算门控已接管本帧';
+    handStatus = 'skipped';
+    handDetail = '冻结上一局手牌';
+    meldStatus = 'skipped';
+    meldDetail = '冻结上一局副露';
+    actionStatus = 'skipped';
+    actionDetail = '结算中不采信操作按钮';
+    riverStatus = 'skipped';
+    riverDetail = '冻结上一局牌河，不追加也不清空';
+    strategyStatus = hasPlan ? 'done' : 'skipped';
+    strategyDetail = hasPlan ? '保留上一局策略作为结算记录' : '本帧不生成策略';
+  } else if (live.status === 'awaiting_next_round') {
+    handStatus = handCountValue >= 12 ? 'active' : 'waiting';
+    handDetail = handCountValue >= 12
+      ? `候选新手牌 ${handCountValue} 张，确认 ${Number(settlement.new_hand_confirmation_frames || 0)}/2 帧`
+      : '等待 12 至 14 张稳定新手牌';
+    actionStatus = 'skipped';
+    actionDetail = '新局确认前不采信按钮';
+    riverStatus = 'skipped';
+    riverDetail = '新局确认前继续保留上一局牌河';
+    strategyStatus = 'waiting';
+    strategyDetail = '新手牌稳定两帧后重新生成';
+  }
+
   return [
     pipelineStep('capture', '截图/窗口', captureStatus, captureDetail),
+    pipelineStep('settlement', '结算边界', settlementStatus, settlementDetail),
     pipelineStep('calibration', '分辨率校准', calibrationStatus, calibrationDetail),
     pipelineStep('hand', '手牌识别', handStatus, handDetail),
     pipelineStep('meld', '副露识别', meldStatus, meldDetail),
@@ -510,6 +921,9 @@ function shortDecision(value) {
     call_window: '鸣牌',
     riichi_window: '立直',
     defense_alert: '防守',
+    settlement_candidate: '结算候选',
+    round_settlement: '结算确认',
+    awaiting_next_round: '等新局',
     round_idle: '等下局',
     observe: '观察',
     error: '错误',
@@ -525,7 +939,7 @@ function renderTimingLog(rows = []) {
     timingSummary.textContent = '等待第一帧';
     const emptyRow = document.createElement('tr');
     const empty = document.createElement('td');
-    empty.colSpan = 15;
+    empty.colSpan = 18;
     empty.className = 'timing-empty';
     empty.textContent = '实战启动后，这里会显示每一帧的定位、截图、识别、策略耗时。';
     emptyRow.appendChild(empty);
@@ -547,10 +961,13 @@ function renderTimingLog(rows = []) {
       compact(item.status),
       shortDecision(item.decision),
       compact(item.source),
+      compact(item.tile_mode),
+      compact(item.fallback_reason),
       compact(item.river_mode),
       compact(item.river_reason),
       formatMs(item.locate_ms),
       formatMs(item.capture_ms),
+      formatMs(item.settlement_ms),
       formatMs(item.analyze_ms),
       formatMs(item.hand_ms),
       formatMs(item.meld_ms),
@@ -561,7 +978,7 @@ function renderTimingLog(rows = []) {
     ].forEach((value, index) => {
       const cell = document.createElement('td');
       cell.textContent = String(value);
-      if (index >= 6) {
+      if (index >= 8) {
         cell.className = 'timing-number';
       }
       row.appendChild(cell);
@@ -578,6 +995,20 @@ function renderDashboard(data = {}) {
   if (riverTrackingModeInput && config.river_tracking_mode) {
     riverTrackingModeInput.value = config.river_tracking_mode;
   }
+  setRecognitionMode(config.tile_recognition_mode || tileRecognitionModeInput?.value);
+  if (settlementEnabledInput && typeof config.settlement_recognition_enabled === 'boolean') {
+    settlementEnabledInput.checked = config.settlement_recognition_enabled;
+  }
+  if (settlementConfidenceInput && config.settlement_min_confidence !== undefined) {
+    settlementConfidenceInput.value = String(config.settlement_min_confidence);
+  }
+  if (settlementFramesInput && config.settlement_confirm_frames !== undefined) {
+    settlementFramesInput.value = String(config.settlement_confirm_frames);
+  }
+  if (settlementGapInput && config.settlement_confirm_max_gap_ms !== undefined) {
+    settlementGapInput.value = String(config.settlement_confirm_max_gap_ms);
+  }
+  renderSettlementConfigSummary();
   const localPlan = state.local_direction || state.local_plan || state.current_plan || state.opening_plan || decision.suggestion;
   const localDetail = decision.detail || state.opening_plan || '';
   const overlayText = data.overlay_text || '';
@@ -602,11 +1033,20 @@ function renderDashboard(data = {}) {
   renderList(targetList, state.target_shapes, '暂无目标形状', 'tag');
   renderList(cautionList, state.caution_points, '暂无风险点', 'note');
   renderHand(firstNonEmptyList(state.last_hand_tiles, decision.hand_tiles, decision.perception?.hand?.hand_tiles));
+  renderMelds(decision.perception?.meld?.melds || state.last_melds || []);
+  renderOpponentMelds(
+    firstNonEmptyPiles(
+      state.last_opponent_melds,
+      decision.perception?.river?.opponent_melds,
+    ),
+  );
   renderRiver(firstNonEmptyPiles(state.last_discard_piles, decision.perception?.river?.discard_piles));
+  renderRoundArchive(data);
   renderPipeline(data);
   renderTimingLog(data.timing_log || []);
   decisionOutput.textContent = JSON.stringify(decision && Object.keys(decision).length ? decision : state, null, 2);
   renderLive(live);
+  refreshFramePreview(live.last_frame_path).catch(() => {});
 }
 
 async function refreshStatus() {
@@ -618,14 +1058,154 @@ async function refreshStatus() {
 
 function renderLive(live = {}) {
   const running = Boolean(live.running);
-  liveState.textContent = compact(live.status, 'stopped');
+  const statusLabel = {
+    waiting_for_game: '等待进入牌局',
+    stopped: '已停止',
+    starting: '启动中',
+    observing: '识别中',
+    waiting_for_window: '寻找雀魂窗口',
+    view_obstructed: '牌桌被遮挡',
+    verifying_new_round: '复核新局',
+    settlement_candidate: '复核结算',
+    round_settlement: '结算已确认',
+    awaiting_next_round: '等待下一局',
+    error: '运行异常',
+  }[live.status];
+  liveState.textContent = statusLabel || compact(live.status, '已停止');
   liveState.classList.toggle('is-running', running);
   liveFrame.textContent = `${Number(live.frame_index || 0)} frames`;
   liveWindow.textContent = compact(live.last_window_title || live.last_binding?.window_title, '未绑定窗口');
   liveError.textContent = compact(live.last_error || live.last_capture_source || live.last_frame_path, '-');
-  startLiveBtn.disabled = running;
-  stopLiveBtn.disabled = !running;
+  syncLiveButtons(running);
   scheduleAutoRefresh(running);
+}
+
+function clearFramePreview(message = '等待实战截图') {
+  lastPreviewPath = '';
+  framePreview.removeAttribute('src');
+  framePreview.hidden = true;
+  framePreviewEmpty.hidden = false;
+  framePreviewEmpty.textContent = message;
+  tableRegionPreview.removeAttribute('src');
+  tableRegionPreview.hidden = true;
+  tableRegionPreviewEmpty.hidden = false;
+  tableRegionPreviewEmpty.textContent = message;
+  tableRegionPreviewState.textContent = message;
+  settlementPreview.removeAttribute('src');
+  settlementPreview.hidden = true;
+  settlementPreviewEmpty.hidden = false;
+  settlementPreviewEmpty.textContent = message;
+  settlementPreviewState.textContent = message;
+  framePreviewState.textContent = message;
+}
+
+async function refreshFramePreview(path) {
+  const requestedPath = String(path || '').trim();
+  framePreviewPath.textContent = requestedPath || '-';
+  if (previewLoading) {
+    // 加载期间只保留最新帧，当前请求完成后立刻补跑，避免结算图停在旧帧。
+    // Keep only the newest queued frame while loading so settlement evidence cannot remain stale.
+    queuedPreviewPath = requestedPath;
+    if (!requestedPath) {
+      clearFramePreview();
+    }
+    return;
+  }
+  if (!requestedPath) {
+    clearFramePreview();
+    return;
+  }
+  if (requestedPath === lastPreviewPath) {
+    return;
+  }
+  previewLoading = true;
+  queuedPreviewPath = null;
+  framePreviewState.textContent = '加载截图';
+  tableRegionPreviewState.textContent = '生成变换分区图';
+  settlementPreviewState.textContent = '生成诊断图';
+  try {
+    const previewArgs = { image_path: requestedPath };
+    const [frameResult, tableRegionResult, settlementResult] = await Promise.allSettled([
+      callPlugin('mahjong_coach_frame_preview', previewArgs, 15000),
+      callPlugin('mahjong_coach_table_region_preview', previewArgs, 15000),
+      callPlugin('mahjong_coach_settlement_preview', previewArgs, 15000),
+    ]);
+    if (queuedPreviewPath !== null && queuedPreviewPath !== requestedPath) {
+      return;
+    }
+    const data = frameResult.status === 'fulfilled' ? frameResult.value : {};
+    if (!data.data_url) {
+      clearFramePreview('截图不可用');
+      return;
+    }
+    framePreview.src = data.data_url;
+    framePreview.hidden = false;
+    framePreviewEmpty.hidden = true;
+    framePreviewPath.textContent = compact(data.image_path, requestedPath);
+    framePreviewState.textContent = `${Number(data.width || 0)} × ${Number(data.height || 0)}`;
+    const tableRegion = tableRegionResult.status === 'fulfilled' ? tableRegionResult.value : {};
+    if (tableRegion.data_url && tableRegion.transformed) {
+      tableRegionPreview.src = tableRegion.data_url;
+      tableRegionPreview.hidden = false;
+      tableRegionPreviewEmpty.hidden = true;
+      tableRegionPreviewState.textContent = `${Number(tableRegion.width || 0)} × ${Number(tableRegion.height || 0)} · ${Number(tableRegion.detection_count || 0)} 框`;
+    } else {
+      tableRegionPreview.removeAttribute('src');
+      tableRegionPreview.hidden = true;
+      tableRegionPreviewEmpty.hidden = false;
+      tableRegionPreviewEmpty.textContent = `牌桌变换不可用：${compact(tableRegion.reason, '未定位牌桌')}`;
+      tableRegionPreviewState.textContent = '变换失败';
+    }
+    const diagnostic = settlementResult.status === 'fulfilled' ? settlementResult.value : {};
+    if (diagnostic.data_url) {
+      settlementPreview.src = diagnostic.data_url;
+      settlementPreview.hidden = false;
+      settlementPreviewEmpty.hidden = true;
+      const kindLabel = {
+        win: '和牌',
+        exhaustive_draw: '荒牌流局',
+        abortive_draw: '途中流局',
+        unknown: '未分类结算',
+      }[diagnostic.kind] || '未命中';
+      settlementPreviewState.textContent = diagnostic.detected
+        ? `${kindLabel} · ${percent(diagnostic.confidence)} · 当前帧`
+        : `未命中 · ${compact(diagnostic.reason, '-')} · 当前帧`;
+    } else {
+      settlementPreview.removeAttribute('src');
+      settlementPreview.hidden = true;
+      settlementPreviewEmpty.hidden = false;
+      settlementPreviewEmpty.textContent = '诊断图不可用';
+      settlementPreviewState.textContent = '生成失败';
+    }
+    lastPreviewPath = String(data.image_path || requestedPath);
+  } catch (_error) {
+    clearFramePreview('预览加载失败');
+  } finally {
+    previewLoading = false;
+    const nextPath = queuedPreviewPath;
+    queuedPreviewPath = null;
+    if (nextPath !== null && nextPath !== requestedPath) {
+      if (nextPath) {
+        refreshFramePreview(nextPath).catch(() => {});
+      } else {
+        clearFramePreview();
+      }
+    }
+  }
+}
+
+function syncLiveButtons(running) {
+  startLiveBtn.disabled = running;
+  startYoloLiveBtn.disabled = running;
+  stopLiveBtn.disabled = !running;
+  [
+    settlementEnabledInput,
+    settlementConfidenceInput,
+    settlementFramesInput,
+    settlementGapInput,
+  ].filter(Boolean).forEach((input) => {
+    input.disabled = running;
+  });
 }
 
 function scheduleAutoRefresh(running) {
@@ -663,7 +1243,7 @@ function tileValues(text) {
 async function resetRound() {
   setStatus('重置中');
   const data = await callPlugin('mahjong_coach_reset_round', { round_id: `round-${Date.now()}` }, 15000);
-  renderDashboard(data.round_state || data);
+  renderDashboard(data);
   setStatus('ready');
 }
 
@@ -678,6 +1258,8 @@ async function analyzeFrame() {
     observed_buttons: observedButtons,
     self_turn_index: Number(turnInput.value || 0),
     force_checkpoint: Boolean(forceCheckpointInput.checked),
+    ...settlementRuntimeArgs(),
+    tile_recognition_mode: tileRecognitionModeInput ? tileRecognitionModeInput.value : 'legacy',
     round_wind: analysisRoundWindInput.value.trim(),
     seat_wind: analysisSeatWindInput.value.trim(),
     dora_tiles: tileValues(analysisDoraTilesInput.value),
@@ -688,17 +1270,31 @@ async function analyzeFrame() {
 
 async function startLive() {
   setStatus('启动实战观察');
+  const overlayRequested = Boolean(overlayInput.checked);
   const data = await callPlugin('mahjong_coach_start_live', {
     keywords: keywordValues(),
     interval_ms: Number(intervalInput.value || 1200),
-    overlay: Boolean(overlayInput.checked),
+    overlay: overlayRequested,
+    ...settlementRuntimeArgs(),
     river_tracking_mode: riverTrackingModeInput ? riverTrackingModeInput.value : 'checkpoint',
+    tile_recognition_mode: tileRecognitionModeInput ? tileRecognitionModeInput.value : 'legacy',
     round_wind: roundWindInput.value.trim(),
     seat_wind: seatWindInput.value.trim(),
     dora_tiles: tileValues(doraTilesInput.value),
   }, 15000);
+  if (overlayRequested && data.overlay_ready !== true) {
+    throw new Error('实战已请求启动，但操作浮窗未能打开，请查看插件日志。');
+  }
   renderLive(data.live || {});
   await refreshStatus();
+}
+
+async function startYoloLive() {
+  // 中文：快捷入口固定启用 YOLO26 和实时牌河，原版设置仍可随时切回。
+  // English: The quick entry enables YOLO26 and live river tracking while keeping legacy selectable.
+  setRecognitionMode('yolo26');
+  riverTrackingModeInput.value = 'live';
+  await startLive();
 }
 
 async function stopLive() {
@@ -716,7 +1312,11 @@ function bind(button, handler) {
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
-      button.disabled = false;
+      if (button === startLiveBtn || button === startYoloLiveBtn || button === stopLiveBtn) {
+        syncLiveButtons(liveState.classList.contains('is-running'));
+      } else {
+        button.disabled = false;
+      }
     }
   });
 }
@@ -725,8 +1325,22 @@ bind(refreshBtn, refreshStatus);
 bind(resetBtn, resetRound);
 bind(analyzeBtn, analyzeFrame);
 bind(startLiveBtn, startLive);
+bind(startYoloLiveBtn, startYoloLive);
 bind(stopLiveBtn, stopLive);
 
+legacyModeBtn.addEventListener('click', () => setRecognitionMode('legacy'));
+yoloModeBtn.addEventListener('click', () => setRecognitionMode('yolo26'));
+[
+  settlementEnabledInput,
+  settlementConfidenceInput,
+  settlementFramesInput,
+  settlementGapInput,
+].filter(Boolean).forEach((input) => {
+  input.addEventListener('input', renderSettlementConfigSummary);
+  input.addEventListener('change', renderSettlementConfigSummary);
+});
+
+renderSettlementConfigSummary();
 refreshStatus().catch((error) => {
   setStatus(error instanceof Error ? error.message : String(error));
 });
