@@ -25,6 +25,16 @@ test('parser accepts BOM, quoted commas, and Chinese export headers', () => {
   }])
 })
 
+test('collector reports an empty import directory as waiting for an export', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'neko-china-empty-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const result = await collectChinaSearchExport(definition, { exportPath: directory })
+
+  assert.equal(result.status, 'not_run')
+  assert.equal(result.availability, 'not_run')
+  assert.match(result.reason, /等待本地导出/u)
+})
+
 test('collector reads the newest local export and computes consecutive seven-day windows', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'neko-china-search-'))
   t.after(() => rm(directory, { recursive: true, force: true }))

@@ -519,7 +519,7 @@ test('free mode renders the concise daily format with Bing and ignores intention
   assert.match(markdown, /7 \/ 70/)
   assert.match(markdown, /ai桌宠/)
   assert.doesNotMatch(markdown, /baidu-20260727\.csv/)
-  assert.match(markdown, /NOT_RUN/)
+  assert.match(markdown, /等待本地导出/)
   assert.match(markdown, /主动未运行/)
   assert.doesNotMatch(markdown, /关键词 → 落地页 → 排名 → CTA 主表/)
 })

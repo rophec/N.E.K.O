@@ -1556,6 +1556,7 @@ function chinaSearchPlatform(source) {
 }
 
 function chinaSearchStatus(source) {
+  if (source?.status === 'not_run' && source?.reason?.startsWith('等待本地导出')) return '等待本地导出'
   if (source?.status === 'not_run' || source?.status === 'unavailable') return statusLabel(source.status)
   if (source?.availability === 'empty') return '文件无可识别数据'
   return source?.status === 'ok' ? '正常' : statusLabel(source?.status)

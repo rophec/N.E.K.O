@@ -166,8 +166,9 @@ export async function collectChinaSearchExport(definition, { exportPath } = {}) 
   const file = await latestExport(exportPath)
   if (!file) return {
     ...definition,
-    status: 'ok',
-    availability: 'empty',
+    status: 'not_run',
+    availability: 'not_run',
+    reason: `等待本地导出：${resolve(exportPath)}`,
     collectedAt: null,
     sourceFile: null,
     traffic: { dataThrough: null, recent7: null, previous7: null, trend7: null, daily: [] },
