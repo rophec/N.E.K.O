@@ -1,0 +1,13 @@
+{
+  "text": "没问题主人。",
+  "sample_rate": 24000,
+  "pcm_bytes": 61440,
+  "wav_sha256": "25b03d7976aec70fd701913b2319cd065ccb394970024c040032c7f108bb6387",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

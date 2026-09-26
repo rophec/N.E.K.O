@@ -1,0 +1,13 @@
+{
+  "text": "光凝。",
+  "sample_rate": 24000,
+  "pcm_bytes": 49920,
+  "wav_sha256": "bdf20bf899a443bdbb0271d635fc9ecbdf9532fcf1cfb7edfc6a889b22aab59c",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

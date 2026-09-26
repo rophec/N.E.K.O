@@ -1,0 +1,13 @@
+{
+  "text": "主人是说要调整我的音色吗？",
+  "sample_rate": 24000,
+  "pcm_bytes": 134400,
+  "wav_sha256": "85d34419fb9fcba1df243659b60dd3549ca6cf5cba850660550ae231f21c2c86",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

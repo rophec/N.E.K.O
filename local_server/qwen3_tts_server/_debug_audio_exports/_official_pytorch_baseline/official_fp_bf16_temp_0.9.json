@@ -1,0 +1,12 @@
+{
+  "model": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\modelsprepare\\Qwen3-TTS-GGUF\\source_models\\Qwen3-TTS-12Hz-1.7B-Base",
+  "reference": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\20260715_155340_888600_e98512f7\\reference_audio.wav",
+  "ref_text": "夏天真的到来啦！ 在夏令营期间，为了 犒劳老师，送给您特别奖励！",
+  "text": "好的主人。我现在开始说。",
+  "sample_rate": 24000,
+  "load_seconds": 1.9316870000002382,
+  "inference_seconds": 587.0008628999967,
+  "temperature": 0.9,
+  "subtalker_temperature": 0.9,
+  "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_official_pytorch_baseline\\official_fp_bf16_temp_0.9.wav"
+}

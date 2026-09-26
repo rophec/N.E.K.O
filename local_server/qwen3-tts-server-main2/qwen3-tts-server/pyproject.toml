@@ -1,0 +1,22 @@
+[project]
+name = "neko-qwen3-tts-server"
+version = "0.1.0"
+description = "N.E.K.O. local sidecar for the supported Qwen3-TTS GGUF runtime"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "fastapi==0.128.0",
+  "gguf>=0.19.0",
+  "numpy>=1.26,<2",
+  "onnxruntime-directml==1.24.4",
+  "pydantic>=2.10",
+  "pydantic-settings>=2.10",
+  "pyyaml>=6.0",
+  "scipy>=1.11",
+  "soundfile>=0.12",
+  "tokenizers>=0.15",
+  "uvicorn[standard]>=0.30",
+]
+
+[tool.uv]
+package = false

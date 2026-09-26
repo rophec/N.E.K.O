@@ -1,0 +1,13 @@
+{
+  "text": "我整理的时候会把每个资料都加上对应的魔法效果说明，你看看这样行不行？",
+  "sample_rate": 24000,
+  "pcm_bytes": 272640,
+  "wav_sha256": "7a2a49c982c0a1e31c2cfde92153f82cdfae7ba545ca3150366553cfa5733077",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

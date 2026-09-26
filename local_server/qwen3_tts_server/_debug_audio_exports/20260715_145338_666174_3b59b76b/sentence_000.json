@@ -1,0 +1,13 @@
+{
+  "text": "主人，项目相关的具体信息我还不清楚，比如项目主题、需要的资料类型这些，你得告诉我才行。",
+  "sample_rate": 24000,
+  "pcm_bytes": 410880,
+  "wav_sha256": "64c12f3f93320d81bb6825d4ad32a6b61a92c1f08c09fe9a401cb5ddf21f2d00",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

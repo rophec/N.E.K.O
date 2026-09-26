@@ -1,0 +1,13 @@
+{
+  "text": "你觉得这样可以吗。",
+  "sample_rate": 24000,
+  "pcm_bytes": 84480,
+  "wav_sha256": "29d7fbc5bc5cc9c20c207fb04530e027c5af17ca9b9c1a1fe8421143c7e7d164",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

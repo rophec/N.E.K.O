@@ -1,0 +1,13 @@
+{
+  "text": "能的主人，消息收发都正常。",
+  "sample_rate": 24000,
+  "pcm_bytes": 145920,
+  "wav_sha256": "867f037908f37b58a130b4a6ea21b1115e45572026e2541f4982cd6a350efa38",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

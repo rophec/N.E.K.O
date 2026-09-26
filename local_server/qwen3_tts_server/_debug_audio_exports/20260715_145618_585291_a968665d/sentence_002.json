@@ -1,0 +1,13 @@
+{
+  "text": "每句之间会停两秒左右。",
+  "sample_rate": 24000,
+  "pcm_bytes": 119040,
+  "wav_sha256": "6dfeaa9a9feadc2954cb72f4fda185474471d1eccf7f61ee71baccce4342e82a",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

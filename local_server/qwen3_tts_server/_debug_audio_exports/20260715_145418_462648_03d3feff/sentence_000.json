@@ -1,0 +1,13 @@
+{
+  "text": "好呀，我加个，标注成念对应咒语就掉你喜欢的甜品的隐藏彩蛋，和瞬寻咒放一起？",
+  "sample_rate": 24000,
+  "pcm_bytes": 376320,
+  "wav_sha256": "b0e556acd06acd4e031d84464431158072c69bf6c9ab91951109a1c127fdb8fa",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

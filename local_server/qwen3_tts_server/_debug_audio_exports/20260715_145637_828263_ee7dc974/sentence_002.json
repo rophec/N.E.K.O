@@ -1,0 +1,13 @@
+{
+  "text": "只要你想听。",
+  "sample_rate": 24000,
+  "pcm_bytes": 49920,
+  "wav_sha256": "b746e5756a7ea6d5f9d16f99dc171fe4f001d457b56cf90080598487b78b9bc4",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

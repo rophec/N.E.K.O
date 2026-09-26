@@ -1,0 +1,13 @@
+{
+  "text": "我还能根据你喜欢的风格调整内容，比如多加点和星星月亮相关的描述。",
+  "sample_rate": 24000,
+  "pcm_bytes": 334080,
+  "wav_sha256": "2eda617ce1d92a429437e05074b4673e57785aea679857b7c3da28b28551ff38",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker_codes",
+  "synthesis_mode": "clone",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

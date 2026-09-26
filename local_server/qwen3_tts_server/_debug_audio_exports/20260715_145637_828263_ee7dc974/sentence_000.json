@@ -1,0 +1,13 @@
+{
+  "text": "可以继续说的主人。",
+  "sample_rate": 24000,
+  "pcm_bytes": 88320,
+  "wav_sha256": "02f456cfa6ca6b3ee58e1a1a6762e561fa405c671c0a879c9faa95b5cbcfe1fb",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

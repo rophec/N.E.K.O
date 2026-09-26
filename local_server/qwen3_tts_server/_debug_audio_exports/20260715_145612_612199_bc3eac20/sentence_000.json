@@ -1,0 +1,13 @@
+{
+  "text": "主人是说，让我把连续说的内容拆成单独的句子分开说吗？",
+  "sample_rate": 24000,
+  "pcm_bytes": 241920,
+  "wav_sha256": "68a06584c8d1822c4b30bb052f5f55a3410444ac928a2c61f6a8d36e497eb4ee",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

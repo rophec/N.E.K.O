@@ -1,0 +1,13 @@
+{
+  "text": "可以加，我给这个魔法取名，标注成能让你瞬间定位到对应资料的效果，要不要把它设成清单的专属配套魔法？",
+  "sample_rate": 24000,
+  "pcm_bytes": 430080,
+  "wav_sha256": "d990afc90ada4290c4ebf7bdfc71ece5f59ec1a208bc3c38099aedff6a95e682",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

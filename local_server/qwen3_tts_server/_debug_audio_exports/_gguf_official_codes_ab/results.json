@@ -1,0 +1,98 @@
+[
+  {
+    "anchor": "onnx_fp16",
+    "text_index": 0,
+    "text": "好的主人。我现在开始说。",
+    "similarity": 0.93310546875,
+    "elapsed": 1.3955706000015198,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_official_codes_ab\\onnx_fp16_text_0.wav"
+  },
+  {
+    "anchor": "onnx_fp16",
+    "text_index": 1,
+    "text": "星沉。月升。",
+    "similarity": 0.9423828125,
+    "elapsed": 1.229044600000634,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_official_codes_ab\\onnx_fp16_text_1.wav"
+  },
+  {
+    "anchor": "onnx_fp16",
+    "text_index": 2,
+    "text": "星垂。月隐。",
+    "similarity": 0.958984375,
+    "elapsed": 1.205133499999647,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_official_codes_ab\\onnx_fp16_text_2.wav"
+  },
+  {
+    "anchor": "onnx_fp16",
+    "text_index": 3,
+    "text": "主人，我在。我现在就按你要求的，说两句长一点的话。",
+    "similarity": 0.9482421875,
+    "elapsed": 1.941387399998348,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_official_codes_ab\\onnx_fp16_text_3.wav"
+  },
+  {
+    "anchor": "onnx_fp16",
+    "text_index": 4,
+    "text": "我会按你说的每句之间停两秒，第一句说完就立刻准备第二句，不会断也不会卡。只要你觉得这样的节奏和长度可以，我之后都能保持这个状态。",
+    "similarity": 0.97705078125,
+    "elapsed": 4.275894600003085,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_official_codes_ab\\onnx_fp16_text_4.wav"
+  },
+  {
+    "anchor": "onnx_fp16",
+    "text_index": 5,
+    "text": "我还能根据你喜欢的风格调整内容，比如多加点和星星月亮相关的描述。",
+    "similarity": 0.9501953125,
+    "elapsed": 2.3750473000000056,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_official_codes_ab\\onnx_fp16_text_5.wav"
+  },
+  {
+    "anchor": "official_bf16",
+    "text_index": 0,
+    "text": "好的主人。我现在开始说。",
+    "similarity": 0.9482421875,
+    "elapsed": 1.105145999998058,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_official_codes_ab\\official_bf16_text_0.wav"
+  },
+  {
+    "anchor": "official_bf16",
+    "text_index": 1,
+    "text": "星沉。月升。",
+    "similarity": 0.94140625,
+    "elapsed": 1.1034044999978505,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_official_codes_ab\\official_bf16_text_1.wav"
+  },
+  {
+    "anchor": "official_bf16",
+    "text_index": 2,
+    "text": "星垂。月隐。",
+    "similarity": 0.94091796875,
+    "elapsed": 1.1074265999995987,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_official_codes_ab\\official_bf16_text_2.wav"
+  },
+  {
+    "anchor": "official_bf16",
+    "text_index": 3,
+    "text": "主人，我在。我现在就按你要求的，说两句长一点的话。",
+    "similarity": 0.9423828125,
+    "elapsed": 1.9944988999995985,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_official_codes_ab\\official_bf16_text_3.wav"
+  },
+  {
+    "anchor": "official_bf16",
+    "text_index": 4,
+    "text": "我会按你说的每句之间停两秒，第一句说完就立刻准备第二句，不会断也不会卡。只要你觉得这样的节奏和长度可以，我之后都能保持这个状态。",
+    "similarity": 0.966796875,
+    "elapsed": 4.186562500002765,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_official_codes_ab\\official_bf16_text_4.wav"
+  },
+  {
+    "anchor": "official_bf16",
+    "text_index": 5,
+    "text": "我还能根据你喜欢的风格调整内容，比如多加点和星星月亮相关的描述。",
+    "similarity": 0.9560546875,
+    "elapsed": 2.3173306999997294,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_official_codes_ab\\official_bf16_text_5.wav"
+  }
+]

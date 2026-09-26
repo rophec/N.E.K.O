@@ -1,0 +1,13 @@
+{
+  "text": "云行。",
+  "sample_rate": 24000,
+  "pcm_bytes": 49920,
+  "wav_sha256": "b2f582512dae785a052288117211f80aaaeebb35298c47392bf4c786bfe203c7",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

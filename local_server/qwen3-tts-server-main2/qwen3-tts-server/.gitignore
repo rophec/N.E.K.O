@@ -1,0 +1,16 @@
+# Config
+config.yaml
+
+# Runtime
+*.log
+*.pid
+__pycache__/
+*.pyc
+
+# Build artifacts (environment-specific)
+inference/bin/
+
+# Temp
+/tmp/
+*.wav
+*.pcm

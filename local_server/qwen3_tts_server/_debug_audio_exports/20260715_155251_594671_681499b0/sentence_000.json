@@ -1,0 +1,13 @@
+{
+  "text": "星垂。月隐。",
+  "sample_rate": 24000,
+  "pcm_bytes": 145920,
+  "wav_sha256": "5cd3f6ad1a3432f24a2567ceb05a214dfd2944542c2f36eb84067632dd4df471",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker_codes",
+  "synthesis_mode": "clone",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

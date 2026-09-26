@@ -1,0 +1,62 @@
+[
+  {
+    "name": "sample_0.9_0.9",
+    "do_sample": true,
+    "temperature": 0.9,
+    "sub_do_sample": true,
+    "sub_temperature": 0.9,
+    "text": "好的主人。我现在开始说。",
+    "similarity": 0.93310546875,
+    "duration": 3.2,
+    "elapsed": 1.83917570000267,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_sampling_grid\\sample_0.9_0.9.wav"
+  },
+  {
+    "name": "sample_0.6_0.6",
+    "do_sample": true,
+    "temperature": 0.6,
+    "sub_do_sample": true,
+    "sub_temperature": 0.6,
+    "text": "好的主人。我现在开始说。",
+    "similarity": 0.9521484375,
+    "duration": 3.44,
+    "elapsed": 1.3802023000025656,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_sampling_grid\\sample_0.6_0.6.wav"
+  },
+  {
+    "name": "sample_0.3_0.3",
+    "do_sample": true,
+    "temperature": 0.3,
+    "sub_do_sample": true,
+    "sub_temperature": 0.3,
+    "text": "好的主人。我现在开始说。",
+    "similarity": 0.94580078125,
+    "duration": 3.68,
+    "elapsed": 1.5224143999985245,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_sampling_grid\\sample_0.3_0.3.wav"
+  },
+  {
+    "name": "sample_0.6_sub_greedy",
+    "do_sample": true,
+    "temperature": 0.6,
+    "sub_do_sample": false,
+    "sub_temperature": 0.0,
+    "text": "好的主人。我现在开始说。",
+    "similarity": 0.9599609375,
+    "duration": 3.52,
+    "elapsed": 1.5234788000016124,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_sampling_grid\\sample_0.6_sub_greedy.wav"
+  },
+  {
+    "name": "greedy",
+    "do_sample": false,
+    "temperature": 0.0,
+    "sub_do_sample": false,
+    "sub_temperature": 0.0,
+    "text": "好的主人。我现在开始说。",
+    "similarity": 0.95458984375,
+    "duration": 3.12,
+    "elapsed": 1.3631312000034086,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_sampling_grid\\greedy.wav"
+  }
+]

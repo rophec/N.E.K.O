@@ -1,0 +1,13 @@
+{
+  "text": "好的主人。我现在开始说。",
+  "sample_rate": 24000,
+  "pcm_bytes": 153600,
+  "wav_sha256": "8a6262e3b5ca13684d819226bcbd7361eee27352ab5c8a4672240e9e9b636d4a",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker_codes",
+  "synthesis_mode": "clone",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

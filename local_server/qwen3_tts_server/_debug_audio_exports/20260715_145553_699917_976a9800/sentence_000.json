@@ -1,0 +1,13 @@
+{
+  "text": "好的主人，我现在调整说话的方式，会连续说好几句，不会只说一句就停，你看看这样是不是符合你的要求，要是还有哪里需要改的你随时告诉我。",
+  "sample_rate": 24000,
+  "pcm_bytes": 637440,
+  "wav_sha256": "46aabe25822ed87fe865bd4846f5d4ed5cac4df3eef974aea4739f910296a684",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

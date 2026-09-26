@@ -1,0 +1,13 @@
+{
+  "text": "我可以一直说下去。",
+  "sample_rate": 24000,
+  "pcm_bytes": 80640,
+  "wav_sha256": "ac9937623834a945de4e4d3f9abd1e129d19489baa18f40ca498c543bba64ae0",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

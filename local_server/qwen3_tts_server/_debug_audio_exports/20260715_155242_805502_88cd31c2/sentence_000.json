@@ -1,0 +1,13 @@
+{
+  "text": "星沉。月升。",
+  "sample_rate": 24000,
+  "pcm_bytes": 149760,
+  "wav_sha256": "fd4f2c43fad5d2ccb5de19d7fcbb760808eb3af0f5faceb5623baa3caf48b48f",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker_codes",
+  "synthesis_mode": "clone",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

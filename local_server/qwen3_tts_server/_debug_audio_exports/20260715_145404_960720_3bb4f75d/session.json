@@ -1,0 +1,23 @@
+{
+  "model": "Qwen3-TTS-Base",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "clone_mode": "fixed_speaker",
+  "ref_audio": true,
+  "ref_text_chars": 32,
+  "language": "chinese",
+  "response_format": "pcm",
+  "seed": 42,
+  "sub_seed": 45,
+  "speaker_id": null,
+  "speaker_embedding": {
+    "shape": [
+      2048
+    ],
+    "dtype": "float32",
+    "sha256": "b8420e54ab06160f4434b28412a4f53f7380c98ff948ddf66880e7e55e2b2f3d"
+  },
+  "reference_audio_export": "reference_audio.wav"
+}

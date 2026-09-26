@@ -1,0 +1,13 @@
+{
+  "text": "主人喜欢这个音色吗？",
+  "sample_rate": 24000,
+  "pcm_bytes": 92160,
+  "wav_sha256": "8f21491cc2affad8a1adc80035a7affcd6b439247dc3e4441d93d0bd327a81eb",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

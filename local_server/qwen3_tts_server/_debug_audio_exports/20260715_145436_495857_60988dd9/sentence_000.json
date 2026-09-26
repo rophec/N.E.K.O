@@ -1,0 +1,13 @@
+{
+  "text": "主人是要重新整理这份资料清单吗？",
+  "sample_rate": 24000,
+  "pcm_bytes": 134400,
+  "wav_sha256": "8e54a5467880306489d830c6a513cd5ff4ef7cd3658b097663f28f13b9f66d73",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

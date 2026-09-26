@@ -1,0 +1,13 @@
+{
+  "text": "我现在开始。",
+  "sample_rate": 24000,
+  "pcm_bytes": 53760,
+  "wav_sha256": "781dc9344c732a1554b1d72efab533ec3addaa25811fefffa4a484db24b296aa",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

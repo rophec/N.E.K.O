@@ -1,0 +1,13 @@
+{
+  "text": "好的主人。",
+  "sample_rate": 24000,
+  "pcm_bytes": 65280,
+  "wav_sha256": "a3bb759f96263e3f31618a8fa0cf122766f5621bdfa75ec2b5a8638d3af5b971",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

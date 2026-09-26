@@ -1,0 +1,32 @@
+server:
+  host: "0.0.0.0"
+  port: 8091
+  api_key: ""
+  model_id: "Qwen3-TTS-Base"
+
+model:
+  # Relative paths are resolved from this sidecar directory.
+  path: "./model/Qwen3-TTS-12Hz-1.7B-Base-GGUF"
+  onnx_provider: "CUDA"
+  llm_use_gpu: true
+  n_gpu_layers: -1
+  chunk_size: 3
+
+voices:
+  default: ""
+  map: {}
+
+languages:
+  default: "chinese"
+  map:
+    english: 2050
+    chinese: 2055
+    japanese: 2058
+    korean: 2064
+
+inference:
+  max_steps: 300
+
+logging:
+  dir: ""
+  level: "INFO"

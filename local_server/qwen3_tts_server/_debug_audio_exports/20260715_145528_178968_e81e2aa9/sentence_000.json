@@ -1,0 +1,13 @@
+{
+  "text": "好呀，我现在就试着调整成软软的、让人开心的音色。",
+  "sample_rate": 24000,
+  "pcm_bytes": 253440,
+  "wav_sha256": "b573a20cef553bd5dd1090906d56411249655f8a37d7ea70a60d9b0510d41efd",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

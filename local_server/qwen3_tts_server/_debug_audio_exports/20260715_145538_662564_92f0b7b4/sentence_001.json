@@ -1,0 +1,13 @@
+{
+  "text": "那太好了！",
+  "sample_rate": 24000,
+  "pcm_bytes": 65280,
+  "wav_sha256": "2976474ace4ce4c24f4689811ce34eed49eeb86631e57243ee00e9bde24fff93",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

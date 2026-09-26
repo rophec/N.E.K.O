@@ -1,0 +1,13 @@
+{
+  "text": "主人，我在。我现在就按你要求的，说两句长一点的话。",
+  "sample_rate": 24000,
+  "pcm_bytes": 249600,
+  "wav_sha256": "b87153cccfa1ffdfccb01004f488e74cd1c10ed2a95894474cbb386d9130c136",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker_codes",
+  "synthesis_mode": "clone",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

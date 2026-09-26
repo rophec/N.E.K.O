@@ -1,0 +1,66 @@
+# Qwen3-TTS Server 配置范例
+# 复制此文件为 config.yaml 并按需修改
+#
+# 使用标准 CustomVoice 模型的用户无需创建此文件，开箱即用。
+# 微调模型用户只需配置 voices.map 中自己特有的音色即可。
+
+server:
+  # 监听地址
+  host: "0.0.0.0"
+  # 监听端口
+  port: 8091
+  # API Key 鉴权（留空则不启用）
+  # 设置后请求需携带头: Authorization: Bearer <api_key>
+  api_key: ""
+  # 对外暴露的模型 ID
+  model_id: "Qwen3-TTS"
+
+model:
+  # 模型目录路径
+  path: "/data/models/Qwen3-TTS-12Hz-1.7B-Hutao-GGUF"
+  # ONNX 执行提供方 (CUDA / CPU)
+  onnx_provider: "CUDA"
+  # 是否使用 GPU 加速 GGUF 推理
+  llm_use_gpu: true
+  # GPU 层数（-1 = 全部）
+  n_gpu_layers: -1
+  # 流式解码 chunk 大小
+  chunk_size: 3
+
+voices:
+  # 默认音色
+  default: "Hutao"
+  # 音色名称 -> spk_id 映射
+  # 标准 CustomVoice 的 9 个预置音色已内置，无需重复配置。
+  # 微调模型只需在此添加自己特有的音色。
+  # 可为同一 spk_id 配置多个别名。
+  map:
+    hutao: 3000
+    yoimiya: 2900
+    cyrene: 2950
+    昔涟: 2950
+
+languages:
+  default: "chinese"
+  map:
+    english: 2050
+    chinese: 2055
+    japanese: 2058
+    korean: 2064
+    # ... 其他语言
+
+inference:
+  max_steps: 300
+  talker_n_ctx: 2048
+  predictor_n_ctx: 64
+  defaults:
+    temperature: 0.9
+    top_p: 1.0
+    top_k: 50
+    repeat_penalty: 1.05
+    min_p: 0.0
+    sub_temperature: 0.9
+
+logging:
+  dir: ""
+  level: "DEBUG"

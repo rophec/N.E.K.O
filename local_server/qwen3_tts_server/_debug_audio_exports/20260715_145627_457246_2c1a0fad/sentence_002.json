@@ -1,0 +1,13 @@
+{
+  "text": "星落。",
+  "sample_rate": 24000,
+  "pcm_bytes": 34560,
+  "wav_sha256": "44efc9536052f31048ff9b59933515246bd392f138081a6b07fd1f6f02feb9c1",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

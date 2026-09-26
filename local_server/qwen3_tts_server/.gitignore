@@ -1,0 +1,13 @@
+.venv/
+config.yaml
+model/*
+!model/.gitkeep
+inference/bin/*
+!inference/bin/.gitkeep
+inference/log/
+test_outputs/
+__pycache__/
+*.py[cod]
+*.log
+*.wav
+*.pcm

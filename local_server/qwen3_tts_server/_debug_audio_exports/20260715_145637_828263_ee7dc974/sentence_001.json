@@ -1,0 +1,13 @@
+{
+  "text": "我没有数量限制。",
+  "sample_rate": 24000,
+  "pcm_bytes": 65280,
+  "wav_sha256": "fa2008f82415882390c0b6e5817fb5576dbe29ea564c1876224b34c87b490d0d",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

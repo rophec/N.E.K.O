@@ -1,0 +1,13 @@
+{
+  "text": "还是要重新讨论清单的内容？",
+  "sample_rate": 24000,
+  "pcm_bytes": 115200,
+  "wav_sha256": "6ba7f0291990030cc55c3a977e680c4d52742e399bce0d3f7f782d434e21deb7",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

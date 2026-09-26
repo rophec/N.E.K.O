@@ -1,0 +1,170 @@
+[
+  {
+    "seed": 11,
+    "similarity": 0.9814453125,
+    "duration": 3.04,
+    "elapsed": 1.421145100001013,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_11.wav"
+  },
+  {
+    "seed": 9,
+    "similarity": 0.978515625,
+    "duration": 3.36,
+    "elapsed": 1.3689081000011356,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_09.wav"
+  },
+  {
+    "seed": 14,
+    "similarity": 0.97802734375,
+    "duration": 3.52,
+    "elapsed": 1.4863095000000612,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_14.wav"
+  },
+  {
+    "seed": 21,
+    "similarity": 0.9765625,
+    "duration": 2.96,
+    "elapsed": 1.295801099997334,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_21.wav"
+  },
+  {
+    "seed": 5,
+    "similarity": 0.97607421875,
+    "duration": 4.48,
+    "elapsed": 1.9206156000000192,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_05.wav"
+  },
+  {
+    "seed": 7,
+    "similarity": 0.97607421875,
+    "duration": 3.36,
+    "elapsed": 1.5103741000020818,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_07.wav"
+  },
+  {
+    "seed": 15,
+    "similarity": 0.97509765625,
+    "duration": 2.88,
+    "elapsed": 1.4548245000005409,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_15.wav"
+  },
+  {
+    "seed": 19,
+    "similarity": 0.96435546875,
+    "duration": 2.96,
+    "elapsed": 1.435527199999342,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_19.wav"
+  },
+  {
+    "seed": 18,
+    "similarity": 0.9609375,
+    "duration": 2.56,
+    "elapsed": 1.4685319999989588,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_18.wav"
+  },
+  {
+    "seed": 23,
+    "similarity": 0.9599609375,
+    "duration": 3.12,
+    "elapsed": 1.3081614000002446,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_23.wav"
+  },
+  {
+    "seed": 12,
+    "similarity": 0.958984375,
+    "duration": 3.2,
+    "elapsed": 1.3977745000011055,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_12.wav"
+  },
+  {
+    "seed": 16,
+    "similarity": 0.95849609375,
+    "duration": 3.12,
+    "elapsed": 1.6443037999997614,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_16.wav"
+  },
+  {
+    "seed": 1,
+    "similarity": 0.9580078125,
+    "duration": 2.96,
+    "elapsed": 1.2812572000002547,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_01.wav"
+  },
+  {
+    "seed": 22,
+    "similarity": 0.9580078125,
+    "duration": 3.36,
+    "elapsed": 1.4439652000000933,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_22.wav"
+  },
+  {
+    "seed": 10,
+    "similarity": 0.95703125,
+    "duration": 3.04,
+    "elapsed": 1.3514824000012595,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_10.wav"
+  },
+  {
+    "seed": 6,
+    "similarity": 0.95654296875,
+    "duration": 3.36,
+    "elapsed": 1.42831699999806,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_06.wav"
+  },
+  {
+    "seed": 17,
+    "similarity": 0.95361328125,
+    "duration": 3.2,
+    "elapsed": 1.4852935999988404,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_17.wav"
+  },
+  {
+    "seed": 0,
+    "similarity": 0.95166015625,
+    "duration": 2.88,
+    "elapsed": 1.5441551000003528,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_00.wav"
+  },
+  {
+    "seed": 2,
+    "similarity": 0.95166015625,
+    "duration": 3.44,
+    "elapsed": 1.5201804999996966,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_02.wav"
+  },
+  {
+    "seed": 3,
+    "similarity": 0.95166015625,
+    "duration": 3.52,
+    "elapsed": 1.6116475999988324,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_03.wav"
+  },
+  {
+    "seed": 20,
+    "similarity": 0.95166015625,
+    "duration": 2.64,
+    "elapsed": 1.3079328999992867,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_20.wav"
+  },
+  {
+    "seed": 8,
+    "similarity": 0.951171875,
+    "duration": 2.8,
+    "elapsed": 1.2797557999983837,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_08.wav"
+  },
+  {
+    "seed": 13,
+    "similarity": 0.951171875,
+    "duration": 2.8,
+    "elapsed": 1.1805437000002712,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_13.wav"
+  },
+  {
+    "seed": 4,
+    "similarity": 0.92138671875,
+    "duration": 3.28,
+    "elapsed": 1.7338756999997713,
+    "output": "F:\\NEKO_bugfix\\NEKO_latest_clean\\.codexworktree\\qwen3tts_rework\\local_server\\qwen3_tts_server\\_debug_audio_exports\\_gguf_seed_search\\seed_04.wav"
+  }
+]

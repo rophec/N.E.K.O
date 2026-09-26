@@ -1,0 +1,13 @@
+{
+  "text": "主人，这样可以吗？",
+  "sample_rate": 24000,
+  "pcm_bytes": 103680,
+  "wav_sha256": "da78bb1d8dc8b0980bd6f907ef3488876aaa43591ccef4e27f1ffb461409a818",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker",
+  "synthesis_mode": "custom",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}

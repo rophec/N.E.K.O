@@ -1,0 +1,163 @@
+N.E.K.O. Qwen3-TTS GGUF 本地服务启动说明
+==========================================
+
+一、正确目录
+------------
+
+请从下面的 sidecar 目录启动，不要从 modelsprepare\Qwen3-TTS-GGUF 启动：
+
+F:\NEKO_bugfix\NEKO_latest_clean\.codexworktree\qwen3tts_rework\local_server\qwen3_tts_server
+
+
+二、启动服务
+------------
+
+打开 PowerShell，执行：
+
+cd F:\NEKO_bugfix\NEKO_latest_clean\.codexworktree\qwen3tts_rework\local_server\qwen3_tts_server
+uv sync
+.\start.ps1
+
+也可以不用 start.ps1，直接执行：
+
+uv run python -m server.main
+
+服务默认监听：
+
+http://127.0.0.1:8091
+
+WebSocket 地址：
+
+ws://127.0.0.1:8091/v1/audio/speech/stream
+
+健康检查：
+
+http://127.0.0.1:8091/health
+
+注意：浏览器直接打开 http://127.0.0.1:8091/ 显示
+{"detail":"Not Found"} 是正常现象，因为根路径没有页面。
+
+
+三、当前模型与加速配置
+----------------------
+
+当前 config.yaml 加载的模型：
+
+F:\NEKO_bugfix\NEKO_latest_clean\.codexworktree\qwen3tts_rework\modelsprepare\Qwen3-TTS-GGUF\model\Qwen3-TTS-12Hz-1.7B-Base-GGUF
+
+当前配置：
+
+- llama.cpp：Vulkan
+- ONNX Decoder：DirectML
+- ONNX Runtime：onnxruntime-directml 1.24.4
+- GPU layers：-1（全部卸载到 GPU）
+- 默认端口：8091
+- 模型类型：Base
+- 内置预制音色：无
+- 发声方式：注册参考音频后使用克隆音色
+
+Vulkan DLL 位于：
+
+inference\bin\ggml-vulkan.dll
+
+
+四、确认 DirectML 与 Vulkan 生效
+-------------------------------
+
+启动前可以检查 ONNX Provider：
+
+uv run python -c "import onnxruntime as ort; print(ort.__version__); print(ort.get_available_providers())"
+
+输出必须包含：
+
+DmlExecutionProvider
+
+启动日志中，Decoder 应显示：
+
+[DecoderWorker] 已就绪 (Provider: DmlExecutionProvider)
+
+检查 Vulkan DLL 是否被 Python 进程加载：
+
+tasklist /m ggml-vulkan.dll
+
+如果 llama.cpp 日志只显示 CPU KV buffer 或 dev = CPU，说明 Vulkan 没有生效。
+
+
+五、N.E.K.O. TTS 设置
+--------------------
+
+在 N.E.K.O. 的自定义 TTS 配置中填写：
+
+服务商：Qwen3-TTS-GGUF（或当前对应的自定义本地 TTS 选项）
+API URL：ws://127.0.0.1:8091/v1
+模型 ID：Qwen3-TTS-Base
+API Key：留空
+Voice ID：default（注册后为角色选择生成的克隆 Voice ID）
+
+不要把该地址填入实时对话模型（Realtime Model）配置。
+它是 TTS WebSocket 服务，不是 /v1/chat/completions 对话接口。
+
+
+六、声音克隆与发声
+------------------
+
+WebSocket 是否进入克隆模式不由选项名称决定，而由 session.config 中是否包含
+ref_audio 决定。
+
+克隆请求必须同时提供：
+
+- ref_audio：参考音频，通常为 WAV 或 data:audio/wav;base64,...
+- ref_text：参考音频中逐字说出的原文
+- text：希望使用该声音生成的目标文本
+
+有 ref_audio 时，服务端执行：
+
+stream.set_voice(ref_audio, ref_text)
+stream.clone(text)
+
+Base 模型没有内置音色；没有 ref_audio 时不会执行有效合成。
+
+在 N.E.K.O. Voice Clone 页面选择 Qwen3-TTS-GGUF，上传参考音频并逐字填写
+ref_text。注册完成后将生成的 Voice ID 绑定到角色。后续每次发声都会通过同一个
+8091 WebSocket 服务发送保存的 ref_audio、ref_text 和目标 text，不需要运行第二个模型。
+
+
+七、8091 端口被占用
+-------------------
+
+查看占用端口的进程：
+
+Get-NetTCPConnection -LocalPort 8091 -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess
+
+查看进程详情（把 12345 换成上一步的 OwningProcess）：
+
+Get-Process -Id 12345
+
+确认确实需要关闭后执行：
+
+Stop-Process -Id 12345
+
+也可以在正在运行服务的 PowerShell 窗口按 Ctrl+C 正常关闭。
+
+
+八、常见问题
+------------
+
+1. ModuleNotFoundError
+
+先确认当前目录是 local_server\qwen3_tts_server，然后执行 uv sync。
+
+2. 找不到 ggml.dll 或 ggml-vulkan.dll
+
+确认 inference\bin 中包含同一个 llama.cpp b9333 Vulkan 压缩包内的整套 DLL，
+不能只复制单个 ggml-vulkan.dll。
+
+3. ONNX EP 显示 DML，但 Decoder 显示 CPUExecutionProvider
+
+执行第三节中的 Provider 检查。必须安装的是 onnxruntime-directml，不能同时保留
+CPU 版 onnxruntime。
+
+4. WebSocket 连接后立即断开
+
+客户端连接后必须先发送 session.config，然后发送 input.text，最后发送 input.done。
+只建立连接但不发送协议消息时，服务端会等待超时或由客户端主动断开。

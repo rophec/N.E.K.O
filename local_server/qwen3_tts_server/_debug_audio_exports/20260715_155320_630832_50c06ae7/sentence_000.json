@@ -1,0 +1,13 @@
+{
+  "text": "我会按你说的每句之间停两秒，第一句说完就立刻准备第二句，不会断也不会卡。只要你觉得这样的节奏和长度可以，我之后都能保持这个状态。",
+  "sample_rate": 24000,
+  "pcm_bytes": 641280,
+  "wav_sha256": "d5d440e2e1ff1186320d013390391eec3699306cf7a257cc23fa6e667484346c",
+  "requested_voice": "qwen3-tts-gguf-clone-ch-6ea9f9dfeafe-8a71e3f3",
+  "voice_name": "Arona_gguf",
+  "session_mode": "fixed_speaker_codes",
+  "synthesis_mode": "clone",
+  "seed": 42,
+  "sub_seed": 45,
+  "error": null
+}
