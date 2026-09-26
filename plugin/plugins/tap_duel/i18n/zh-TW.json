@@ -1,0 +1,9 @@
+{
+  "plugin.name": "Tap Duel",
+  "plugin.description": "Official MiniGameSDK example: a 20-second tap reaction duel with route cleanup and score submission.",
+  "game.start": "Start",
+  "game.end": "End",
+  "game.score": "Score",
+  "game.time": "Time",
+  "game.bestStreak": "Best streak"
+}

@@ -1,0 +1,22 @@
+[
+  {
+    "id": "basic-canvas-game",
+    "name": "Basic Canvas Game",
+    "description": "Minimal canvas game with route start, event, heartbeat, and cleanup."
+  },
+  {
+    "id": "character-reaction-game",
+    "name": "Character Reaction Game",
+    "description": "Canvas game that mirrors character lines and is ready for TTS integration."
+  },
+  {
+    "id": "score-game",
+    "name": "Score Game",
+    "description": "Score-focused game with leaderboard-ready Python entries."
+  },
+  {
+    "id": "theater-scene",
+    "name": "Theater Scene",
+    "description": "Small theater scene using the V1 theater DSL preview runtime."
+  }
+]

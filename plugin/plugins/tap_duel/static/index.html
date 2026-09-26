@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tap Duel</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: rgba(12, 18, 32, 0.82);
+      --text: #f8fafc;
+      --muted: #b7c1d6;
+      --target: #38bdf8;
+      --accent: #facc15;
+      --danger: #fb7185;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      overflow: hidden;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: linear-gradient(180deg, #101828 0%, var(--bg) 100%);
+      color: var(--text);
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .hud {
+      position: fixed;
+      left: 16px;
+      right: 16px;
+      top: 16px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      pointer-events: none;
+    }
+    .stat {
+      min-width: 112px;
+      padding: 10px 12px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: var(--panel);
+    }
+    .label { display: block; color: var(--muted); font-size: 12px; }
+    .value { display: block; font-size: 28px; font-weight: 750; line-height: 1.1; }
+    .menu {
+      position: fixed;
+      inset: auto 16px 16px 16px;
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+    }
+    button {
+      min-width: 132px;
+      border: 0;
+      padding: 12px 16px;
+      color: #111827;
+      background: var(--accent);
+      font: inherit;
+      font-weight: 750;
+      cursor: pointer;
+    }
+    button.secondary { color: var(--text); background: rgba(255,255,255,0.12); }
+    .toast {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: min(520px, calc(100vw - 32px));
+      padding: 18px 20px;
+      border: 1px solid rgba(255,255,255,0.16);
+      background: var(--panel);
+      text-align: center;
+    }
+    .toast strong { display: block; margin-bottom: 8px; font-size: 24px; }
+    .launcher {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .launcher-panel {
+      width: min(520px, 100%);
+      padding: 22px;
+      border: 1px solid rgba(255,255,255,0.16);
+      background: var(--panel);
+    }
+    .launcher-panel h1 {
+      margin: 0 0 10px;
+      font-size: 28px;
+      line-height: 1.1;
+    }
+    .launcher-panel p {
+      margin: 0 0 18px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .launcher-panel .status {
+      min-height: 20px;
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game" aria-label="Tap Duel play field"></canvas>
+  <div class="hud" aria-live="polite">
+    <div class="stat"><span class="label">Score</span><span id="score" class="value">0</span></div>
+    <div class="stat"><span class="label">Time</span><span id="time" class="value">20</span></div>
+    <div class="stat"><span class="label">Best streak</span><span id="streak" class="value">0</span></div>
+  </div>
+  <div id="toast" class="toast">
+    <strong>Tap Duel</strong>
+    Hit the moving target as many times as you can in 20 seconds.
+  </div>
+  <div class="menu">
+    <button id="start">Start</button>
+    <button id="end" class="secondary">End</button>
+  </div>
+
+  <script src="http://127.0.0.1:48911/static/game/system/neko-minigame-sdk.js?v=tap-duel-dev-2"></script>
+  <script>
+  (() => {
+    const params = new URLSearchParams(location.search);
+    const defaultMainOrigin = `${location.protocol}//${location.hostname || "127.0.0.1"}:48911`;
+    const apiBase = params.get("api_base") || (location.port === "48916" ? defaultMainOrigin : "");
+    const hostedPluginPanel = location.pathname.includes("/plugin/tap_duel/ui") && params.get("surface") !== "game";
+
+    if (hostedPluginPanel) {
+      renderLauncher();
+      return;
+    }
+
+    function buildLaunchUrl() {
+      const launchUrl = new URL(location.href);
+      launchUrl.searchParams.set("surface", "game");
+      if (apiBase) launchUrl.searchParams.set("api_base", apiBase);
+      launchUrl.searchParams.set("game_type", "tap_duel");
+      const passthroughKeys = ["session_id", "lanlan_name"];
+      passthroughKeys.forEach((key) => {
+        const value = params.get(key);
+        if (value) launchUrl.searchParams.set(key, value);
+      });
+      return launchUrl.toString();
+    }
+
+    function renderLauncher() {
+      document.body.innerHTML = `
+        <main class="launcher">
+          <section class="launcher-panel" aria-labelledby="launcher-title">
+            <h1 id="launcher-title">Tap Duel</h1>
+            <p>This Hosted UI is only the plugin launch surface. Open the game in its own N.E.K.O window.</p>
+            <button id="open-game-window" type="button">Open Game Window</button>
+            <div id="launcher-status" class="status" aria-live="polite"></div>
+          </section>
+        </main>
+      `;
+      const openButton = document.getElementById("open-game-window");
+      const status = document.getElementById("launcher-status");
+      openButton.addEventListener("click", () => {
+        const child = window.open(buildLaunchUrl(), "tap_duel_game", "width=1280,height=760");
+        status.textContent = child
+          ? "Game window requested."
+          : "The browser blocked the popup. Allow popups, then try again.";
+      });
+    }
+
+    const sdk = NekoMiniGameSDK.create({
+      gameType: "tap_duel",
+      lanlanName: params.get("lanlan_name") || "小天",
+      sessionId: params.get("session_id") || "",
+      apiBase,
+    });
+
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const scoreEl = document.getElementById("score");
+    const timeEl = document.getElementById("time");
+    const streakEl = document.getElementById("streak");
+    const toast = document.getElementById("toast");
+    const startButton = document.getElementById("start");
+    const endButton = document.getElementById("end");
+
+    const state = {
+      running: false,
+      score: 0,
+      streak: 0,
+      bestStreak: 0,
+      remaining: 20,
+      target: { x: 240, y: 180, r: 42, vx: 220, vy: 160 },
+      lastFrame: performance.now(),
+      timer: 0,
+    };
+
+    function resize() {
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.floor(window.innerWidth * ratio);
+      canvas.height = Math.floor(window.innerHeight * ratio);
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    }
+
+    function setToast(title, body) {
+      toast.innerHTML = `<strong>${title}</strong>${body || ""}`;
+      toast.hidden = false;
+    }
+
+    function hideToast() {
+      toast.hidden = true;
+    }
+
+    function syncHud() {
+      scoreEl.textContent = String(state.score);
+      timeEl.textContent = String(state.remaining);
+      streakEl.textContent = String(state.bestStreak);
+    }
+
+    function resetGame() {
+      state.score = 0;
+      state.streak = 0;
+      state.bestStreak = 0;
+      state.remaining = 20;
+      state.target.x = window.innerWidth * 0.5;
+      state.target.y = window.innerHeight * 0.5;
+      syncHud();
+    }
+
+    async function startGame() {
+      resetGame();
+      state.running = true;
+      hideToast();
+      void sdk.startRoute({ game_id: "tap_duel" }).catch((error) => {
+        console.warn("[TapDuel] route start failed; continuing local play", error);
+      });
+      sdk.startHeartbeat();
+      state.timer = window.setInterval(() => {
+        state.remaining -= 1;
+        syncHud();
+        if (state.remaining <= 0) endGame("time_up");
+      }, 1000);
+    }
+
+    async function endGame(reason) {
+      if (!state.running && reason !== "manual_end") return;
+      state.running = false;
+      window.clearInterval(state.timer);
+      sdk.stopHeartbeat();
+      try {
+        await sdk.sendEvent({ type: "tap_duel_end", score: state.score, bestStreak: state.bestStreak });
+        await sdk.submitScore(state.score, { mode: "tap_duel", game_id: "tap_duel" });
+      } catch (error) {
+        console.warn("[TapDuel] score submit failed", error);
+      }
+      await sdk.endRoute(reason || "game_end").catch((error) => {
+        console.warn("[TapDuel] route end failed", error);
+      });
+      setToast("Round complete", `Score ${state.score} · Best streak ${state.bestStreak}`);
+    }
+
+    function draw(now) {
+      const dt = Math.min(0.032, (now - state.lastFrame) / 1000);
+      state.lastFrame = now;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "rgba(255,255,255,0.035)";
+      for (let i = 0; i < 24; i += 1) {
+        ctx.fillRect((i * 97 + now * 0.02) % w, (i * 53) % h, 2, 2);
+      }
+      if (state.running) {
+        const t = state.target;
+        t.x += t.vx * dt;
+        t.y += t.vy * dt;
+        if (t.x < t.r || t.x > w - t.r) t.vx *= -1;
+        if (t.y < t.r + 72 || t.y > h - t.r - 72) t.vy *= -1;
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, t.r + Math.sin(now / 120) * 4, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(56,189,248,0.32)";
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, t.r * 0.58, 0, Math.PI * 2);
+        ctx.fillStyle = "var(--target)";
+        ctx.fill();
+      }
+      requestAnimationFrame(draw);
+    }
+
+    canvas.addEventListener("pointerdown", async (event) => {
+      if (!state.running) return;
+      const dx = event.clientX - state.target.x;
+      const dy = event.clientY - state.target.y;
+      const hit = Math.hypot(dx, dy) <= state.target.r;
+      if (hit) {
+        state.score += 10 + state.streak;
+        state.streak += 1;
+        state.bestStreak = Math.max(state.bestStreak, state.streak);
+        state.target.vx *= 1.035;
+        state.target.vy *= 1.035;
+      } else {
+        state.streak = 0;
+        state.score = Math.max(0, state.score - 3);
+      }
+      syncHud();
+      const result = await sdk.sendEvent({ type: hit ? "hit" : "miss", score: state.score, streak: state.streak }).catch((error) => {
+        console.warn("[TapDuel] event send failed", error);
+        return {};
+      });
+      if (result.line && hit && state.streak % 5 === 0) await sdk.mirrorAssistant(result.line);
+    });
+
+    startButton.addEventListener("click", startGame);
+    endButton.addEventListener("click", () => endGame("manual_end"));
+    window.addEventListener("resize", resize);
+    window.addEventListener("beforeunload", () => {
+      void sdk.endRoute("window_unload").catch(() => {});
+    });
+    resize();
+    resetGame();
+    requestAnimationFrame(draw);
+  })();
+  </script>
+</body>
+</html>

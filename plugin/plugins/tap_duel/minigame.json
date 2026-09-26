@@ -1,0 +1,29 @@
+{
+  "game_id": "tap_duel",
+  "title": {
+    "en": "Tap Duel",
+    "ja": "Tap Duel",
+    "ko": "Tap Duel",
+    "zh-CN": "Tap Duel",
+    "zh-TW": "Tap Duel",
+    "ru": "Tap Duel",
+    "pt": "Tap Duel",
+    "es": "Tap Duel"
+  },
+  "entry": "static/index.html",
+  "assets_dir": "static",
+  "orientation": "landscape",
+  "input_methods": [
+    "mouse",
+    "touch",
+    "keyboard"
+  ],
+  "character_voice": true,
+  "leaderboard": true,
+  "memory_archive": true,
+  "route_game_type": "tap_duel",
+  "tags": [
+    "score-game",
+    "official-example"
+  ]
+}

@@ -1,0 +1,32 @@
+[plugin]
+id = "tap_duel"
+name = "Tap Duel"
+description = "Official MiniGameSDK example: a 20-second tap reaction duel with route cleanup and score submission."
+version = "0.1.0"
+type = "plugin"
+capabilities = ["mini_game"]
+entry = "plugin.plugins.tap_duel:TapDuelPlugin"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[plugin.i18n]
+default_locale = "en"
+locales_dir = "i18n"
+
+[plugin.mini_game]
+game_id = "tap_duel"
+title = "Tap Duel"
+entry = "static/index.html"
+assets_dir = "static"
+orientation = "landscape"
+input_methods = ["mouse", "touch", "keyboard"]
+character_voice = true
+leaderboard = true
+memory_archive = true
+route_game_type = "tap_duel"

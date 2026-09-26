@@ -13,7 +13,7 @@ imported directly by plugin developers.
 
 from __future__ import annotations
 
-from . import adapter, extension, plugin
+from . import adapter, extension, minigame, plugin
 from .shared.constants import (
     EVENT_META_ATTR,
     HOOK_META_ATTR,
@@ -27,6 +27,7 @@ __all__ = [
     "plugin",
     "extension",
     "adapter",
+    "minigame",
     "SDK_VERSION",
     "NEKO_PLUGIN_META_ATTR",
     "NEKO_PLUGIN_TAG",
