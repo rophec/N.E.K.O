@@ -1,0 +1,25 @@
+[project]
+name = "mahjong-coach-plugin"
+version = "0.3.26.dev20260812"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "numpy==1.26.4",
+  "opencv-python-headless==4.11.0.86",
+  # The distributed N.E.K.O host may carry a CPU-only ONNX Runtime.  Keep the
+  # Mahjong plugin's Windows inference runtime self-contained so ``speed``
+  # can really activate DirectML instead of silently inheriting host CPU ORT.
+  "onnxruntime-directml==1.24.4; sys_platform == 'win32'",
+]
+
+[tool.neko.build]
+exclude_dirs = [
+  "docs",
+  "tests",
+]
+
+[tool.neko.pack]
+include_default_profile = false
+exclude_dirs = [
+  "docs",
+  "tests",
+]
