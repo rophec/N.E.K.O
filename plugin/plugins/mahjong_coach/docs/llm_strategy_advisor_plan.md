@@ -1,5 +1,8 @@
 # Mahjong Coach Target Plan
 
+> 本文是目标架构设计，不是当前实现进度。已完成、部分完成和未完成项目以
+> [`strategy_layer_progress_plan.md`](./strategy_layer_progress_plan.md) 为唯一依据。
+
 ## 1. 背景
 
 `mahjong_coach` 的目标不是做每巡代打，而是做一个安静的局内教练：

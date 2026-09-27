@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -51,8 +52,11 @@ class _LoadedModel:
     labels: dict[int, str]
 
 
-_MODEL_CACHE: dict[Path, _LoadedModel] = {}
-_MODEL_FAILURES: dict[Path, str] = {}
+_ModelFileIdentity = tuple[str, int, int, str]
+_ModelIdentity = tuple[str, tuple[_ModelFileIdentity, ...]]
+
+_MODEL_CACHE: dict[_ModelIdentity, _LoadedModel] = {}
+_MODEL_FAILURES: dict[_ModelIdentity, str] = {}
 _MODEL_LOCK = Lock()
 
 
@@ -124,23 +128,54 @@ def _resolve_model_dir(explicit: str | os.PathLike[str] | None) -> Path:
 
 
 def _load_model(model_dir: Path) -> _LoadedModel:
-    failure = _MODEL_FAILURES.get(model_dir)
-    if failure:
-        raise OnnxTileClassifierUnavailable(failure)
-    cached = _MODEL_CACHE.get(model_dir)
-    if cached is not None:
-        return cached
+    identity = _model_identity(model_dir)
     with _MODEL_LOCK:
-        cached = _MODEL_CACHE.get(model_dir)
+        _drop_stale_model_entries(identity)
+        failure = _MODEL_FAILURES.get(identity)
+        if failure:
+            raise OnnxTileClassifierUnavailable(failure)
+        cached = _MODEL_CACHE.get(identity)
         if cached is not None:
             return cached
         try:
             loaded = _build_loaded_model(model_dir)
         except OnnxTileClassifierUnavailable as exc:
-            _MODEL_FAILURES[model_dir] = str(exc)
+            _MODEL_FAILURES[identity] = str(exc)
             raise
-        _MODEL_CACHE[model_dir] = loaded
+        _MODEL_CACHE[identity] = loaded
         return loaded
+
+
+def _model_identity(model_dir: Path) -> _ModelIdentity:
+    resolved = model_dir.resolve()
+    return str(resolved), tuple(_artifact_identity(resolved / filename) for filename in REQUIRED_FILES)
+
+
+def _artifact_identity(path: Path) -> _ModelFileIdentity:
+    try:
+        stat = path.stat()
+        sample_size = 64 * 1024
+        offsets = {
+            0,
+            max(0, stat.st_size // 2 - sample_size // 2),
+            max(0, stat.st_size - sample_size),
+        }
+        digest = hashlib.blake2s(digest_size=16)
+        with path.open("rb") as artifact:
+            for offset in sorted(offsets):
+                artifact.seek(offset)
+                digest.update(offset.to_bytes(8, "little", signed=False))
+                digest.update(artifact.read(sample_size))
+        return path.name, int(stat.st_size), int(stat.st_mtime_ns), digest.hexdigest()
+    except OSError as exc:
+        return path.name, -1, -1, f"unavailable:{type(exc).__name__}"
+
+
+def _drop_stale_model_entries(identity: _ModelIdentity) -> None:
+    model_dir = identity[0]
+    for cache in (_MODEL_CACHE, _MODEL_FAILURES):
+        for key in [item for item in cache if item[0] == model_dir and item != identity]:
+            cache.pop(key, None)
 
 
 def _build_loaded_model(model_dir: Path) -> _LoadedModel:

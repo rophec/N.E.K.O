@@ -27,18 +27,18 @@ class RiichiDetectResult:
 
 
 def detect_riichi_sticks(image_path: Path) -> RiichiDetectResult:
+    """Read the top-left deposit counter without claiming a current riichi.
+
+    This legacy entry point is kept for compatibility. The sampled UI region is
+    not the physical stick placed beside the center panel, and a non-zero value
+    can survive into another hand. Consequently it must never manufacture an
+    ``unknown`` riichi player.
+    """
     if not image_path.exists():
         return RiichiDetectResult()
     with Image.open(image_path) as opened:
         image = opened.convert("RGB")
     counter = _detect_riichi_stick_counter(image)
-    if counter.get("active"):
-        return RiichiDetectResult(
-            riichi_players=["unknown"],
-            detections=[counter],
-            stick_count=_int_or_none(counter.get("count")),
-            counter_confidence=float(counter.get("confidence") or 0.0),
-        )
     return RiichiDetectResult(
         detections=[counter],
         stick_count=_int_or_none(counter.get("count")),

@@ -13,16 +13,16 @@
 
 ### 2. 多打几局雀魂（目标 100+ 帧）
 - 每局会自动存不同手牌的截图
-- 存储位置：`C:\Users\ALEXGREENO\AppData\Local\N.E.K.O\plugins\mahjong_coach\data\live_frames\`
+- 存储位置：`<plugin-data>/live_frames/`
 - 检查帧数：`ls 该目录 | wc -l`，到 100+ 即可
 
 ## 数据准备
 
 ### 3. 提取手牌 crop
 ```bash
-cd d:/N.E.K.O
+cd <repository-root>
 .venv/Scripts/python scripts/extract_hand_crops.py \
-  --input-dir "C:\Users\ALEXGREENO\AppData\Local\N.E.K.O\plugins\mahjong_coach\data\live_frames" \
+  --input-dir "<plugin-data>/live_frames" \
   --output-dir data/hand_crops \
   --contact-sheet
 ```

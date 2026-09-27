@@ -51,6 +51,23 @@ class DefaultCaptureProvider:
     def _save_screenshot(self, context: CaptureContext) -> str:
         region = self._resolve_capture_region(context.binding_result)
         errors: list[str] = []
+        system = platform.system().lower()
+
+        # PrintWindow asks the target window to render itself, so an overlapping
+        # window is not copied into the Mahjong Soul frame. Pillow's
+        # ImageGrab(window=...) can still behave like a screen crop on Windows,
+        # so it is only a compatibility fallback here.
+        if system == "windows" and context.binding_result.hwnd:
+            try:
+                return self._save_with_print_window(context.file_path, int(context.binding_result.hwnd))
+            except Exception as exc:
+                errors.append(f"print-window: {exc}")
+
+        if system == "windows" and ImageGrab is not None and context.binding_result.hwnd:
+            try:
+                return self._save_with_imagegrab_window(context.file_path, int(context.binding_result.hwnd))
+            except Exception as exc:
+                errors.append(f"imagegrab-window: {exc}")
 
         if region is not None and pyautogui is not None:
             try:
@@ -64,18 +81,6 @@ class DefaultCaptureProvider:
             except Exception as exc:
                 errors.append(f"imagegrab-region: {exc}")
 
-        if ImageGrab is not None and context.binding_result.hwnd:
-            try:
-                return self._save_with_imagegrab_window(context.file_path, int(context.binding_result.hwnd))
-            except Exception as exc:
-                errors.append(f"imagegrab-window: {exc}")
-
-        if platform.system().lower() == "windows" and context.binding_result.hwnd:
-            try:
-                return self._save_with_print_window(context.file_path, int(context.binding_result.hwnd))
-            except Exception as exc:
-                errors.append(f"print-window: {exc}")
-
         if pyautogui is not None:
             try:
                 return self._save_with_pyautogui(context.file_path, region)
@@ -88,7 +93,6 @@ class DefaultCaptureProvider:
             except Exception as exc:
                 errors.append(f"imagegrab: {exc}")
 
-        system = platform.system().lower()
         if system == "darwin" and shutil.which("screencapture"):
             try:
                 return self._save_with_screencapture(context.file_path, region)
@@ -173,9 +177,15 @@ class DefaultCaptureProvider:
             gdi32.DeleteDC(hdc_mem)
             user32.ReleaseDC(hwnd, hdc)
 
-        image = Image.frombytes("RGBX", (w, h), buf.raw).convert("RGB")
+        image = self._image_from_windows_bgrx(buf.raw, (w, h))
+        self._validate_window_capture(image)
         self._persist_image(image, file_path)
         return "print-window-fullcontent" if used_fullcontent else "print-window"
+
+    def _image_from_windows_bgrx(self, pixels: bytes, size: tuple[int, int]) -> Any:
+        if Image is None:
+            raise RuntimeError("PIL Image unavailable")
+        return Image.frombytes("RGB", size, pixels, "raw", "BGRX")
 
     def _save_with_pyautogui(self, file_path: Path, region: tuple[int, int, int, int] | None) -> str:
         if pyautogui is None:
@@ -214,11 +224,18 @@ class DefaultCaptureProvider:
         if ImageGrab is None:
             raise RuntimeError("ImageGrab unavailable")
         image = ImageGrab.grab(window=hwnd)
-        width, height = getattr(image, "size", (0, 0))
-        if int(width or 0) <= 0 or int(height or 0) <= 0:
-            raise RuntimeError("window capture returned empty image")
+        self._validate_window_capture(image)
         self._persist_image(image, file_path)
         return "imagegrab-window"
+
+    def _validate_window_capture(self, image: Any) -> None:
+        width, height = getattr(image, "size", (0, 0))
+        if int(width or 0) < 64 or int(height or 0) < 64:
+            raise RuntimeError(f"window capture returned invalid size {width}x{height}")
+        sample = image.convert("RGB").resize((64, 36), Image.Resampling.BILINEAR)
+        extrema = sample.getextrema()
+        if not extrema or max(int(high) - int(low) for low, high in extrema) <= 3:
+            raise RuntimeError("window capture returned a blank or uniform image")
 
     def _save_with_screencapture(self, file_path: Path, region: tuple[int, int, int, int] | None) -> str:
         command = ["screencapture", "-x"]
@@ -261,10 +278,10 @@ class DefaultCaptureProvider:
 
 
 def prune_frames(frames_dir: Path, *, keep: int) -> None:
-    if keep <= 0 or not frames_dir.exists():
+    if not frames_dir.exists():
         return
     frames = sorted(path for path in frames_dir.glob("*-frame.*") if path.is_file())
-    extra = len(frames) - keep
+    extra = len(frames) - max(0, int(keep))
     if extra <= 0:
         return
     for path in frames[:extra]:
