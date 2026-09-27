@@ -13,6 +13,10 @@ dependencies = [
   "websockets~=15.0.1",
   "soxr~=0.5.0",
   "numpy~=1.26.4",
+  # Mahjong Coach table-surface normalization mirrors AutoMajsoul's OpenCV
+  # HSV/contour pipeline. Use the headless wheel so cv2 is available without
+  # adding GUI/Qt runtime payload.
+  "opencv-python-headless",
   "websocket-client~=1.8.0",
   "jinja2",
   "dashscope==1.25.4",
@@ -79,10 +83,9 @@ dependencies = [
   # when this dependency is unavailable. Skipped on Windows/macOS
   # to keep dev installs lean.
   "python-xlib ; sys_platform == 'linux'",
-  # NOTE: rapidocr-onnxruntime + cv2 cohort lives in [dependency-groups] galgame
-  # below — it brings opencv (~109 MB on disk) which the main program does not
-  # use. Build scripts (Nuitka/PyInstaller) install --group galgame explicitly
-  # so the packaged dist still bundles it; plain `uv sync` skips it.
+  # NOTE: rapidocr-onnxruntime lives in [dependency-groups] galgame below.
+  # cv2 itself is a main dependency because mahjong_coach's table warp needs
+  # OpenCV contours to match AutoMajsoul's in-game recognizer.
   "imagehash>=4.3.2",
 ]
 
@@ -140,7 +143,7 @@ pyncm-async = { path = "./deps/pyncm_async-1.8.1-py3-none-any.whl" }
 # rapidocr-onnxruntime hard-depends on `opencv-python`, but we want
 # `opencv-python-headless` to provide the cv2 module instead (no GUI/Qt → ~25 MB
 # smaller). The override below blocks the opencv-python pin so only the
-# headless variant (declared in [dependency-groups] galgame) ends up in .venv.
+# headless variant ends up in .venv.
 # Both wheels expose the same `cv2` module name, so rapidocr's `import cv2`
 # works against either.
 #
@@ -167,14 +170,14 @@ dev = [
     "pytest-playwright>=0.7.2",
     "ruff>=0.15.4",
 ]
-# galgame_plugin native deps. NOT installed by default `uv sync` — keeps dev
+# galgame_plugin native deps. RapidOCR is NOT installed by default `uv sync` — keeps dev
 # install lean (~130 MB saved). Build scripts add `--group galgame` so packaged
 # Nuitka/PyInstaller dist bundles everything; plugin code import-guards these
 # so the plugin still loads (with degraded OCR backend) when the group is missing.
 # See memory: project_galgame_native_deps_size.md
 galgame = [
     "rapidocr-onnxruntime",
-    "opencv-python-headless",  # provides cv2 module; ~25 MB lighter than opencv-python
+    "opencv-python-headless",  # also in main deps for mahjong_coach; provides cv2
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
