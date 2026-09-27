@@ -33,6 +33,81 @@ def _plugin_fixture() -> MahjongCoachPlugin:
     return plugin
 
 
+def test_engine_mutex_is_safe_across_concurrent_host_event_loops() -> None:
+    plugin = _plugin_fixture()
+    owner_entered = threading.Event()
+    release_owner = threading.Event()
+    waiter_entered = threading.Event()
+    errors: list[BaseException] = []
+
+    async def owner() -> None:
+        async with plugin._get_engine_lock():
+            owner_entered.set()
+            await asyncio.to_thread(release_owner.wait, 5.0)
+
+    async def waiter() -> None:
+        async with plugin._get_engine_lock():
+            waiter_entered.set()
+
+    def run(coro) -> None:
+        try:
+            asyncio.run(coro())
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    owner_thread = threading.Thread(target=run, args=(owner,))
+    waiter_thread = threading.Thread(target=run, args=(waiter,))
+    owner_thread.start()
+    assert owner_entered.wait(timeout=2.0)
+    waiter_thread.start()
+    assert waiter_entered.wait(timeout=0.05) is False
+
+    release_owner.set()
+    owner_thread.join(timeout=2.0)
+    waiter_thread.join(timeout=2.0)
+
+    assert errors == []
+    assert owner_thread.is_alive() is False
+    assert waiter_thread.is_alive() is False
+    assert waiter_entered.is_set() is True
+
+
+def test_runtime_resource_history_is_bounded_and_reports_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin = _plugin_fixture()
+    counter = 0
+
+    def memory_snapshot():
+        nonlocal counter
+        counter += 1
+        return {
+            "rss_mb": float(counter),
+            "peak_rss_mb": float(counter),
+            "private_memory_mb": float(counter),
+        }
+
+    monkeypatch.setattr(mahjong_plugin_module, "_process_memory_snapshot", memory_snapshot)
+    monkeypatch.setattr(
+        mahjong_plugin_module,
+        "perception_runtime_stats",
+        lambda: {
+            "yolo_sessions": 0,
+            "tile_classifier_sessions": 0,
+            "ocr_sessions": 0,
+        },
+    )
+
+    for _ in range(400):
+        plugin._sample_runtime_resources(phase="stopped", force=True)
+    summary = plugin._runtime_resource_summary()
+
+    assert summary["sample_count"] == 360
+    assert summary["rss_current_mb"] == 400.0
+    assert summary["rss_start_mb"] == 41.0
+    assert summary["caches_released_after_stop"] is True
+
+
 @pytest.mark.asyncio
 async def test_manual_reset_waits_for_running_analysis() -> None:
     plugin = _plugin_fixture()
@@ -110,6 +185,31 @@ async def test_cancelled_engine_wait_holds_mutex_until_worker_finishes() -> None
         await owner_task
     await waiter_task
     assert waiter_acquired.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_gpu_warmup_is_reused_before_live_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
+    plugin = _plugin_fixture()
+    calls: list[str] = []
+
+    def warmup(*, inference_provider: str):
+        calls.append(inference_provider)
+        return {
+            "status": "ready",
+            "inference_provider": inference_provider,
+            "providers": ["DmlExecutionProvider", "CPUExecutionProvider"],
+            "elapsed_ms": 42.0,
+        }
+
+    monkeypatch.setattr(mahjong_plugin_module, "warmup_yolo26_runtime", warmup)
+
+    first = (await plugin.mahjong_coach_warmup_yolo26("speed")).unwrap()
+    second = (await plugin.mahjong_coach_warmup_yolo26("speed")).unwrap()
+
+    assert first["status"] == "ready"
+    assert second["status"] == "ready"
+    assert calls == ["speed"]
+    assert plugin._yolo_warmup_state["providers"][0] == "DmlExecutionProvider"
 
 
 @pytest.mark.asyncio

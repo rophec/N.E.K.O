@@ -108,7 +108,11 @@ def parse_self_melds_from_image(
         occupied_count += 1
         plans.append((slot, detection, image.crop(_crop_box(slot.box, image.size))))
 
-    matches = classify_discard_tiles_batch([crop for _, _, crop in plans])
+    try:
+        matches = classify_discard_tiles_batch([crop for _, _, crop in plans])
+    finally:
+        for _, _, crop in plans:
+            crop.close()
     accepted: list[dict[str, Any]] = []
     for (slot, detection, _crop), match in zip(plans, matches, strict=True):
         if match is None:
@@ -146,6 +150,14 @@ def parse_self_melds_from_image(
         )
 
     melds = _cluster_meld_tiles(accepted, image.width)
+    expected_open_meld_count = _expected_open_meld_count(closed_hand_count)
+    count_consistent = (
+        expected_open_meld_count is None
+        or len(melds) == expected_open_meld_count
+    )
+    rejected_meld_count = len(melds) if not count_consistent else 0
+    if not count_consistent:
+        melds = []
     tiles = [str(item.get("tile") or "") for meld in melds for item in meld.get("tiles", []) if item.get("tile")]
     confidences = [
         float(item.get("confidence") or 0.0)
@@ -168,6 +180,9 @@ def parse_self_melds_from_image(
             "meld_slot_count": len(slots),
             "occupied_meld_slot_count": occupied_count,
             "recognized_meld_tile_count": len(tiles),
+            "expected_open_meld_count": expected_open_meld_count,
+            "meld_count_consistent_with_hand": count_consistent,
+            "rejected_meld_count": rejected_meld_count,
         },
     )
 
@@ -226,7 +241,7 @@ def _cluster_meld_tiles(accepted: list[dict[str, Any]], _screen_width: int) -> l
         cluster = ordered[start:start + size]
         start += size
         deduped = _dedupe_cluster_tiles(cluster)
-        if len(deduped) < 2:
+        if len(deduped) not in {3, 4}:
             continue
         melds.append(
             {
@@ -257,15 +272,33 @@ def _meld_left_ratio_for_hand_count(closed_hand_count: int | None) -> float:
 
 def _estimate_open_meld_count(recognized_tile_count: int) -> int:
     count = max(0, int(recognized_tile_count or 0))
-    if count < 2:
+    if count < 3:
         return 0
-    if count <= 4:
+    candidates = [
+        meld_count
+        for meld_count in range(1, MAX_SELF_MELDS + 1)
+        if 3 * meld_count <= count <= 4 * meld_count
+    ]
+    if not candidates:
+        return 0
+    return min(candidates, key=lambda meld_count: abs((count / meld_count) - 3.5))
+
+
+def _expected_open_meld_count(closed_hand_count: int | None) -> int | None:
+    if closed_hand_count is None:
+        return None
+    count = max(0, int(closed_hand_count or 0))
+    if count in (12, 13, 14):
+        return 0
+    if count in (10, 11):
         return 1
-    if count <= 7:
+    if count in (7, 8):
         return 2
-    if count <= 10:
+    if count in (4, 5):
         return 3
-    return MAX_SELF_MELDS
+    if count in (1, 2):
+        return 4
+    return None
 
 
 def _dedupe_cluster_tiles(cluster: list[dict[str, Any]]) -> list[dict[str, Any]]:

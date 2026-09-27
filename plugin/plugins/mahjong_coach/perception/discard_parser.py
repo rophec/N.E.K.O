@@ -66,10 +66,14 @@ def parse_discards_from_image(
             occupied_count += 1
             plans.append((player, slot, detection, crop_discard_slot(image, slot)))
 
-    matches = classify_discard_tiles_batch(
-        [crop for _, _, _, crop in plans],
-        template_payload,
-    )
+    try:
+        matches = classify_discard_tiles_batch(
+            [crop for _, _, _, crop in plans],
+            template_payload,
+        )
+    finally:
+        for _, _, _, crop in plans:
+            crop.close()
     discard_piles: dict[str, list[dict[str, Any]]] = {}
     visible_tiles: list[str] = []
     confidences: list[float] = []
@@ -177,7 +181,11 @@ def parse_incremental_discards_from_image(
         occupied_count += 1
         plans.append((player, next_slot, detection, crop_discard_slot(image, next_slot)))
 
-    matches = classify_discard_tiles_batch([crop for _, _, _, crop in plans], template_payload)
+    try:
+        matches = classify_discard_tiles_batch([crop for _, _, _, crop in plans], template_payload)
+    finally:
+        for _, _, _, crop in plans:
+            crop.close()
     discard_piles: dict[str, list[dict[str, Any]]] = {}
     visible_tiles: list[str] = []
     confidences: list[float] = []

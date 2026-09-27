@@ -9,6 +9,68 @@ import pytest
 
 from plugin.plugins.mahjong_coach.perception import tile_classifier_dispatch as dispatch
 from plugin.plugins.mahjong_coach.perception import vit_tile_classifier_onnx as vit
+from plugin.plugins.mahjong_coach.perception.onnx_runtime import create_inference_session
+
+
+def test_directml_session_uses_shared_memory_lean_options() -> None:
+    captured: dict[str, object] = {}
+
+    class Options:
+        enable_mem_pattern = True
+        enable_cpu_mem_arena = True
+        execution_mode = "parallel"
+
+    def create_session(path: str, **kwargs):
+        captured.update({"path": path, **kwargs})
+        return object()
+
+    fake_ort = SimpleNamespace(
+        SessionOptions=Options,
+        ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL="sequential"),
+        InferenceSession=create_session,
+    )
+
+    create_inference_session(
+        fake_ort,
+        "model.onnx",
+        ["DmlExecutionProvider", "CPUExecutionProvider"],
+    )
+
+    options = captured["sess_options"]
+    assert options.enable_mem_pattern is False
+    assert options.enable_cpu_mem_arena is False
+    assert options.execution_mode == "sequential"
+
+
+def test_cpu_low_memory_session_disables_arenas_and_bounds_threads() -> None:
+    captured: dict[str, object] = {}
+
+    class Options:
+        enable_mem_pattern = True
+        enable_cpu_mem_arena = True
+        execution_mode = "parallel"
+        intra_op_num_threads = 0
+        inter_op_num_threads = 0
+
+    fake_ort = SimpleNamespace(
+        SessionOptions=Options,
+        ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL="sequential"),
+        InferenceSession=lambda path, **kwargs: captured.update({"path": path, **kwargs}) or object(),
+    )
+
+    create_inference_session(
+        fake_ort,
+        "model.onnx",
+        ["CPUExecutionProvider"],
+        low_memory=True,
+    )
+
+    options = captured["sess_options"]
+    assert options.enable_mem_pattern is False
+    assert options.enable_cpu_mem_arena is False
+    assert options.execution_mode == "sequential"
+    assert options.intra_op_num_threads == 2
+    assert options.inter_op_num_threads == 1
 
 
 def test_vit_failure_and_session_caches_follow_model_identity(

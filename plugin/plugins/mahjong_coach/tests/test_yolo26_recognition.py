@@ -58,6 +58,178 @@ def test_default_yolo26_model_bundle_is_installed_and_matches_metadata() -> None
     assert "yolo26_model_dir" not in hints
 
 
+def test_yolo26_gpu_warmup_creates_and_exercises_cached_session(monkeypatch) -> None:
+    import numpy as np
+
+    calls = {"runs": 0}
+
+    class FakeSession:
+        @staticmethod
+        def get_inputs():
+            return [SimpleNamespace(name="images")]
+
+        @staticmethod
+        def get_providers():
+            return ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+        @staticmethod
+        def run(_outputs, _feeds):
+            calls["runs"] += 1
+            return [np.empty((1, 0, 6), dtype=np.float32)]
+
+    session = FakeSession()
+    monkeypatch.setattr(visible_tiles, "_load_onnx_session", lambda *_args: session)
+
+    result = visible_tiles.warmup_yolo26_runtime(inference_provider="speed")
+
+    assert result["status"] == "ready"
+    assert result["inference_provider"] == "speed"
+    assert result["providers"][0] == "DmlExecutionProvider"
+    assert result["accelerated"] is True
+    assert result["warmup_passes"] == 3
+    assert calls["runs"] == 3
+
+
+def test_yolo26_gpu_warmup_reports_cpu_fallback_as_degraded(monkeypatch) -> None:
+    import numpy as np
+
+    class FakeSession:
+        @staticmethod
+        def get_inputs():
+            return [SimpleNamespace(name="images")]
+
+        @staticmethod
+        def get_providers():
+            return ["CPUExecutionProvider"]
+
+        @staticmethod
+        def run(_outputs, _feeds):
+            return [np.empty((1, 0, 6), dtype=np.float32)]
+
+    previous = dict(visible_tiles._YOLO_RUNTIME_STATE)
+    monkeypatch.setattr(visible_tiles, "_load_onnx_session", lambda *_args: FakeSession())
+    visible_tiles._YOLO_RUNTIME_STATE.update(
+        {
+            "available_providers": ["CPUExecutionProvider"],
+            "requested_providers": ["CPUExecutionProvider"],
+            "actual_providers": ["CPUExecutionProvider"],
+            "fallback_reason": "accelerator_provider_unavailable",
+            "runtime_version": "1.24.4",
+            "runtime_origin": "plugin/vendor/onnxruntime/__init__.py",
+        }
+    )
+    try:
+        result = visible_tiles.warmup_yolo26_runtime(inference_provider="speed")
+    finally:
+        visible_tiles._YOLO_RUNTIME_STATE.clear()
+        visible_tiles._YOLO_RUNTIME_STATE.update(previous)
+
+    assert result["status"] == "fallback"
+    assert result["accelerated"] is False
+    assert result["providers"] == ["CPUExecutionProvider"]
+    assert result["fallback_reason"] == "accelerator_provider_unavailable"
+    assert result["runtime_version"] == "1.24.4"
+    assert "plugin/vendor/onnxruntime" in result["runtime_origin"]
+
+
+def test_yolo26_speed_falls_from_cuda_to_directml_before_cpu(monkeypatch) -> None:
+    attempts: list[list[str]] = []
+
+    class FakeSession:
+        def __init__(self, providers: list[str]) -> None:
+            self._providers = providers
+
+        def get_providers(self) -> list[str]:
+            return list(self._providers)
+
+    fake_ort = SimpleNamespace(
+        get_available_providers=lambda: [
+            "CUDAExecutionProvider",
+            "DmlExecutionProvider",
+            "CPUExecutionProvider",
+        ],
+    )
+
+    def create_session(_ort, _path, providers, *, low_memory=False):
+        del low_memory
+        requested = list(providers)
+        attempts.append(requested)
+        if requested[0] == "CUDAExecutionProvider":
+            raise RuntimeError("CUDA DLL unavailable")
+        return FakeSession(requested)
+
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort)
+    monkeypatch.setattr(visible_tiles, "create_inference_session", create_session)
+    visible_tiles._load_onnx_session.cache_clear()
+    try:
+        session = visible_tiles._load_onnx_session(
+            "model.onnx",
+            1,
+            1,
+            "digest",
+            "speed",
+        )
+        assert session.get_providers()[0] == "DmlExecutionProvider"
+        assert attempts == [
+            ["CUDAExecutionProvider", "CPUExecutionProvider"],
+            ["DmlExecutionProvider", "CPUExecutionProvider"],
+        ]
+        runtime = visible_tiles.yolo26_runtime_stats()["yolo_runtime"]
+        assert runtime["actual_providers"][0] == "DmlExecutionProvider"
+        assert "CUDAExecutionProvider:RuntimeError" in runtime["fallback_reason"]
+    finally:
+        visible_tiles._load_onnx_session.cache_clear()
+
+
+def test_yolo26_speed_uses_cpu_only_after_all_gpu_providers_fail(monkeypatch) -> None:
+    attempts: list[list[str]] = []
+
+    class FakeSession:
+        @staticmethod
+        def get_providers() -> list[str]:
+            return ["CPUExecutionProvider"]
+
+    fake_ort = SimpleNamespace(
+        get_available_providers=lambda: [
+            "CUDAExecutionProvider",
+            "DmlExecutionProvider",
+            "CPUExecutionProvider",
+        ],
+    )
+
+    def create_session(_ort, _path, providers, *, low_memory=False):
+        requested = list(providers)
+        attempts.append(requested)
+        if requested[0] != "CPUExecutionProvider":
+            raise RuntimeError("accelerator unavailable")
+        assert low_memory is True
+        return FakeSession()
+
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort)
+    monkeypatch.setattr(visible_tiles, "create_inference_session", create_session)
+    visible_tiles._load_onnx_session.cache_clear()
+    try:
+        session = visible_tiles._load_onnx_session(
+            "model.onnx",
+            1,
+            1,
+            "digest",
+            "speed",
+        )
+        assert session.get_providers() == ["CPUExecutionProvider"]
+        assert attempts == [
+            ["CUDAExecutionProvider", "CPUExecutionProvider"],
+            ["DmlExecutionProvider", "CPUExecutionProvider"],
+            ["CPUExecutionProvider"],
+        ]
+        runtime = visible_tiles.yolo26_runtime_stats()["yolo_runtime"]
+        assert runtime["actual_providers"] == ["CPUExecutionProvider"]
+        assert "CUDAExecutionProvider:RuntimeError" in runtime["fallback_reason"]
+        assert "DmlExecutionProvider:RuntimeError" in runtime["fallback_reason"]
+    finally:
+        visible_tiles._load_onnx_session.cache_clear()
+
+
 def test_yolo26_postprocess_splits_hand_meld_and_river() -> None:
     result = postprocess_yolo26_detections(
         [
@@ -659,6 +831,9 @@ def test_yolo26_detects_right_player_riichi_declaration_by_orientation() -> None
     )
 
     assert result["riichi_players"] == ["right_opponent"]
+    evidence = result["riichi_evidence"]["right_opponent"]
+    assert evidence["confidence"] >= 0.88
+    assert evidence["declaration_indices"]
 
 
 def test_yolo26_estimates_shifted_river_center_instead_of_fixed_polygons() -> None:
@@ -821,7 +996,11 @@ def test_yolo26_runtime_runs_original_hand_and_warped_river_as_separate_passes(
         diagnostics={},
         to_hints=lambda: {"table_surface_ok": True},
     )
-    monkeypatch.setattr(visible_tiles, "load_yolo26_backend", lambda _model_dir: FakeBackend())
+    monkeypatch.setattr(
+        visible_tiles,
+        "load_yolo26_backend",
+        lambda _model_dir, **_kwargs: FakeBackend(),
+    )
     monkeypatch.setattr(
         visible_tiles,
         "detect_table_surface",
@@ -869,7 +1048,11 @@ def test_yolo26_table_warp_failure_keeps_original_hand_and_marks_river_unavailab
         diagnostics={},
         to_hints=lambda: {"table_surface_ok": False},
     )
-    monkeypatch.setattr(visible_tiles, "load_yolo26_backend", lambda _model_dir: FakeBackend())
+    monkeypatch.setattr(
+        visible_tiles,
+        "load_yolo26_backend",
+        lambda _model_dir, **_kwargs: FakeBackend(),
+    )
     monkeypatch.setattr(visible_tiles, "detect_table_surface", lambda *_args, **_kwargs: surface)
 
     result = detect_yolo26_table_state_path(image_path, model_dir=tmp_path / "model")

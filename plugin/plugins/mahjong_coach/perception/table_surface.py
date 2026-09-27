@@ -110,7 +110,7 @@ def detect_table_surface(
     if np is None:
         return TableSurfaceResult(reason="numpy_unavailable", elapsed_ms=(time.perf_counter() - started) * 1000.0)
 
-    rgb_image = image.convert("RGB")
+    rgb_image = image if image.mode == "RGB" else image.convert("RGB")
     rgb = np.asarray(rgb_image)
     cv2 = _load_cv2()
     detection: tuple[str, list[list[float]], Any, dict[str, Any]] | None = None

@@ -222,11 +222,15 @@ select {
 
 .control-band {
   display: grid;
-  grid-template-columns: minmax(210px, 1.5fr) 126px 160px 118px 78px 110px minmax(150px, 1fr);
+  grid-template-columns: minmax(300px, 1fr) minmax(230px, 300px) max-content max-content;
   gap: 10px;
   align-items: end;
-  padding: 14px 0;
+  padding: 12px 0;
   border-bottom: 1px solid var(--line);
+}
+
+.core-toggle-field {
+  white-space: nowrap;
 }
 
 .advanced-control-band {
@@ -253,6 +257,14 @@ select {
 .settlement-control-grid {
   display: grid;
   grid-template-columns: 190px 150px 130px 180px;
+  gap: 10px;
+  align-items: end;
+  padding: 0 0 14px;
+}
+
+.runtime-control-grid {
+  display: grid;
+  grid-template-columns: 130px minmax(170px, 1fr) minmax(210px, 1.2fr) minmax(160px, 0.9fr) minmax(190px, 1fr) 90px 120px minmax(140px, 0.8fr);
   gap: 10px;
   align-items: end;
   padding: 0 0 14px;
@@ -479,6 +491,11 @@ select {
   background: #111719;
 }
 
+.defense-candidate-card.is-recommended {
+  border-color: var(--accent, #2a7bc4);
+  box-shadow: 0 0 0 2px rgba(42, 123, 196, 0.14);
+}
+
 .defense-candidate-card strong {
   display: block;
   margin-bottom: 7px;
@@ -491,6 +508,13 @@ select {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.defense-candidate-card p {
+  margin: 4px 0 0;
+  color: #666;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .pipeline-band,
@@ -768,7 +792,7 @@ select {
 
 .analysis-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(360px, 0.75fr);
+  grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.65fr);
   border-bottom: 1px solid var(--line);
 }
 
@@ -796,7 +820,9 @@ select {
 
 .evidence-preview-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(360px, 1.8fr) minmax(180px, 0.8fr);
+  grid-template-rows: auto auto;
+  align-items: start;
   gap: 12px;
 }
 
@@ -804,8 +830,42 @@ select {
   min-width: 0;
 }
 
+.table-region-evidence-preview {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+
+.table-region-preview-shell {
+  aspect-ratio: 1 / 1;
+  border-color: rgba(45, 190, 164, 0.48);
+  box-shadow: inset 0 0 0 1px rgba(45, 190, 164, 0.08);
+}
+
+.raw-evidence-preview {
+  grid-column: 2;
+  grid-row: 1;
+}
+
 .settlement-evidence-preview {
-  grid-column: 1 / -1;
+  grid-column: 2;
+  grid-row: 2;
+  opacity: 0.86;
+}
+
+.settlement-preview-shell {
+  aspect-ratio: 16 / 9;
+}
+
+.preview-priority-badge {
+  display: inline-flex;
+  margin-left: 6px;
+  padding: 2px 6px;
+  border: 1px solid rgba(45, 190, 164, 0.45);
+  border-radius: 999px;
+  color: #74dbc8;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
 }
 
 .preview-label {
@@ -1053,15 +1113,15 @@ pre {
   }
 
   .control-band {
+    grid-template-columns: minmax(280px, 1fr) minmax(220px, 0.8fr) max-content max-content;
+  }
+
+  .runtime-control-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .settlement-control-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-
-  .control-window {
-    grid-column: span 2;
   }
 
   .pipeline-steps {
@@ -1123,6 +1183,7 @@ pre {
   }
 
   .control-band,
+  .runtime-control-grid,
   .settlement-control-grid,
   .pipeline-steps,
   .manual-analysis-grid {
@@ -1148,6 +1209,10 @@ pre {
     grid-column: 1 / -1;
   }
 
+  .control-guidance-mode {
+    grid-column: 1 / 2;
+  }
+
   .river-grid {
     grid-template-columns: 1fr;
   }
@@ -1167,6 +1232,7 @@ pre {
 
 @media (max-width: 520px) {
   .control-band,
+  .runtime-control-grid,
   .settlement-control-grid,
   .pipeline-steps,
   .manual-analysis-grid,
@@ -1176,10 +1242,14 @@ pre {
 
   .evidence-preview-grid {
     grid-template-columns: 1fr;
+    grid-template-rows: auto;
   }
 
+  .table-region-evidence-preview,
+  .raw-evidence-preview,
   .settlement-evidence-preview {
     grid-column: auto;
+    grid-row: auto;
   }
 
   .archive-metrics,

@@ -193,13 +193,12 @@ def detect_settlement_path(
         )
     try:
         with open_rgb(image_path) as opened:
-            image = opened.copy()
+            return detect_settlement_image(opened, min_confidence=min_confidence, _started=started)
     except (OSError, ValueError):
         return SettlementFrameResult(
             reason="image_unreadable",
             elapsed_ms=_elapsed_ms(started),
         )
-    return detect_settlement_image(image, min_confidence=min_confidence, _started=started)
 
 
 def detect_settlement_image(
@@ -211,7 +210,14 @@ def detect_settlement_image(
     """Detect the dimmed Mahjong Soul round-result overlay without OCR."""
 
     started = _started if _started is not None else time.perf_counter()
-    rgb = np.asarray(image.convert("RGB").resize((480, 270), Image.Resampling.BILINEAR))
+    source = image if image.mode == "RGB" else image.convert("RGB")
+    resized = source.resize((480, 270), Image.Resampling.BILINEAR)
+    try:
+        rgb = np.array(resized, dtype=np.uint8, copy=True)
+    finally:
+        resized.close()
+        if source is not image:
+            source.close()
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
     hue, saturation, value = cv2.split(hsv)
 

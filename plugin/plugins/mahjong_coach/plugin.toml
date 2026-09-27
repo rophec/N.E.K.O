@@ -1,12 +1,12 @@
 [plugin]
 id = "mahjong_coach"
 name = "Mahjong Coach"
-description = "A screenshot-only Mahjong Soul coach that gives opening plans, periodic checkpoints, and critical action alerts without per-turn discard prompts."
-short_description = "Quiet Mahjong Soul round coach."
+description = "A screenshot-only Mahjong Soul companion with optional discard recommendations, opponent-call reports, risk analysis, and N.E.K.O banter."
+short_description = "Mahjong Soul companion with optional strategy guidance."
 keywords = ["mahjong", "majsoul", "coach", "screenshot"]
-version = "0.3.0"
+version = "0.3.26.dev20260812"
 type = "plugin"
-entry = "mahjong_coach_entry.bootstrap:MahjongCoachPlugin"
+entry = "plugin.plugins.mahjong_coach:MahjongCoachPlugin"
 
 [plugin.author]
 name = "N.E.K.O Team"
@@ -26,7 +26,9 @@ enabled = true
 auto_start = true
 
 [decision]
-live_advice_mode = "coach"
+live_advice_mode = "companion"
+neko_companion_enabled = true
+absurd_banter_enabled = false
 coach_checkpoint_self_turns = 3
 critical_action_interrupts = true
 per_turn_discard_prompt = false
@@ -49,7 +51,8 @@ meld_min_confidence = 0.72
 river_recognition_enabled = true
 river_tracking_mode = "checkpoint"
 river_min_confidence = 0.90
-tile_recognition_mode = "legacy"
+tile_recognition_mode = "yolo26"
+inference_provider = "speed"
 opponent_riichi_recognition_enabled = true
 settlement_recognition_enabled = true
 settlement_min_confidence = 0.72

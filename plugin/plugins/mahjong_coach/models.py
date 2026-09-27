@@ -130,7 +130,9 @@ class YakumanEstimate:
 
 @dataclass(frozen=True)
 class MahjongCoachConfig:
-    live_advice_mode: str = "coach"
+    live_advice_mode: str = "companion"
+    neko_companion_enabled: bool = True
+    absurd_banter_enabled: bool = False
     coach_checkpoint_self_turns: int = 3
     critical_action_interrupts: bool = True
     per_turn_discard_prompt: bool = False
@@ -143,7 +145,12 @@ class MahjongCoachConfig:
     river_recognition_enabled: bool = True
     river_tracking_mode: str = "checkpoint"
     river_min_confidence: float = 0.90
-    tile_recognition_mode: str = "legacy"
+    tile_recognition_mode: str = "yolo26"
+    # Prefer the accelerated ONNX path on supported machines.  The runtime
+    # keeps CPUExecutionProvider last in its provider list and rebuilds a CPU
+    # session when CUDA / DirectML cannot be created, so this is safe for
+    # distributed installs that do not have a compatible GPU.
+    inference_provider: str = "speed"
     opponent_riichi_recognition_enabled: bool = True
     settlement_recognition_enabled: bool = True
     settlement_min_confidence: float = 0.72
@@ -171,7 +178,9 @@ class MahjongCoachConfig:
         legacy_style = _valid_play_style(decision.get("play_style"))
         profile_payload = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
         return cls(
-            live_advice_mode=str(decision.get("live_advice_mode") or "coach"),
+            live_advice_mode=_valid_live_advice_mode(decision.get("live_advice_mode")),
+            neko_companion_enabled=bool(decision.get("neko_companion_enabled", True)),
+            absurd_banter_enabled=bool(decision.get("absurd_banter_enabled", False)),
             coach_checkpoint_self_turns=max(1, int(decision.get("coach_checkpoint_self_turns") or 1)),
             critical_action_interrupts=bool(decision.get("critical_action_interrupts", True)),
             per_turn_discard_prompt=bool(decision.get("per_turn_discard_prompt", False)),
@@ -185,6 +194,9 @@ class MahjongCoachConfig:
             river_tracking_mode=_valid_river_tracking_mode(perception.get("river_tracking_mode")),
             river_min_confidence=max(0.0, min(1.0, float(perception.get("river_min_confidence") or 0.90))),
             tile_recognition_mode=_valid_tile_recognition_mode(perception.get("tile_recognition_mode")),
+            inference_provider=_valid_inference_provider(
+                perception.get("inference_provider", "speed")
+            ),
             opponent_riichi_recognition_enabled=bool(perception.get("opponent_riichi_recognition_enabled", True)),
             settlement_recognition_enabled=bool(perception.get("settlement_recognition_enabled", True)),
             settlement_min_confidence=max(
@@ -235,6 +247,10 @@ class RoundCoachState:
     local_direction: str = ""
     local_plan: str = ""
     local_detail: str = ""
+    closest_shape_route: str = ""
+    current_shanten: int | None = None
+    current_effective_count: int = 0
+    current_effective_types: int = 0
     attack_defense_bias: str = "neutral"
     defense_posture: str = ""
     defense_risk_budget: float = 0.0
@@ -275,6 +291,9 @@ class RoundCoachState:
     settlement_confirmation_frames: int = 0
     last_update_reason: str = ""
     update_count: int = 0
+    last_observed_discard: str = ""
+    companion_reaction: str = ""
+    companion_reaction_kind: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -334,6 +353,7 @@ class LiveSessionState:
     updated_at: float = 0.0
     last_error: str = ""
     last_frame_path: str = ""
+    last_frame_revision: int = 0
     last_window_title: str = ""
     last_capture_source: str = ""
     last_binding: dict[str, Any] = field(default_factory=dict)
@@ -374,6 +394,13 @@ def _valid_strategy_preset(value: Any) -> str:
     return "simple"
 
 
+def _valid_live_advice_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower()
+    if mode in {"strategy", "risk", "risk_strategy", "coach"}:
+        return "strategy"
+    return "companion"
+
+
 def _valid_river_tracking_mode(value: Any) -> str:
     mode = str(value or "").strip().lower()
     if mode in ("live", "realtime", "real_time", "continuous"):
@@ -385,7 +412,20 @@ def _valid_tile_recognition_mode(value: Any) -> str:
     mode = str(value or "").strip().lower()
     if mode in ("yolo", "yolo26", "ultralytics_yolo26"):
         return "yolo26"
-    return "legacy"
+    if mode in ("legacy", "template", "templates"):
+        return "legacy"
+    return "yolo26"
+
+
+def _valid_inference_provider(value: Any) -> str:
+    provider = str(value or "").strip().lower()
+    # GPU-first is the safe default.  Older or partially upgraded callers may
+    # send an empty/unknown value; treating that as ``memory`` silently forced
+    # the whole recognition path onto CPU.  CPU mode now requires an explicit
+    # low-memory choice.
+    if provider in {"memory", "low_memory", "low-memory", "cpu"}:
+        return "memory"
+    return "speed"
 
 
 _VALID_RANKS = {

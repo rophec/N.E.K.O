@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import ctypes
 import hashlib
+import os
 from pathlib import Path
 import platform
 import shutil
@@ -18,10 +20,77 @@ from .window_binding import (
     refresh_cached_window,
 )
 
-try:
-    import pyautogui
-except Exception:
-    pyautogui = None
+# ``pyautogui`` imports pyscreeze, which eagerly imports cv2 when it is
+# available.  Loading it while the N.E.K.O parent process scans plugin
+# metadata maps the vendored cv2.pyd for the entire host lifetime on Windows.
+# Keep this compatibility screenshot backend lazy; PrintWindow/ImageGrab are
+# attempted first in normal operation anyway.
+pyautogui: Any | None = None
+_pyautogui_import_attempted = False
+_windows_dpi_awareness_initialized = False
+_windows_dpi_awareness_mode = "uninitialized"
+
+
+def ensure_windows_dpi_awareness() -> str:
+    """Make HWND geometry and PrintWindow pixels use the same coordinate space.
+
+    ``pyautogui`` used to perform this as an import side effect.  Capture must
+    not depend on that eager import because it also maps vendored OpenCV DLLs
+    into the long-lived N.E.K.O parent process.  Set DPI awareness explicitly
+    in the plugin child process instead, before any window enumeration occurs.
+    """
+
+    global _windows_dpi_awareness_initialized, _windows_dpi_awareness_mode
+    if platform.system().lower() != "windows":
+        return "not-windows"
+    if _windows_dpi_awareness_initialized:
+        return _windows_dpi_awareness_mode
+
+    _windows_dpi_awareness_initialized = True
+    try:
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.  Passing a pointer-sized
+        # value is required on 64-bit Windows because the context constants are
+        # negative pseudo handles.
+        if bool(ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))):
+            _windows_dpi_awareness_mode = "per-monitor-v2"
+            return _windows_dpi_awareness_mode
+    except Exception:
+        pass
+
+    try:
+        # Windows 8.1 fallback: PROCESS_PER_MONITOR_DPI_AWARE.
+        if int(ctypes.windll.shcore.SetProcessDpiAwareness(2)) == 0:
+            _windows_dpi_awareness_mode = "per-monitor"
+            return _windows_dpi_awareness_mode
+    except Exception:
+        pass
+
+    try:
+        if bool(ctypes.windll.user32.SetProcessDPIAware()):
+            _windows_dpi_awareness_mode = "system"
+            return _windows_dpi_awareness_mode
+    except Exception:
+        pass
+
+    # ERROR_ACCESS_DENIED commonly means the executable manifest already chose
+    # a DPI mode.  Capture can continue and will validate the resulting frame.
+    _windows_dpi_awareness_mode = "existing-or-unavailable"
+    return _windows_dpi_awareness_mode
+
+
+def _get_pyautogui() -> Any | None:
+    global pyautogui, _pyautogui_import_attempted
+    if pyautogui is not None:
+        return pyautogui
+    if _pyautogui_import_attempted:
+        return None
+    _pyautogui_import_attempted = True
+    try:
+        import pyautogui as imported_pyautogui
+    except Exception:
+        return None
+    pyautogui = imported_pyautogui
+    return pyautogui
 
 try:
     from PIL import Image, ImageGrab  # type: ignore[import-not-found]
@@ -104,11 +173,16 @@ class DefaultCaptureProvider:
 
     def capture_memory_frame(self, *, binding_result: WindowBindingResult) -> FramePacket:
         timestamp = datetime.now(timezone.utc)
-        image, source = self._capture_image(binding_result)
-        image = image.convert("RGB")
+        captured, source = self._capture_image(binding_result)
+        image = captured if captured.mode == "RGB" else captured.convert("RGB")
+        if image is not captured:
+            captured.close()
         setattr(image, "_neko_frame_id", int(timestamp.timestamp() * 1_000_000))
         digest_image = image.resize((32, 18), Image.Resampling.BILINEAR)
-        fingerprint = hashlib.blake2s(digest_image.tobytes(), digest_size=12).hexdigest()
+        try:
+            fingerprint = hashlib.blake2s(digest_image.tobytes(), digest_size=12).hexdigest()
+        finally:
+            digest_image.close()
         return FramePacket(
             timestamp_ms=int(timestamp.timestamp() * 1000),
             window_title=binding_result.window_title or binding_result.app_name,
@@ -146,9 +220,10 @@ class DefaultCaptureProvider:
                 return image, "imagegrab-window"
             except Exception as exc:
                 errors.append(f"imagegrab-window: {exc}")
-        if region is not None and pyautogui is not None:
+        pyautogui_backend = _get_pyautogui()
+        if region is not None and pyautogui_backend is not None:
             try:
-                return pyautogui.screenshot(region=region), "pyautogui-region"
+                return pyautogui_backend.screenshot(region=region), "pyautogui-region"
             except Exception as exc:
                 errors.append(f"pyautogui-region: {exc}")
         if region is not None and ImageGrab is not None:
@@ -157,9 +232,9 @@ class DefaultCaptureProvider:
                 return ImageGrab.grab(bbox=(left, top, left + width, top + height)), "imagegrab-region"
             except Exception as exc:
                 errors.append(f"imagegrab-region: {exc}")
-        if pyautogui is not None:
+        if pyautogui_backend is not None:
             try:
-                return pyautogui.screenshot(), "pyautogui"
+                return pyautogui_backend.screenshot(), "pyautogui"
             except Exception as exc:
                 errors.append(f"pyautogui: {exc}")
         if ImageGrab is not None:
@@ -190,7 +265,8 @@ class DefaultCaptureProvider:
             except Exception as exc:
                 errors.append(f"imagegrab-window: {exc}")
 
-        if region is not None and pyautogui is not None:
+        pyautogui_backend = _get_pyautogui()
+        if region is not None and pyautogui_backend is not None:
             try:
                 return self._save_with_pyautogui(context.file_path, region)
             except Exception as exc:
@@ -202,7 +278,7 @@ class DefaultCaptureProvider:
             except Exception as exc:
                 errors.append(f"imagegrab-region: {exc}")
 
-        if pyautogui is not None:
+        if pyautogui_backend is not None:
             try:
                 return self._save_with_pyautogui(context.file_path, None)
             except Exception as exc:
@@ -243,11 +319,12 @@ class DefaultCaptureProvider:
         return source
 
     def _grab_with_print_window(self, hwnd: int) -> tuple[Any, str]:
-        import ctypes
         import ctypes.wintypes
 
         if Image is None:
             raise RuntimeError("PIL Image unavailable")
+
+        ensure_windows_dpi_awareness()
 
         user32 = ctypes.windll.user32
         gdi32 = ctypes.windll.gdi32
@@ -313,17 +390,18 @@ class DefaultCaptureProvider:
         return Image.frombytes("RGB", size, pixels, "raw", "BGRX")
 
     def _save_with_pyautogui(self, file_path: Path, region: tuple[int, int, int, int] | None) -> str:
-        if pyautogui is None:
+        pyautogui_backend = _get_pyautogui()
+        if pyautogui_backend is None:
             raise RuntimeError("pyautogui unavailable")
         if region is not None:
             try:
-                image = pyautogui.screenshot(region=region)
+                image = pyautogui_backend.screenshot(region=region)
                 source = "pyautogui-region"
             except Exception:
-                image = pyautogui.screenshot()
+                image = pyautogui_backend.screenshot()
                 source = "pyautogui-fullscreen-fallback"
         else:
-            image = pyautogui.screenshot()
+            image = pyautogui_backend.screenshot()
             source = "pyautogui"
         self._persist_image(image, file_path)
         return source
@@ -394,12 +472,22 @@ class DefaultCaptureProvider:
         suffix = file_path.suffix.lower()
         if suffix in {".jpg", ".jpeg"} and getattr(image, "mode", "") not in {"RGB", "L"}:
             image = image.convert("RGB")
-        if suffix == ".png":
-            image.save(file_path, compress_level=1)
-        elif suffix in {".jpg", ".jpeg"}:
-            image.save(file_path, quality=88)
-        else:
-            image.save(file_path)
+        temporary = file_path.with_name(f".{file_path.stem}-{time.time_ns()}.writing{file_path.suffix}")
+        try:
+            if suffix == ".png":
+                image.save(temporary, compress_level=1)
+            elif suffix in {".jpg", ".jpeg"}:
+                image.save(temporary, quality=88)
+            else:
+                image.save(temporary)
+            # Readers now see either the complete previous JPEG or the complete
+            # new JPEG, never a partially overwritten dashboard frame.
+            os.replace(temporary, file_path)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def prune_frames(frames_dir: Path, *, keep: int) -> None:

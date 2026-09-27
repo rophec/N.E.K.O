@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +11,28 @@ from PIL import Image, ImageDraw
 from plugin.plugins.mahjong_coach import capture, window_binding
 from plugin.plugins.mahjong_coach.capture import CaptureContext, DefaultCaptureProvider, prune_frames
 from plugin.plugins.mahjong_coach.window_binding import WindowBindingResult
+
+
+def test_entry_metadata_import_does_not_load_vendored_native_perception_modules() -> None:
+    script = """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path('plugin/plugins/mahjong_coach/vendor').resolve()))
+import plugin.plugins.mahjong_coach
+blocked = [name for name in ('pyautogui', 'pyscreeze', 'cv2', 'numpy', 'onnxruntime') if name in sys.modules]
+if blocked:
+    raise SystemExit('eager native imports: ' + ', '.join(blocked))
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[4],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def _context(tmp_path: Path) -> CaptureContext:
@@ -24,6 +48,60 @@ def _context(tmp_path: Path) -> CaptureContext:
             height=720,
         ),
     )
+
+
+def test_windows_dpi_awareness_prefers_per_monitor_v2(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class FakeUser32:
+        @staticmethod
+        def SetProcessDpiAwarenessContext(value):
+            calls.append(("v2", value.value))
+            return 1
+
+        @staticmethod
+        def SetProcessDPIAware():
+            calls.append(("system", None))
+            return 1
+
+    fake_windll = SimpleNamespace(
+        user32=FakeUser32(),
+        shcore=SimpleNamespace(
+            SetProcessDpiAwareness=lambda value: calls.append(("per-monitor", value)) or 0,
+        ),
+    )
+    monkeypatch.setattr(capture.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(capture.ctypes, "windll", fake_windll, raising=False)
+    monkeypatch.setattr(capture, "_windows_dpi_awareness_initialized", False)
+    monkeypatch.setattr(capture, "_windows_dpi_awareness_mode", "uninitialized")
+
+    assert capture.ensure_windows_dpi_awareness() == "per-monitor-v2"
+    assert capture.ensure_windows_dpi_awareness() == "per-monitor-v2"
+    assert calls == [("v2", 18446744073709551612)]
+
+
+def test_windows_dpi_awareness_falls_back_without_importing_pyautogui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    fake_windll = SimpleNamespace(
+        user32=SimpleNamespace(
+            SetProcessDpiAwarenessContext=lambda _value: calls.append(("v2", None)) or 0,
+            SetProcessDPIAware=lambda: calls.append(("system", None)) or 1,
+        ),
+        shcore=SimpleNamespace(
+            SetProcessDpiAwareness=lambda value: calls.append(("per-monitor", value)) or 1,
+        ),
+    )
+    monkeypatch.setattr(capture.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(capture.ctypes, "windll", fake_windll, raising=False)
+    monkeypatch.setattr(capture, "_windows_dpi_awareness_initialized", False)
+    monkeypatch.setattr(capture, "_windows_dpi_awareness_mode", "uninitialized")
+    monkeypatch.setattr(capture, "_pyautogui_import_attempted", False)
+
+    assert capture.ensure_windows_dpi_awareness() == "system"
+    assert calls == [("v2", None), ("per-monitor", 2), ("system", None)]
+    assert capture._pyautogui_import_attempted is False
 
 
 def test_windows_capture_prefers_print_window_before_other_backends(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

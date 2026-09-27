@@ -5,7 +5,7 @@ This file tracks unfinished work for the Mahjong Coach YOLO26 recognition mode.
 ## Runtime integration
 
 - [x] Add `perception.tile_recognition_mode = "legacy" | "yolo26"`.
-- [x] Keep `legacy` as the default mode.
+- [x] Make `yolo26` the default mode while keeping explicit `legacy` selection and component-level fallback.
 - [x] Add UI controls for switching between legacy and YOLO26.
 - [x] Add a lightweight YOLO26 backend interface that avoids importing `ultralytics`, `torch`, or `tensorflow` at plugin runtime.
 - [x] Add optional table-surface detection and perspective-warp diagnostics inspired by AutoMajsoul.

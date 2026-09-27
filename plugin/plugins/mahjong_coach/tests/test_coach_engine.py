@@ -4,10 +4,14 @@ import asyncio
 from collections import Counter
 import os
 from pathlib import Path
+import time
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from PIL import Image, ImageDraw
+
+import plugin.plugins.mahjong_coach as mahjong_plugin_module
 
 from plugin.plugins.mahjong_coach import (
     MahjongCoachPlugin,
@@ -17,6 +21,7 @@ from plugin.plugins.mahjong_coach import (
     _resolve_preview_frame_path,
 )
 from plugin.plugins.mahjong_coach import coach as coach_module
+from plugin.plugins.mahjong_coach import presentation as presentation_module
 from plugin.plugins.mahjong_coach.coach import (
     ORPHAN_TYPES,
     RoundCoachEngine,
@@ -41,10 +46,28 @@ from plugin.plugins.mahjong_coach.perception.settlement_detector import (
 from plugin.plugins.mahjong_coach.perception.table_context import TableContextResult
 from plugin.plugins.mahjong_coach.perception.table_surface import TableSurfaceResult
 from plugin.plugins.mahjong_coach.perception.yolo26_visible_tiles import Yolo26TableStateResult
+from plugin.plugins.mahjong_coach.presentation import build_public_payload
 from plugin.plugins.mahjong_coach.tile_labels import hand_signature
 
 
 HAND = ["1m", "2m", "3m", "4p", "5p", "6p", "2s", "3s", "4s", "5s", "6s", "7s", "1z", "1z"]
+
+
+def test_engine_releases_cached_warped_frame_without_resetting_round_state() -> None:
+    engine = RoundCoachEngine()
+    engine.state.current_plan = "keep-this-plan"
+    warped = Image.new("RGB", (800, 800), "black")
+    engine._last_game_scene_result = GameSceneResult(
+        detected=True,
+        table_surface=TableSurfaceResult(ok=True, warped_image=warped),
+    )
+
+    engine.release_transient_resources()
+
+    assert engine.state.current_plan == "keep-this-plan"
+    assert engine._last_game_scene_result is None
+    with pytest.raises(ValueError):
+        warped.getpixel((0, 0))
 
 
 def test_risk_budget_breakdown_exposes_every_threshold_adjustment() -> None:
@@ -127,14 +150,67 @@ def test_table_context_scans_once_per_round_and_updates_strategy_state(monkeypat
     assert engine.state.honba_count == 0
     assert engine.state.table_riichi_stick_count == 0
     assert engine.state.table_context_pending_frames == 0
+    assert engine._table_point_pool_total == 100000
     assert calls == ["ocr"]
 
     engine._observe_table_context(Image.new("RGB", (1000, 600), "black"))
     assert calls == ["ocr"]
 
     engine.reset_round("next")
+    assert engine._table_point_pool_total == 100000
     engine._observe_table_context(Image.new("RGB", (1000, 600), "black"))
     assert calls == ["ocr", "ocr"]
+
+
+def test_table_context_corrects_wrong_riichi_counter_with_score_pool(monkeypatch) -> None:
+    engine = RoundCoachEngine()
+    scene = GameSceneResult(
+        detected=True,
+        table_surface=TableSurfaceResult(
+            ok=True,
+            warped_image=Image.new("RGB", (800, 800), "black"),
+        ),
+    )
+    result = TableContextResult(
+        ok=True,
+        scores={"self": 24000, "left_opponent": 25000, "top_opponent": 25000, "right_opponent": 25000},
+        ranks={"self": 4, "left_opponent": 1, "top_opponent": 1, "right_opponent": 1},
+        honba_count=0,
+        riichi_stick_count=0,
+        confidence=0.9,
+        reason="table_context_detected",
+        counter_reads={"riichi_stick_count": {"text": "x0", "confidence": 0.8}},
+    )
+    monkeypatch.setattr(engine, "_detect_game_scene", lambda _path: scene)
+    monkeypatch.setattr(coach_module, "detect_table_context", lambda *_args, **_kwargs: result)
+
+    observed = engine._observe_table_context(Image.new("RGB", (1000, 600), "black"))
+
+    assert observed.riichi_stick_count == 1
+    assert engine.state.table_riichi_stick_count == 1
+    assert observed.counter_reads["riichi_stick_count"] == {
+        "text": "x0",
+        "confidence": 0.8,
+        "ocr_value": 0,
+        "value": 1,
+        "source": "common_point_pool",
+        "point_pool_total": 100000,
+    }
+
+
+def test_new_seat_riichi_confirmation_increments_deposit_once() -> None:
+    engine = RoundCoachEngine()
+    engine.state.update_count = 8
+    engine.state.table_riichi_stick_count = 1
+
+    engine._commit_riichi_players(["left_opponent"])
+    assert engine.state.table_riichi_stick_count == 2
+
+    engine._commit_riichi_players(["left_opponent"])
+    assert engine.state.table_riichi_stick_count == 2
+
+    engine._commit_riichi_players(["left_opponent", "top_opponent"])
+    assert engine.state.table_riichi_stick_count == 3
 
 
 def test_round_plan_uses_fourth_place_gap_and_table_rewards() -> None:
@@ -163,6 +239,26 @@ def test_round_plan_uses_fourth_place_gap_and_table_rewards() -> None:
     assert any("额外增加1600点" in target for target in plan["targets"])
 
 
+def test_round_plan_persists_closest_shape_shanten_and_effective_count() -> None:
+    hand = ["1m", "1m", "3m", "3m", "5p", "5p", "7p", "7p", "2s", "2s", "4s", "6s", "7z"]
+    plan = build_round_plan(hand, MahjongCoachConfig())
+
+    assert plan["shape_status"] == {
+        "route": "七对子",
+        "path": "seven_pairs",
+        "shanten": 1,
+        "effective_count": 9,
+        "effective_types": 3,
+    }
+
+    engine = RoundCoachEngine()
+    engine._remember_local_plan(plan, opening=True)
+    assert engine.state.closest_shape_route == "七对子"
+    assert engine.state.current_shanten == 1
+    assert engine.state.current_effective_count == 9
+    assert engine.state.current_effective_types == 3
+
+
 def test_scene_and_yolo_caches_invalidate_when_same_path_is_overwritten(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -177,8 +273,13 @@ def test_scene_and_yolo_caches_invalidate_when_same_path_is_overwritten(
         scene_calls.append(path)
         return GameSceneResult(reason=f"scene-{len(scene_calls)}")
 
-    def fake_yolo(path: Path, *, table_surface_result=None) -> Yolo26TableStateResult:
-        del table_surface_result
+    def fake_yolo(
+        path: Path,
+        *,
+        table_surface_result=None,
+        inference_provider="memory",
+    ) -> Yolo26TableStateResult:
+        del table_surface_result, inference_provider
         yolo_calls.append(path)
         return Yolo26TableStateResult(reason=f"yolo-{len(yolo_calls)}")
 
@@ -333,9 +434,10 @@ def test_settlement_diagnostic_preview_is_in_memory_jpeg(tmp_path: Path) -> None
     payload = _build_settlement_diagnostic_preview_payload(image_path)
 
     assert payload["image_path"] == str(image_path)
-    assert payload["data_url"].startswith("data:image/jpeg;base64,")
-    assert payload["width"] == 960
-    assert payload["height"] == 540
+    assert payload["data_url"] == ""
+    assert payload["width"] == 0
+    assert payload["height"] == 0
+    assert payload["phase"] == "none"
     assert payload["detected"] is False
     assert payload["reason"]
 
@@ -380,6 +482,89 @@ def test_table_region_preview_uses_warped_table_space(tmp_path: Path) -> None:
     assert payload["data_url"].startswith("data:image/jpeg;base64,")
 
 
+def test_live_preview_yolo_snapshot_is_pinned_to_frame_revision() -> None:
+    plugin = MahjongCoachPlugin.__new__(MahjongCoachPlugin)
+    plugin._cfg = MahjongCoachConfig(tile_recognition_mode="yolo26")
+    plugin._live_state = LiveSessionState(last_frame_revision=7)
+    source = Image.new("RGB", (1280, 720), (20, 30, 40))
+    frame_identity = mahjong_plugin_module.source_identity(source)
+    warped = Image.new("RGB", (800, 800), (12, 64, 48))
+    plugin._engine = SimpleNamespace(
+        state=SimpleNamespace(round_id="round-7"),
+        _last_game_scene_identity=frame_identity,
+        _last_yolo26_identity=frame_identity,
+        _last_game_scene_result=SimpleNamespace(
+            table_surface=TableSurfaceResult(
+                ok=True,
+                reason="table_surface_detected",
+                method="component_quad",
+                warped_image=warped,
+            )
+        ),
+        _last_yolo26_result=SimpleNamespace(
+            raw_detections=[{
+                "tile": "3m",
+                "coordinate_space": "warped_table",
+                "bbox": [100, 100, 140, 160],
+                "area_kind": "river",
+                "owner": "top_opponent",
+                "confidence": 0.91,
+            }],
+            opponent_melds={"top_opponent": [{"kind": "chi", "tiles": ["3m", "4m", "5m"]}]},
+        )
+    )
+
+    try:
+        plugin._remember_live_preview_yolo_snapshot(
+            Path("live_frames/last-preview.jpg"),
+            image_source=source,
+        )
+    finally:
+        source.close()
+        warped.close()
+
+    assert plugin._live_preview_yolo_snapshot["revision"] == 7
+    assert plugin._live_preview_yolo_snapshot["round_id"] == "round-7"
+    assert plugin._live_preview_yolo_snapshot["raw_detections"][0]["tile"] == "3m"
+    assert plugin._live_preview_yolo_snapshot["opponent_melds"]["top_opponent"][0]["kind"] == "chi"
+    exact_preview = plugin._live_preview_yolo_snapshot["table_region_preview"]
+    assert exact_preview["evidence_source"] == "engine_inference_warp"
+    assert exact_preview["table_surface_method"] == "component_quad"
+    assert exact_preview["detection_count"] == 1
+    assert exact_preview["data_url"].startswith("data:image/jpeg;base64,")
+
+
+def test_live_preview_never_attaches_previous_warp_to_a_new_frame() -> None:
+    plugin = MahjongCoachPlugin.__new__(MahjongCoachPlugin)
+    plugin._cfg = MahjongCoachConfig(tile_recognition_mode="yolo26")
+    plugin._live_state = LiveSessionState(last_frame_revision=8)
+    previous_source = Image.new("RGB", (1280, 720), (20, 30, 40))
+    current_source = Image.new("RGB", (1280, 720), (80, 20, 20))
+    previous_warp = Image.new("RGB", (800, 800), (12, 64, 48))
+    previous_identity = mahjong_plugin_module.source_identity(previous_source)
+    plugin._engine = SimpleNamespace(
+        state=SimpleNamespace(round_id="round-8"),
+        _last_game_scene_identity=previous_identity,
+        _last_yolo26_identity=previous_identity,
+        _last_game_scene_result=SimpleNamespace(
+            table_surface=TableSurfaceResult(ok=True, warped_image=previous_warp)
+        ),
+        _last_yolo26_result=SimpleNamespace(raw_detections=[], opponent_melds={}),
+    )
+
+    try:
+        plugin._remember_live_preview_yolo_snapshot(
+            Path("live_frames/last-preview.jpg"),
+            image_source=current_source,
+        )
+    finally:
+        previous_source.close()
+        current_source.close()
+        previous_warp.close()
+
+    assert plugin._live_preview_yolo_snapshot["table_region_preview"] == {}
+
+
 def test_runtime_settlement_config_is_bounded() -> None:
     plugin = MahjongCoachPlugin.__new__(MahjongCoachPlugin)
     plugin._cfg = MahjongCoachConfig()
@@ -398,6 +583,43 @@ def test_runtime_settlement_config_is_bounded() -> None:
     assert plugin._cfg.settlement_confirm_frames == 8
     assert plugin._cfg.settlement_confirm_max_gap_ms == 200
     assert plugin._engine.config == plugin._cfg
+
+
+def test_inference_runtime_reports_actual_cuda_and_last_recognition(monkeypatch) -> None:
+    plugin = MahjongCoachPlugin.__new__(MahjongCoachPlugin)
+    plugin._cfg = MahjongCoachConfig(inference_provider="speed")
+    plugin._yolo_warmup_state = {"status": "ready", "elapsed_ms": 123.0}
+    monkeypatch.setattr(
+        mahjong_plugin_module,
+        "perception_runtime_stats",
+        lambda: {
+            "yolo_runtime": {
+                "session_loaded": True,
+                "actual_providers": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+                "available_providers": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+                "fallback_reason": "",
+                "runtime_version": "1.24.4",
+                "runtime_origin": "plugin/vendor/onnxruntime/__init__.py",
+            }
+        },
+    )
+
+    runtime = plugin._inference_runtime_status(
+        [{"timestamp_ms": int(time.time() * 1000), "analyze_ms": 48.5, "decision": "observe"}]
+    )
+
+    assert runtime["backend"] == "NVIDIA CUDA"
+    assert runtime["accelerated"] is True
+    assert runtime["last_recognition_ms"] == 48.5
+    assert runtime["fallback_reason"] == ""
+    assert runtime["runtime_version"] == "1.24.4"
+    assert "plugin/vendor/onnxruntime" in runtime["runtime_origin"]
+
+    timing = plugin._append_live_timing({"analyze_ms": 40.0, "decision": "observe"})
+    assert timing["inference_backend"] == "NVIDIA CUDA"
+    assert timing["inference_accelerated"] is True
+    assert timing["inference_actual_providers"][0] == "CUDAExecutionProvider"
+    assert timing["inference_runtime_version"] == "1.24.4"
 
 
 @pytest.mark.asyncio
@@ -441,6 +663,9 @@ async def test_status_and_native_overlay_share_last_published_strategy_snapshot(
             strategy_card: dict,
             detail: str,
             image_path: str,
+            image_revision: int = 0,
+            live_state: dict | None = None,
+            companion_status: dict | None = None,
         ) -> None:
             self.payload = {
                 "text": text,
@@ -448,6 +673,9 @@ async def test_status_and_native_overlay_share_last_published_strategy_snapshot(
                 "strategy_card": strategy_card,
                 "detail": detail,
                 "image_path": image_path,
+                "image_revision": image_revision,
+                "live_state": live_state or {},
+                "companion_status": companion_status or {},
             }
 
     plugin = MahjongCoachPlugin.__new__(MahjongCoachPlugin)
@@ -455,7 +683,11 @@ async def test_status_and_native_overlay_share_last_published_strategy_snapshot(
     plugin._cfg = MahjongCoachConfig()
     plugin._engine = RoundCoachEngine(plugin._cfg)
     plugin._engine_lock = asyncio.Lock()
-    plugin._live_state = LiveSessionState(overlay_enabled=True)
+    plugin._live_state = LiveSessionState(
+        overlay_enabled=True,
+        last_frame_path="last-preview.jpg",
+        last_frame_revision=7,
+    )
     plugin._live_timing_log = []
     plugin._display_snapshot = {}
     plugin._display_revision = 0
@@ -472,23 +704,169 @@ async def test_status_and_native_overlay_share_last_published_strategy_snapshot(
             }
         },
     }
-    published_state = {"defense_posture": "mawashi", "defense_risk_budget": 62.0}
+    published_state = {
+        "round_id": "default",
+        "defense_posture": "mawashi",
+        "defense_risk_budget": 62.0,
+    }
     plugin._update_overlay({"last_decision": published_decision, "round_state": published_state})
+    assert plugin._display_snapshot["last_decision"] is not published_decision
+    assert plugin._display_snapshot["last_decision"]["action_required"] is False
+    assert plugin._display_snapshot["last_decision"]["suggestion"] == ""
+    assert plugin._display_snapshot["last_decision"]["perception"]["strategy"]["top_candidates"] == []
+    assert plugin._display_snapshot["strategy_card"] == plugin._overlay.payload["strategy_card"]
+    assert plugin._display_snapshot["image_revision"] == 7
+    assert plugin._overlay.payload["image_revision"] == 7
 
-    # A quiet diagnostic frame becomes the latest engine result, but it must
-    # not make the dashboard diverge from the still-visible native overlay.
+    # Quiet only suppresses companion speech. Recognition facts are still
+    # published to both the dashboard and native overlay.
     plugin._last_decision = {"decision_type": "coach_checkpoint", "quiet": True, "perception": {}}
+    plugin._update_overlay(
+        {
+            "last_decision": dict(plugin._last_decision),
+            "round_state": plugin._engine.state.to_dict(),
+        }
+    )
     payload = (await plugin.mahjong_coach_status()).unwrap()
 
     assert payload["last_decision"]["quiet"] is True
-    assert payload["display_snapshot"]["last_decision"]["decision_type"] == "defense_alert"
-    assert payload["display_snapshot"]["last_decision"]["perception"]["strategy"]["top_candidates"][0]["tile"] == "1m"
+    assert payload["display_snapshot"]["last_decision"]["decision_type"] == "companion_observation"
+    assert payload["display_snapshot"]["last_decision"]["perception"]["strategy"]["top_candidates"] == []
     assert payload["overlay_text"] == plugin._overlay.payload["text"]
     assert payload["display_snapshot"]["overlay_text"] == plugin._overlay.payload["text"]
     assert payload["display_snapshot"]["strategy_card_text"] == plugin._overlay.payload["strategy_card_text"]
     assert payload["display_snapshot"]["strategy_card"] == plugin._overlay.payload["strategy_card"]
-    assert payload["display_snapshot"]["strategy_card"]["focus_tile"] == "1万"
-    assert "本地兜牌 · 守中求和" in payload["overlay_text"]
+    assert payload["display_snapshot"]["strategy_card"]["kind"] == "public_observation"
+    assert "不提供操作指令" in payload["display_snapshot"]["strategy_card_text"]
+
+
+@pytest.mark.asyncio
+async def test_overlay_preferences_apply_immediately_during_live_session() -> None:
+    updates: list[dict] = []
+
+    class OverlayStub:
+        prefs_path = None
+
+        def update_payload(self, **payload) -> None:
+            updates.append(payload)
+
+    plugin = MahjongCoachPlugin.__new__(MahjongCoachPlugin)
+    plugin._cfg = MahjongCoachConfig(strategy_preset="simple", live_advice_mode="companion")
+    plugin._engine = RoundCoachEngine(plugin._cfg)
+    plugin._engine.state.current_plan = "old-plan"
+    plugin._engine_lock = asyncio.Lock()
+    plugin._last_decision = {
+        "decision_type": "coach_checkpoint",
+        "perception": {"hand": {"hand_tiles": ["1m", "2m", "3m"]}},
+    }
+    plugin._display_snapshot = {}
+    plugin._display_revision = 0
+    plugin._live_state = LiveSessionState(running=True, overlay_enabled=True)
+    plugin._overlay = OverlayStub()
+
+    result = await plugin._overlay_update_preferences(
+        strategy_preset="standard",
+        live_advice_mode="strategy",
+        neko_companion_enabled=False,
+    )
+
+    assert result.unwrap()["running"] is True
+    assert plugin._cfg.strategy_preset == "standard"
+    assert plugin._cfg.live_advice_mode == "strategy"
+    assert plugin._cfg.neko_companion_enabled is False
+    assert plugin._engine.config.strategy_preset == "standard"
+    assert plugin._engine.state.current_plan == ""
+    assert plugin._display_snapshot["presentation"]["mode"] == "strategy"
+    assert result.unwrap()["neko_companion_enabled"] is False
+    assert updates and updates[-1]["strategy_card"]["kind"] == "public_observation"
+
+
+def test_recommendation_mode_does_not_reset_independent_companion_cadence() -> None:
+    plugin = MahjongCoachPlugin.__new__(MahjongCoachPlugin)
+    plugin._cfg = MahjongCoachConfig(
+        live_advice_mode="companion",
+        neko_companion_enabled=True,
+    )
+    plugin._engine = RoundCoachEngine(plugin._cfg)
+    plugin._neko_companion_last_signature = "keep-this-event"
+    plugin._neko_companion_round_id = "east-1"
+    plugin._neko_companion_activity_signature = "activity-1"
+    plugin._neko_companion_activity_changed_at = 123.0
+    plugin._neko_companion_pending_activity_signature = "pending-1"
+    plugin._neko_companion_last_idle_signature = "idle-1"
+    plugin._neko_companion_ambient_count = 7
+
+    plugin._apply_runtime_live_advice_mode("strategy")
+
+    assert plugin._cfg.live_advice_mode == "strategy"
+    assert plugin._cfg.neko_companion_enabled is True
+    assert plugin._engine.config.live_advice_mode == "strategy"
+    assert plugin._neko_companion_last_signature == "keep-this-event"
+    assert plugin._neko_companion_round_id == "east-1"
+    assert plugin._neko_companion_activity_signature == "activity-1"
+    assert plugin._neko_companion_ambient_count == 7
+
+
+def test_strategy_snapshot_routes_main_discard_and_three_candidates_to_native_overlay() -> None:
+    class OverlayStub:
+        prefs_path = None
+
+    plugin = MahjongCoachPlugin.__new__(MahjongCoachPlugin)
+    plugin._cfg = MahjongCoachConfig(live_advice_mode="strategy")
+    plugin._live_state = LiveSessionState()
+    plugin._overlay = OverlayStub()
+    snapshot = plugin._make_display_snapshot(
+        {
+            "last_decision": {
+                "decision_type": "defense_alert",
+                "perception": {
+                    "strategy": {
+                        "posture": "mawashi",
+                        "risk_budget": 62,
+                        "top_candidates": [
+                            {
+                                "tile": "4m",
+                                "defense_risk": 84,
+                                "shanten": 0,
+                                "effective_count": 8,
+                                "safety": "无筋中张",
+                            },
+                            {
+                                "tile": "6p",
+                                "defense_risk": 0,
+                                "shanten": 0,
+                                "effective_count": 3,
+                                "safety": "现物",
+                            },
+                            {
+                                "tile": "2s",
+                                "defense_risk": 55,
+                                "shanten": 1,
+                                "effective_count": 7,
+                                "shape_loss": 1,
+                                "safety": "字牌已见2枚",
+                            },
+                        ],
+                    }
+                },
+            },
+            "round_state": {
+                "riichi_players": ["right_opponent"],
+                "defense_posture": "mawashi",
+                "defense_risk_budget": 62,
+            },
+        },
+        revision=9,
+    )
+
+    assert snapshot["revision"] == 9
+    assert snapshot["presentation"]["mode"] == "strategy"
+    assert snapshot["presentation"]["primary_action"] == "主建议：打4万"
+    assert snapshot["overlay_text"].splitlines()[0] == "风险策略｜主建议：打4万"
+    assert [item["id"] for item in snapshot["strategy_card"]["risk_options"]] == ["A", "B", "C"]
+    assert [item["tile"] for item in snapshot["strategy_card"]["risk_options"]] == ["4m", "6p", "2s"]
+    assert "【A/B/C 候选打法对照】" in snapshot["strategy_card_text"]
+    assert "方案A｜打4万" in snapshot["strategy_card_text"]
 
 
 def test_opening_scan_ignores_impossible_buttons_and_uses_checkpoint_river_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -642,8 +1020,10 @@ def test_opening_accepts_plausible_open_hand_when_meld_scan_misses(monkeypatch: 
     )
     monkeypatch.setattr(engine, "_detect_riichi_players", lambda _path: [])
 
+    first = engine.analyze_frame("frame.png")
     decision = engine.analyze_frame("frame.png")
 
+    assert first.decision_type == "observe"
     assert decision.decision_type == "opening_plan"
     assert decision.hand_tiles == open_hand
     assert decision.perception["hand"]["reason"] == "inferred_open_11_hand_tiles"
@@ -724,7 +1104,7 @@ def test_call_window_uses_hand_plan_when_available(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(
         engine,
         "_detect_river",
-        lambda _path: (_ for _ in ()).throw(AssertionError("call windows should not wait for river scan")),
+        lambda _path: RiverStateResult(reason="call_window_river_scan"),
     )
 
     decision = engine.analyze_frame("frame.png", observed_buttons=["pon"])
@@ -732,8 +1112,9 @@ def test_call_window_uses_hand_plan_when_available(monkeypatch: pytest.MonkeyPat
     assert decision.decision_type == "call_window"
     assert decision.action_required is True
     assert decision.buttons == ["pon"]
-    assert "默认跳过" in decision.suggestion
+    assert "主建议：碰东" in decision.suggestion
     assert decision.hand_tiles == HAND
+    assert decision.perception["action"]["call_recommendation"]["decision"] == "call"
 
 
 def test_opening_plan_once_then_checkpoint_every_three_turns(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -756,11 +1137,64 @@ def test_opening_plan_once_then_checkpoint_every_three_turns(monkeypatch: pytest
     third = engine.analyze_frame("frame.png", self_turn_index=3)
 
     assert first.decision_type == "opening_plan"
+    assert first.perception["strategy"]["top_candidates"]
+    opening_public = build_public_payload(
+        {
+            "last_decision": first.to_dict(),
+            "round_state": first.coach_state,
+        },
+        mode="strategy",
+    )
+    assert opening_public["presentation"]["primary_action"].startswith("主建议：打")
+    assert opening_public["presentation"]["primary_discard"] in HAND
+    assert "门清，可依赖立直" in opening_public["presentation"]["risk_options"][0]["shape_summary"]
     assert second.decision_type == "observe"
     assert "discard" not in second.suggestion.lower()
+    assert second.perception["strategy"]["top_candidates"]
+    observe_public = build_public_payload(
+        {
+            "last_decision": second.to_dict(),
+            "round_state": second.coach_state,
+        },
+        mode="strategy",
+    )
+    assert observe_public["presentation"]["primary_action"].startswith("主建议：打")
+    assert observe_public["presentation"]["primary_discard"] in HAND
     assert third.decision_type == "coach_checkpoint"
     assert third.reason_codes == ["scheduled_checkpoint"]
+    assert third.perception["strategy"]["top_candidates"]
+    checkpoint_public = build_public_payload(
+        {
+            "last_decision": third.to_dict(),
+            "round_state": third.coach_state,
+        },
+        mode="strategy",
+    )
+    assert checkpoint_public["presentation"]["primary_action"].startswith("主建议：打")
+    assert checkpoint_public["presentation"]["primary_discard"] in HAND
     assert len(river_calls) == 1
+
+
+def test_cached_normal_strategy_drops_absent_tiles_and_clears_on_new_round() -> None:
+    engine = RoundCoachEngine(MahjongCoachConfig())
+    engine._last_strategy_result = {
+        "candidates": [
+            {"tile": "4m", "total_score": 10},
+            {"tile": "6p", "total_score": 9},
+            {"tile": "2s", "total_score": 8},
+        ],
+        "top_candidates": [
+            {"tile": "4m", "total_score": 10},
+            {"tile": "6p", "total_score": 9},
+            {"tile": "2s", "total_score": 8},
+        ],
+    }
+
+    filtered = engine._cached_strategy_for_hand(["6p", "2s", "9m"])
+
+    assert [item["tile"] for item in filtered["top_candidates"]] == ["6p", "2s"]
+    engine.reset_round("east-2")
+    assert engine._cached_strategy_for_hand(["6p", "2s"]) == {}
 
 
 def test_live_river_mode_tracks_river_every_normal_frame(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -795,8 +1229,8 @@ def test_live_river_mode_tracks_river_every_normal_frame(monkeypatch: pytest.Mon
     engine.analyze_frame("frame.png", self_turn_index=2)
     engine.analyze_frame("frame.png", self_turn_index=3)
 
-    assert len(river_calls) == 1
-    assert len(incremental_calls) == 2
+    assert len(river_calls) == 3
+    assert len(incremental_calls) == 0
     assert engine.state.last_visible_discards == ["1m"]
 
 
@@ -1041,6 +1475,29 @@ def test_new_opponent_meld_waits_for_delayed_discard_disappearance() -> None:
 
     assert second.discard_piles["top_opponent"][0]["claimed_into_meld"] is True
     assert second.opponent_melds["right_opponent"][0]["claim_discard_linked"] is True
+
+
+def test_new_opponent_meld_requires_two_live_snapshots() -> None:
+    engine = RoundCoachEngine(MahjongCoachConfig(river_tracking_mode="live"))
+    pon = {
+        "owner": "right_opponent",
+        "meld_index": 1,
+        "kind": "pon",
+        "tiles": ["7p", "7p", "7p"],
+        "called_tile_index": 1,
+        "bbox": [680, 120, 750, 250],
+    }
+    snapshot = RiverStateResult(
+        ok=True,
+        opponent_melds={"right_opponent": [pon]},
+    )
+
+    first = engine._reconcile_full_river(snapshot, confirm_new=True)
+    second = engine._reconcile_full_river(snapshot, confirm_new=True)
+
+    assert first.opponent_melds == {}
+    assert first.analysis_hints["opponent_meld_pending_count"] == 1
+    assert second.opponent_melds["right_opponent"][0]["detection_confirmation_frames"] == 2
 
 
 def test_longstanding_opponent_meld_cannot_claim_a_later_detection_dropout() -> None:
@@ -1388,6 +1845,74 @@ def test_round_plan_names_honor_cleanup_route() -> None:
     assert any(name in " ".join(plan["cautions"]) for name in ["东", "南", "白", "发", "中"])
 
 
+def test_opening_exact_tie_prefers_isolated_non_value_honor_without_changing_weights() -> None:
+    hand = [
+        "1m", "4m", "7m",
+        "2p", "4p", "5p", "8p",
+        "3s", "6s", "9s",
+        "1z", "2z", "5z", "7z",
+    ]
+    config = MahjongCoachConfig(round_wind="1z", seat_wind="4z")
+
+    plan = build_round_plan(hand, config)
+    ranking = rank_discard_decisions(
+        hand,
+        config,
+        [],
+        None,
+        precomputed_plan=plan,
+    )
+
+    assert plan["direction"] == "清字牌"
+    assert plan["discard_priority"][0] == "2z"
+    assert ranking["top_candidates"][0]["tile"] == "2z"
+    assert ranking["top_candidates"][0]["attack_score"] == ranking["top_candidates"][1]["attack_score"]
+    assert ranking["top_candidates"][0]["effective_count"] == ranking["top_candidates"][1]["effective_count"]
+
+
+def test_opening_honor_tiebreak_excludes_value_honors_pairs_and_dora() -> None:
+    counts = Counter({"2z": 1, "5z": 1})
+
+    guest_wind = coach_module._discard_score("2z", counts, "p", set(), {"1z", "5z", "6z", "7z"}, set())
+    value_honor = coach_module._discard_score("5z", counts, "p", set(), {"1z", "5z", "6z", "7z"}, set())
+    honor_dora = coach_module._discard_score("2z", counts, "p", set(), {"1z", "5z", "6z", "7z"}, {"2z"})
+    honor_pair = coach_module._discard_score("2z", Counter({"2z": 2}), "p", set(), {"1z", "5z", "6z", "7z"}, set())
+
+    assert guest_wind[1] == 0
+    assert value_honor[1] == 1
+    assert honor_dora[1] == 1
+    assert honor_pair[1] == 1
+
+
+def test_open_hand_three_options_prioritize_and_show_a_viable_yaku_route() -> None:
+    hand = ["2m", "3m", "4m", "5m", "6m", "2p", "3p", "4p", "6s", "7s", "1z"]
+    meld_tiles = ["3s", "4s", "5s"]
+    config = MahjongCoachConfig()
+
+    plan = build_round_plan(hand, config, open_melds=1, meld_tiles=meld_tiles)
+    ranking = rank_discard_decisions(
+        hand,
+        config,
+        [],
+        None,
+        open_melds=1,
+        meld_tiles=meld_tiles,
+        precomputed_plan=plan,
+    )
+    public_options = presentation_module._public_risk_options(
+        ranking["candidates"],
+        ranking["risk_budget"],
+    )
+
+    assert ranking["top_candidates"][0]["tile"] == "1z"
+    assert ranking["top_candidates"][0]["yaku_viable"] is True
+    assert ranking["top_candidates"][0]["yaku_routes"] == ["断幺九"]
+    assert public_options[0]["yaku_label"] == "有役路线：断幺九"
+    assert "有役路线：断幺九" in public_options[0]["shape_summary"]
+    assert public_options[1]["yaku_viable"] is False
+    assert "不能把进听直接等同于可以和牌" in public_options[1]["tradeoff"]
+
+
 def test_round_plan_keeps_dora_out_of_discard_priority() -> None:
     plan = build_round_plan(
         ["2m", "7m", "0p", "8p", "1s", "2s", "2s", "3s", "3s", "4s", "3z", "4z", "5z"],
@@ -1438,7 +1963,77 @@ def test_call_analysis_stays_conditional_without_the_claimed_tile() -> None:
     assert any(item["action"] == "pon" and item["claimed_tile"] == "5z" for item in analysis["options"])
 
 
-def test_call_window_marks_unknown_discard_as_conditional() -> None:
+def test_call_window_rejects_faster_chi_when_open_hand_has_no_yaku() -> None:
+    engine = RoundCoachEngine(MahjongCoachConfig())
+    engine.state.opening_emitted = True
+    hand = ["1m", "2m", "4m", "5m", "6m", "2p", "3p", "4p", "5z", "6z", "7s", "8s", "9s"]
+
+    decision = engine._critical_decision(
+        ["chi"],
+        {"source": "test", "claimed_tile": "3m"},
+        0.0,
+        hand_result=FastHandResult(ok=True, hand_tiles=hand, confidence=0.91, reason="test_hand"),
+    )
+
+    recommendation = decision.perception["action"]["call_recommendation"]
+    assert recommendation["decision"] == "skip"
+    assert recommendation["primary_action"] == "主建议：不吃，选择跳过"
+    assert recommendation["post_discard_label"] == "白"
+    assert recommendation["post_shanten"] < recommendation["baseline_shanten"]
+    assert recommendation["yaku_viable"] is False
+    assert recommendation["yaku_status"] == "no_yaku"
+    assert "没有识别到役牌、断幺九或染手路线" in recommendation["reason"]
+    public = build_public_payload(
+        {"last_decision": decision.to_dict(), "round_state": decision.coach_state},
+        mode="strategy",
+    )
+    public_call = public["presentation"]["call_recommendation"]
+    assert public_call["decision"] == "skip"
+    assert public_call["yaku_status"] == "no_yaku"
+    assert public_call["yaku_label"] == "当前没有确认役"
+
+
+def test_call_window_allows_chi_when_open_tanyao_route_is_explicit() -> None:
+    engine = RoundCoachEngine(MahjongCoachConfig())
+    engine.state.opening_emitted = True
+    hand = ["2m", "3m", "5m", "6m", "7m", "2p", "3p", "4p", "5p", "5p", "6s", "7s", "8s"]
+
+    decision = engine._critical_decision(
+        ["chi"],
+        {"source": "test", "claimed_tile": "4m"},
+        0.0,
+        hand_result=FastHandResult(ok=True, hand_tiles=hand, confidence=0.91, reason="test_hand"),
+    )
+
+    recommendation = decision.perception["action"]["call_recommendation"]
+    assert recommendation["decision"] == "call"
+    assert recommendation["action"] == "chi"
+    assert recommendation["yaku_viable"] is True
+    assert recommendation["yaku_routes"] == ["断幺九"]
+    assert "有役路线：断幺九" in recommendation["reason"]
+
+
+def test_call_window_explicitly_recommends_skipping_unhelpful_chi() -> None:
+    engine = RoundCoachEngine(MahjongCoachConfig())
+    engine.state.opening_emitted = True
+    hand = ["8s", "7s", "3p", "8m", "4p", "7m", "7p", "6m", "6p", "2p", "3m", "8m", "6m"]
+
+    decision = engine._critical_decision(
+        ["chi"],
+        {"source": "test", "claimed_tile": "2p"},
+        0.0,
+        hand_result=FastHandResult(ok=True, hand_tiles=hand, confidence=0.91, reason="test_hand"),
+    )
+
+    recommendation = decision.perception["action"]["call_recommendation"]
+    assert recommendation["decision"] == "skip"
+    assert recommendation["primary_action"] == "主建议：不吃，选择跳过"
+    assert recommendation["yaku_viable"] is True
+    assert recommendation["yaku_routes"] == ["断幺九"]
+    assert "向听没有改善" in recommendation["reason"]
+
+
+def test_call_window_infers_unique_legal_discard_and_gives_direct_recommendation() -> None:
     engine = RoundCoachEngine(MahjongCoachConfig())
     engine.state.opening_emitted = True
     hand = ["1m", "2m", "3m", "4m", "5m", "6m", "2p", "3p", "4p", "5z", "5z", "7s", "9s"]
@@ -1450,7 +2045,14 @@ def test_call_window_marks_unknown_discard_as_conditional() -> None:
         hand_result=FastHandResult(ok=True, hand_tiles=hand, confidence=0.91, reason="test_hand"),
     )
 
-    assert "尚未识别本次被弃牌" in decision.suggestion
+    recommendation = decision.perception["action"]["call_recommendation"]
+    assert recommendation["decision"] == "call"
+    assert recommendation["action"] == "pon"
+    assert recommendation["claimed_tile"] == "5z"
+    assert recommendation["claimed_tile_known"] is False
+    assert recommendation["claimed_tile_inferred"] is True
+    assert recommendation["primary_action"] == "主建议：碰白"
+    assert "主建议：碰白" in decision.suggestion
 
 
 def test_live_call_window_uses_a_unique_river_delta(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1479,7 +2081,9 @@ def test_live_call_window_uses_a_unique_river_delta(monkeypatch: pytest.MonkeyPa
 
     assert decision.perception["action"]["claimed_tile"] == "5z"
     assert decision.perception["action"]["claimed_tile_source"] == "river_delta"
-    assert "尚未识别本次被弃牌" not in decision.suggestion
+    recommendation = decision.perception["action"]["call_recommendation"]
+    assert recommendation["claimed_tile_known"] is True
+    assert recommendation["primary_action"] == "主建议：碰白"
 
 
 def test_round_plan_includes_local_shanten_and_ukeire() -> None:
@@ -1597,7 +2201,18 @@ def test_checkpoint_plan_uses_onnx_meld_state(monkeypatch: pytest.MonkeyPatch) -
         lambda _path, **_kwargs: MeldStateResult(
             ok=True,
             open_meld_count=2,
-            melds=[{"player": "self", "meld_index": 1, "tiles": [{"tile": "5z"}]}],
+            melds=[
+                {
+                    "player": "self",
+                    "meld_index": 1,
+                    "tiles": [{"tile": "5z"}, {"tile": "5z"}, {"tile": "5z"}],
+                },
+                {
+                    "player": "self",
+                    "meld_index": 2,
+                    "tiles": [{"tile": "2s"}, {"tile": "3s"}, {"tile": "4s"}],
+                },
+            ],
             tiles=["5z", "5z", "5z", "2s", "3s", "4s"],
             confidence=0.93,
             reason="recognized_self_melds",
@@ -1606,12 +2221,52 @@ def test_checkpoint_plan_uses_onnx_meld_state(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(engine, "_resolve_buttons", lambda *_args, **_kwargs: ([], {"source": "test"}))
     monkeypatch.setattr(engine, "_detect_river", lambda _path: RiverStateResult(ok=True, reason="test_river"))
 
+    first = engine.analyze_frame("frame.png", force_checkpoint=True)
     decision = engine.analyze_frame("frame.png", force_checkpoint=True)
 
+    assert first.decision_type == "observe"
     assert decision.decision_type == "coach_checkpoint"
     assert decision.perception["meld"]["open_meld_count"] == 2
     assert decision.coach_state["last_open_meld_count"] == 2
     assert any("役牌副露" in item for item in decision.coach_state["target_shapes"])
+
+
+def test_single_frame_self_meld_false_positive_is_not_committed() -> None:
+    engine = RoundCoachEngine(MahjongCoachConfig())
+    hand = FastHandResult(ok=True, hand_tiles=["1m"] * 13, confidence=0.95)
+    false_meld = MeldStateResult(
+        ok=True,
+        open_meld_count=1,
+        melds=[{"tiles": ["5z", "5z", "5z"]}],
+        tiles=["5z", "5z", "5z"],
+        confidence=0.96,
+    )
+
+    stabilized = engine._stabilize_self_melds(hand, false_meld)
+
+    assert stabilized.ok is False
+    assert stabilized.reason == "self_meld_hand_count_mismatch"
+    assert engine.state.last_open_meld_count == 0
+
+
+def test_consistent_open_hand_meld_requires_two_frames() -> None:
+    engine = RoundCoachEngine(MahjongCoachConfig())
+    hand = FastHandResult(ok=True, hand_tiles=["1m"] * 10, confidence=0.95)
+    meld = MeldStateResult(
+        ok=True,
+        open_meld_count=1,
+        melds=[{"tiles": ["5z", "5z", "5z"]}],
+        tiles=["5z", "5z", "5z"],
+        confidence=0.96,
+    )
+
+    first = engine._stabilize_self_melds(hand, meld)
+    second = engine._stabilize_self_melds(hand, meld)
+
+    assert first.ok is False
+    assert first.reason == "self_meld_pending_confirmation"
+    assert second.ok is True
+    assert second.analysis_hints["self_meld_confirmation_frames"] == 2
 
 
 def test_round_plan_prefers_seven_pairs_when_pairs_are_dense() -> None:
@@ -1700,6 +2355,30 @@ def test_yolo_riichi_seat_requires_two_frames(monkeypatch: pytest.MonkeyPatch) -
 
     assert engine._detect_riichi_players(Path("frame.png")) == []
     assert engine._detect_riichi_players(Path("frame.png")) == ["right_opponent"]
+
+
+def test_high_confidence_yolo_riichi_triggers_on_current_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = RoundCoachEngine(MahjongCoachConfig(tile_recognition_mode="yolo26"))
+    monkeypatch.setattr(
+        engine,
+        "_detect_yolo26_table",
+        lambda _path: SimpleNamespace(
+            ok=True,
+            river_inference_ok=True,
+            riichi_players=["right_opponent"],
+            analysis_hints={
+                "yolo26_riichi_evidence": {
+                    "right_opponent": {"confidence": 0.96},
+                }
+            },
+        ),
+    )
+
+    assert engine._detect_riichi_players(Path("frame.png")) == ["right_opponent"]
+    assert engine.state.riichi_pending == {}
+    assert engine._last_riichi_detection_meta["mode"] == "high_confidence_immediate"
 
 
 def test_specific_riichi_seat_replaces_stale_unknown_state(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1849,6 +2528,27 @@ def test_unified_discard_ranking_keeps_attack_and_risk_breakdown() -> None:
     assert east["risk_by_player"]["right_opponent"]["basis"] == "现物"
     assert "attack_score" in east
     assert "effective_count" in east
+
+
+def test_no_riichi_river_availability_does_not_override_normal_ranking() -> None:
+    hand = ["1m", "2m", "3m", "4p", "5p", "6p", "2s", "3s", "4s", "6s", "7s", "9s", "1z", "5z"]
+    unavailable = RiverStateResult(ok=False, reason="river_unavailable")
+    empty_but_valid = RiverStateResult(
+        ok=True,
+        discard_piles={},
+        visible_tiles=[],
+        confidence=0.96,
+        reason="empty_river",
+    )
+
+    without_river = rank_discard_decisions(hand, MahjongCoachConfig(), [], unavailable)
+    with_empty_river = rank_discard_decisions(hand, MahjongCoachConfig(), [], empty_but_valid)
+
+    assert [item["tile"] for item in without_river["top_candidates"]] == [
+        item["tile"] for item in with_empty_river["top_candidates"]
+    ]
+    assert all(item["defense_risk"] == 0 for item in without_river["candidates"])
+    assert all(item["safety"] == "无立直压力" for item in without_river["candidates"])
 
 
 def test_honor_risk_evidence_names_exact_tile_copies_and_sources() -> None:
@@ -2003,17 +2703,88 @@ def test_live_config_accepts_zero_frame_retention(configured: int, expected: int
     assert cfg.live_keep_frames == expected
 
 
+def test_dashboard_activity_temporarily_raises_preview_cadence(monkeypatch: pytest.MonkeyPatch) -> None:
+    plugin = MahjongCoachPlugin.__new__(MahjongCoachPlugin)
+    plugin._cfg = MahjongCoachConfig()
+    plugin._live_last_preview_at = 100.0
+    plugin._live_preview_requested_at = 100.0
+    decision = SimpleNamespace(action_required=False, quiet=True)
+
+    monkeypatch.setattr(mahjong_plugin_module.time, "monotonic", lambda: 100.79)
+    assert plugin._should_persist_preview(decision) is False
+    monkeypatch.setattr(mahjong_plugin_module.time, "monotonic", lambda: 100.81)
+    assert plugin._should_persist_preview(decision) is True
+
+    plugin._live_preview_requested_at = 90.0
+    monkeypatch.setattr(mahjong_plugin_module.time, "monotonic", lambda: 103.99)
+    assert plugin._should_persist_preview(decision) is False
+    monkeypatch.setattr(mahjong_plugin_module.time, "monotonic", lambda: 104.0)
+    assert plugin._should_persist_preview(decision) is True
+
+    monkeypatch.setattr(mahjong_plugin_module.time, "monotonic", lambda: 100.01)
+    assert plugin._should_persist_preview(SimpleNamespace(action_required=True, quiet=False)) is True
+
+
+def test_normal_observe_is_quiet_and_does_not_force_preview_each_frame() -> None:
+    engine = RoundCoachEngine(MahjongCoachConfig())
+    decision = engine._observe_decision(
+        FastHandResult(reason="fingerprint_match"),
+        {},
+        RiverStateResult(reason="fingerprint_no_change"),
+        time.perf_counter(),
+        phase="fingerprint_no_change",
+    )
+
+    assert decision.action_required is False
+    assert decision.quiet is True
+
+    plugin = MahjongCoachPlugin.__new__(MahjongCoachPlugin)
+    plugin._cfg = MahjongCoachConfig()
+    plugin._live_last_preview_at = 100.0
+    plugin._live_preview_requested_at = 0.0
+    with patch.object(mahjong_plugin_module.time, "monotonic", return_value=100.4):
+        assert plugin._should_persist_preview(decision) is False
+
+
 def test_show_overlay_restarts_config_window() -> None:
     plugin = MahjongCoachPlugin.__new__(MahjongCoachPlugin)
     overlay = _FakeOverlay()
     plugin._overlay = overlay
 
     assert plugin._show_overlay(strategy=False) is True
-    assert overlay.calls == ["start", "config"]
+    assert overlay.calls[0] == "start"
+    assert overlay.calls[1].startswith("payload:")
+    assert overlay.calls[2] == "config"
 
 
 @pytest.mark.asyncio
-async def test_show_overlay_entry_uses_strategy_when_live_running() -> None:
+async def test_native_overlay_start_always_requests_accelerated_runtime() -> None:
+    plugin = MahjongCoachPlugin.__new__(MahjongCoachPlugin)
+    scheduled: list[tuple[object, str]] = []
+    received: dict[str, object] = {}
+
+    async def start_live(**kwargs):
+        received.update(kwargs)
+
+    plugin.logger = SimpleNamespace(info=lambda *_args, **_kwargs: None)
+    plugin._overlay_start_live = start_live
+    plugin._schedule_on_loop = lambda coro, label: scheduled.append((coro, label))
+
+    plugin._on_overlay_start_sync(
+        "riichi",
+        "simple",
+        "strategy",
+        True,
+        False,
+    )
+
+    assert scheduled[0][1] == "overlay_start"
+    await scheduled[0][0]
+    assert received["inference_provider"] == "speed"
+
+
+@pytest.mark.asyncio
+async def test_show_overlay_entry_always_opens_strategy_selection_when_live_running() -> None:
     plugin = MahjongCoachPlugin.__new__(MahjongCoachPlugin)
     overlay = _FakeOverlay()
     plugin._overlay = overlay
@@ -2023,7 +2794,9 @@ async def test_show_overlay_entry_uses_strategy_when_live_running() -> None:
     result = await plugin.mahjong_coach_show_overlay()
 
     assert result.unwrap()["running"] is True
-    assert overlay.calls == ["start", "strategy"]
+    assert overlay.calls[0] == "start"
+    assert overlay.calls[1].startswith("payload:")
+    assert overlay.calls[2] == "config"
 
 
 @pytest.mark.asyncio
@@ -2040,7 +2813,9 @@ async def test_start_live_reopens_overlay_when_already_running() -> None:
     result = await plugin._overlay_start_live(overlay=True)
 
     assert result.unwrap()["status"] == "already_running"
-    assert overlay.calls == ["start", "strategy"]
+    assert overlay.calls[0] == "start"
+    assert overlay.calls[1].startswith("payload:")
+    assert overlay.calls[2] == "strategy"
 
 
 @pytest.mark.asyncio
@@ -2065,7 +2840,9 @@ async def test_start_live_explicit_overlay_choice_overrides_stale_disabled_confi
     payload = result.unwrap()
     assert payload["overlay_ready"] is True
     assert plugin._live_state.overlay_enabled is True
-    assert overlay.calls == ["start", "strategy"]
+    assert overlay.calls[0] == "start"
+    assert overlay.calls[1].startswith("payload:")
+    assert overlay.calls[2] == "strategy"
     plugin._live_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await plugin._live_task
@@ -2122,7 +2899,9 @@ async def test_start_live_updates_style_when_already_running() -> None:
     assert plugin._engine.state.current_plan == ""
     assert plugin._engine.state.last_update_reason == "style_changed"
     assert plugin._live_last_checkpoint_at == 0.0
-    assert overlay.calls == ["start", "strategy"]
+    assert overlay.calls[0] == "start"
+    assert overlay.calls[1].startswith("payload:")
+    assert overlay.calls[2] == "strategy"
 
 
 def test_river_config_from_payload() -> None:
@@ -2143,9 +2922,10 @@ def test_river_config_from_payload() -> None:
     assert cfg.tile_recognition_mode == "yolo26"
 
 
-def test_tile_recognition_mode_defaults_to_legacy() -> None:
-    assert MahjongCoachConfig.from_payload({}).tile_recognition_mode == "legacy"
-    assert MahjongCoachConfig.from_payload({"perception": {"tile_recognition_mode": "bad"}}).tile_recognition_mode == "legacy"
+def test_tile_recognition_mode_defaults_to_yolo26_but_keeps_explicit_legacy() -> None:
+    assert MahjongCoachConfig.from_payload({}).tile_recognition_mode == "yolo26"
+    assert MahjongCoachConfig.from_payload({"perception": {"tile_recognition_mode": "bad"}}).tile_recognition_mode == "yolo26"
+    assert MahjongCoachConfig.from_payload({"perception": {"tile_recognition_mode": "legacy"}}).tile_recognition_mode == "legacy"
 
 
 def test_yolo26_mode_falls_back_to_legacy_hand_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2508,9 +3288,9 @@ def test_live_menu_obstruction_resumes_same_round_when_hand_returns() -> None:
     assert plugin._engine.state.current_plan == "保留当前策略"
 
 
-def test_live_menu_gap_requires_two_stable_new_hands_before_round_reset() -> None:
+def test_legacy_live_menu_gap_requires_two_stable_new_hands_before_round_reset() -> None:
     plugin = MahjongCoachPlugin.__new__(MahjongCoachPlugin)
-    plugin._engine = RoundCoachEngine(MahjongCoachConfig())
+    plugin._engine = RoundCoachEngine(MahjongCoachConfig(tile_recognition_mode="legacy"))
     old_hand = ["1m", "1m", "2m", "3m", "4p", "5p", "6p", "2s", "3s", "4s", "1z", "2z", "3z"]
     new_hand = ["4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "3p", "6s", "7s", "8s", "5z"]
     plugin._engine.state.opening_emitted = True
@@ -2610,6 +3390,166 @@ def test_yolo26_new_round_signal_resets_stale_round_after_two_frames() -> None:
     assert engine.state.last_update_reason == "auto_new_round_detected"
 
 
+def test_yolo26_new_round_recovers_closed_hand_from_stale_meld_partition() -> None:
+    engine = RoundCoachEngine(MahjongCoachConfig(tile_recognition_mode="yolo26"))
+    old_hand = ["8m", "1p", "3p", "0p"]
+    recovered_hand = [
+        "5m", "3m", "4m", "2s", "3s", "3s", "5z", "5z", "5z",
+        "8m", "1p", "3p", "0p",
+    ]
+    engine.state.opening_emitted = True
+    engine.state.current_plan = "stale previous-round plan"
+    engine.state.last_hand_tiles = list(old_hand)
+    engine.state.last_open_meld_count = 3
+    engine.state.last_meld_tiles = recovered_hand[:9]
+    engine.state.last_discard_piles = {
+        owner: [{"tile": f"{(index % 9) + 1}m"} for index in range(count)]
+        for owner, count in {
+            "self": 21,
+            "right_opponent": 20,
+            "top_opponent": 20,
+            "left_opponent": 20,
+        }.items()
+    }
+    engine.state.riichi_players = ["right_opponent", "top_opponent"]
+    hand_result = FastHandResult(
+        ok=True,
+        hand_tiles=list(old_hand),
+        confidence=0.95,
+        reason="recognized_yolo26_hand",
+    )
+    stale_meld_result = MeldStateResult(
+        ok=True,
+        open_meld_count=3,
+        melds=[{"tiles": []} for _ in range(3)],
+        tiles=recovered_hand[:9],
+        reason="stabilized_previous_melds",
+    )
+    table_result = Yolo26TableStateResult(
+        ok=True,
+        hand_tiles=list(old_hand),
+        melds=[{"tiles": []} for _ in range(3)],
+        meld_tiles=recovered_hand[:9],
+        discard_piles={
+            "self": [{"tile": "1m"}, {"tile": "2m"}],
+            "right_opponent": [{"tile": "3m"}, {"tile": "4m"}],
+            "top_opponent": [{"tile": "5m"}, {"tile": "6m"}],
+            "left_opponent": [{"tile": "7m"}],
+        },
+        visible_tiles=["1m", "2m", "3m", "4m", "5m", "6m", "7m"],
+        confidence=0.96,
+        reason="recognized_yolo26_table",
+    )
+    engine._last_yolo26_path = Path("partitioned-new-round.png")
+    engine._last_yolo26_result = table_result
+
+    first = engine._maybe_confirm_yolo26_new_round(
+        path=Path("partitioned-new-round.png"),
+        previous_hand_tiles=old_hand,
+        hand_result=hand_result,
+        meld_result=stale_meld_result,
+        started=0.0,
+    )
+    second = engine._maybe_confirm_yolo26_new_round(
+        path=Path("partitioned-new-round.png"),
+        previous_hand_tiles=old_hand,
+        hand_result=hand_result,
+        meld_result=stale_meld_result,
+        started=0.0,
+    )
+
+    assert first is None
+    assert second is not None
+    assert second.engine_meta["previous_river_count"] == 81
+    assert second.engine_meta["current_river_count"] == 7
+    assert second.engine_meta["late_round_river_reset"] is True
+    assert second.engine_meta["recovered_opening_partition"] is True
+    assert len(engine.state.last_hand_tiles) == 13
+    assert engine.state.last_open_meld_count == 0
+    assert engine.state.last_meld_tiles == []
+    assert sum(len(items) for items in engine.state.last_discard_piles.values()) == 7
+    assert engine.state.riichi_players == []
+    assert "stale previous-round plan" not in engine.state.current_plan
+
+
+def test_yolo26_new_round_bypasses_previous_hand_meld_consistency_cache() -> None:
+    engine = RoundCoachEngine(MahjongCoachConfig(tile_recognition_mode="yolo26"))
+    old_hand = ["4m", "6m", "7m", "8m", "8m", "4p", "6p", "1s", "0s", "1z"]
+    new_hand = [
+        "1m", "3m", "4m", "5m", "5m", "5s", "6s", "7s", "2z", "2z", "4z", "4z", "6z",
+    ]
+    engine.state.opening_emitted = True
+    engine.state.last_hand_tiles = list(old_hand)
+    engine.state.last_open_meld_count = 1
+    engine.state.last_melds = [
+        {"player": "self", "meld_index": 1, "tiles": [], "source": "closed_hand_count_inference"},
+    ]
+    engine.state.last_discard_piles = {
+        owner: [{"tile": f"{(index % 9) + 1}m"} for index in range(10)]
+        for owner in ("self", "right_opponent", "top_opponent", "left_opponent")
+    }
+    engine.state.riichi_players = ["right_opponent", "top_opponent"]
+
+    # This is the result produced after the same-hand meld stabilizer combines
+    # the new 13-tile closed hand with the previous hand's cached call.  The
+    # consistency guard marks it invalid (13 + one call is impossible), but the
+    # raw YOLO frame below is still valid new-round evidence.
+    invalid_stabilized_hand = FastHandResult(
+        ok=False,
+        hand_tiles=list(new_hand),
+        confidence=0.96,
+        reason="hand_meld_count_mismatch",
+    )
+    stale_meld_result = MeldStateResult(
+        ok=True,
+        open_meld_count=1,
+        melds=list(engine.state.last_melds),
+        confidence=0.75,
+        reason="no_self_melds",
+    )
+    table_result = Yolo26TableStateResult(
+        ok=True,
+        hand_tiles=list(new_hand),
+        melds=[],
+        meld_tiles=[],
+        discard_piles={
+            "self": [{"tile": "1m"}, {"tile": "2m"}],
+            "right_opponent": [{"tile": "3m"}, {"tile": "4m"}],
+            "top_opponent": [{"tile": "5m"}, {"tile": "6m"}],
+            "left_opponent": [{"tile": "7m"}],
+        },
+        visible_tiles=["1m", "2m", "3m", "4m", "5m", "6m", "7m"],
+        confidence=0.96,
+        reason="recognized_yolo26_table",
+    )
+    engine._last_yolo26_path = Path("closed-new-round.png")
+    engine._last_yolo26_result = table_result
+
+    first = engine._maybe_confirm_yolo26_new_round(
+        path=Path("closed-new-round.png"),
+        previous_hand_tiles=old_hand,
+        hand_result=invalid_stabilized_hand,
+        meld_result=stale_meld_result,
+        started=0.0,
+    )
+    second = engine._maybe_confirm_yolo26_new_round(
+        path=Path("closed-new-round.png"),
+        previous_hand_tiles=old_hand,
+        hand_result=invalid_stabilized_hand,
+        meld_result=stale_meld_result,
+        started=0.0,
+    )
+
+    assert first is None
+    assert second is not None
+    assert "auto_new_round_detected" in second.reason_codes
+    assert engine.state.last_hand_tiles == new_hand
+    assert engine.state.last_open_meld_count == 0
+    assert engine.state.last_melds == []
+    assert engine.state.riichi_players == []
+    assert sum(len(items) for items in engine.state.last_discard_piles.values()) == 7
+
+
 def test_yolo26_new_round_signal_ignores_normal_one_tile_hand_change() -> None:
     engine = RoundCoachEngine(MahjongCoachConfig(tile_recognition_mode="yolo26"))
     old_hand = ["1m", "1m", "2m", "3m", "4p", "5p", "6p", "2s", "3s", "4s", "1z", "2z", "3z"]
@@ -2649,6 +3589,15 @@ def test_live_round_transition_resets_live_turn_counters() -> None:
     plugin._live_state = LiveSessionState(running=True, observed_hand_changes=9, missing_hand_frames=3)
     plugin._live_last_hand_signature = "old"
     plugin._live_last_checkpoint_at = 123.0
+    plugin._last_decision = {"decision_type": "stale"}
+    plugin._display_snapshot = {"round_state": {"round_id": "old-round"}}
+    plugin._live_preview_yolo_snapshot = {"round_id": "old-round", "raw_detections": [{"tile": "1m"}]}
+    plugin._settlement_candidate_preview = {"round_id": "old-round"}
+    plugin._settlement_confirmed_preview = {"round_id": "old-round"}
+    plugin._settlement_preview_revision = 4
+    plugin._live_last_yakuman_key = "old-yakuman"
+    plugin._neko_companion_last_signature = "old-companion"
+    plugin._live_last_preview_at = 99.0
     logged: list[tuple] = []
     plugin.logger = SimpleNamespace(info=lambda *args, **_kwargs: logged.append(args))
     decision = SimpleNamespace(
@@ -2661,6 +3610,17 @@ def test_live_round_transition_resets_live_turn_counters() -> None:
     assert plugin._live_state.missing_hand_frames == 0
     assert plugin._live_last_checkpoint_at == 0.0
     assert plugin._live_last_hand_signature == "1m|2m|3m"
+    assert plugin._last_decision == {}
+    assert plugin._display_snapshot == {}
+    assert plugin._live_preview_yolo_snapshot == {}
+    assert plugin._settlement_candidate_preview == {}
+    assert plugin._settlement_confirmed_preview == {}
+    assert plugin._settlement_preview_revision == 5
+    assert plugin._live_last_yakuman_key == ""
+    assert plugin._neko_companion_last_signature == ""
+    assert plugin._live_last_preview_at == 0.0
+    assert plugin._live_state.last_frame_path == ""
+    assert plugin._live_state.last_frame_revision == 1
     assert logged
 
 
@@ -2686,9 +3646,12 @@ class _FakeOverlay:
         strategy_card: dict | None = None,
         detail: str = "",
         image_path: str = "",
+        image_revision: int = 0,
+        live_state: dict | None = None,
+        companion_status: dict | None = None,
     ) -> None:
         self.calls.append(
-            f"payload:{bool(text)}:{bool(strategy_card_text)}:{bool(strategy_card)}:{bool(detail)}:{bool(image_path)}"
+            f"payload:{bool(text)}:{bool(strategy_card_text)}:{bool(strategy_card)}:{bool(detail)}:{bool(image_path)}:{image_revision}"
         )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -13,7 +14,8 @@ SIGNATURE_HEIGHT = 24
 INNER_BOUNDS = (0.06, 0.06, 0.94, 0.82)
 DEFAULT_MAX_DISTANCE = 82.0
 SUPPORTED_SIGNATURE_VERSIONS = {"rgb-inner-16x24-v1", "rgb-inner-full-16x24-v1"}
-_TEMPLATE_MATRIX_CACHE: dict[tuple[Any, ...], tuple[list[str], np.ndarray]] = {}
+_TEMPLATE_MATRIX_CACHE_LIMIT = 2
+_TEMPLATE_MATRIX_CACHE: OrderedDict[tuple[Any, ...], tuple[list[str], np.ndarray]] = OrderedDict()
 
 
 @dataclass(frozen=True)
@@ -74,7 +76,11 @@ def extract_tile_signature(
         )
     )
     resized = inner.resize((max(1, int(width)), max(1, int(height)))).convert("RGB")
-    return bytes(channel for pixel in resized.getdata() for channel in pixel)
+    try:
+        return bytes(channel for pixel in resized.getdata() for channel in pixel)
+    finally:
+        resized.close()
+        inner.close()
 
 
 def is_probably_occupied_hand_slot(slot_metrics: dict[str, Any], *, relaxed: bool = False) -> bool:
@@ -101,6 +107,7 @@ def _template_signature_matrix(payload: dict[str, Any]) -> tuple[list[str], np.n
     fingerprint = _payload_fingerprint(payload)
     cached = _TEMPLATE_MATRIX_CACHE.get(fingerprint)
     if cached is not None:
+        _TEMPLATE_MATRIX_CACHE.move_to_end(fingerprint)
         return cached
     rows: list[np.ndarray] = []
     tiles: list[str] = []
@@ -112,7 +119,18 @@ def _template_signature_matrix(payload: dict[str, Any]) -> tuple[list[str], np.n
                 tiles.append(tile)
     matrix = np.vstack(rows).astype(np.int16) if rows else np.empty((0, _payload_signature_length(payload)), dtype=np.int16)
     _TEMPLATE_MATRIX_CACHE[fingerprint] = (tiles, matrix)
+    while len(_TEMPLATE_MATRIX_CACHE) > _TEMPLATE_MATRIX_CACHE_LIMIT:
+        _TEMPLATE_MATRIX_CACHE.popitem(last=False)
     return tiles, matrix
+
+
+def release_template_matrix_cache() -> None:
+    """Release calibration matrices when live observation is stopped."""
+    _TEMPLATE_MATRIX_CACHE.clear()
+
+
+def template_matrix_runtime_stats() -> dict[str, int]:
+    return {"template_matrix_entries": len(_TEMPLATE_MATRIX_CACHE)}
 
 
 def _iter_template_signatures(payload: dict[str, Any]) -> Iterable[tuple[str, list[bytes]]]:
