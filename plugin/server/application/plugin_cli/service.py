@@ -163,15 +163,38 @@ class PluginCliService:
                 details=plan_dict,
             )
         if action == "install":
-            return await asyncio.to_thread(
-                self._install_sync,
-                package=package,
-                plugins_root=plugins_root,
-                profiles_root=profiles_root,
-                on_conflict=on_conflict,
-                use_staging=use_staging,
-                forced_directory_name=forced_directory_name,
-            )
+            recovery_path: Path | None = None
+            if str(plan_dict.get("reason", "")) == "orphaned_target":
+                recovery_path = await asyncio.to_thread(
+                    self._quarantine_orphaned_install_target_sync,
+                    directory_name=str(plan_dict["directory_name"]),
+                    plugins_root=plugins_root,
+                )
+            try:
+                result = await asyncio.to_thread(
+                    self._install_sync,
+                    package=package,
+                    plugins_root=plugins_root,
+                    profiles_root=profiles_root,
+                    on_conflict=on_conflict,
+                    use_staging=use_staging,
+                    forced_directory_name=forced_directory_name,
+                )
+            except Exception:
+                if recovery_path is not None:
+                    await asyncio.to_thread(
+                        self._restore_orphaned_install_target_sync,
+                        recovery_path=recovery_path,
+                        directory_name=str(plan_dict["directory_name"]),
+                        plugins_root=plugins_root,
+                    )
+                raise
+            if recovery_path is not None:
+                result["orphaned_target_recovered"] = True
+                result["orphaned_target_cleanup_pending"] = recovery_path.exists()
+                if recovery_path.exists():
+                    result["orphaned_target_recovery_path"] = str(recovery_path)
+            return result
 
         if not confirm_upgrade or not confirmation_token:
             raise ServerDomainError(
@@ -847,6 +870,85 @@ class PluginCliService:
     def _path_policy() -> PluginCliPathPolicy:
         return PluginCliPathPolicy.from_settings()
 
+    def _quarantine_orphaned_install_target_sync(
+        self,
+        *,
+        directory_name: str,
+        plugins_root: str | None,
+    ) -> Path:
+        """Move an identity-less install target aside without overwriting it."""
+
+        policy = self._path_policy()
+        target_root = (
+            _require_within(
+                Path(plugins_root).expanduser().resolve(),
+                policy.user_plugins_root,
+                field="plugins_root",
+            )
+            if plugins_root
+            else policy.user_plugins_root
+        )
+        safe_directory_name = _require_safe_directory_name(
+            directory_name,
+            field="directory_name",
+        )
+        target_dir = target_root / safe_directory_name
+        if not target_dir.exists():
+            raise RuntimeError("orphaned plugin target changed before recovery")
+
+        manifest_path = target_dir / "plugin.toml"
+        if manifest_path.is_file():
+            try:
+                manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+                plugin_table = manifest.get("plugin")
+                installed_plugin_id = (
+                    plugin_table.get("id") if isinstance(plugin_table, dict) else None
+                )
+            except (OSError, tomllib.TOMLDecodeError):
+                installed_plugin_id = None
+            if isinstance(installed_plugin_id, str) and installed_plugin_id.strip():
+                raise RuntimeError("plugin target gained a valid identity before recovery")
+
+        recovery_root = target_root / ".install-recovery"
+        recovery_root.mkdir(parents=True, exist_ok=True)
+        recovery_path = recovery_root / f"{safe_directory_name}.{uuid.uuid4().hex}"
+        target_dir.rename(recovery_path)
+        return recovery_path
+
+    def _restore_orphaned_install_target_sync(
+        self,
+        *,
+        recovery_path: Path,
+        directory_name: str,
+        plugins_root: str | None,
+    ) -> None:
+        """Best-effort rollback when installation fails after quarantine."""
+
+        policy = self._path_policy()
+        target_root = (
+            _require_within(
+                Path(plugins_root).expanduser().resolve(),
+                policy.user_plugins_root,
+                field="plugins_root",
+            )
+            if plugins_root
+            else policy.user_plugins_root
+        )
+        target_dir = target_root / _require_safe_directory_name(
+            directory_name,
+            field="directory_name",
+        )
+        if not recovery_path.exists() or target_dir.exists():
+            return
+        try:
+            recovery_path.rename(target_dir)
+        except OSError as exc:
+            logger.warning(
+                "failed to restore orphaned plugin target path={} err_type={}",
+                recovery_path,
+                type(exc).__name__,
+            )
+
     def _resolver(self) -> PluginSourceResolver:
         return PluginSourceResolver(self._path_policy())
 
@@ -1151,6 +1253,7 @@ class PluginCliService:
         installer = PackageInstaller()
         promoted_plugins: list[InstalledPlugin] = []
         promoted_profile: Path | None = None
+        promoted_profile_created = False
 
         try:
             staged = install_package(
@@ -1183,13 +1286,29 @@ class PluginCliService:
 
             if staged.profile_dir is not None:
                 source_profile = Path(staged.profile_dir)
-                desired_profile = installer.resolve_target_dir(
+                requested_profile = _require_within(
                     profiles_root / source_profile.name,
-                    on_conflict=on_conflict,
+                    profiles_root,
+                    field="profile_dir",
                 )
-                if source_profile.resolve() != desired_profile.resolve():
-                    desired_profile.parent.mkdir(parents=True, exist_ok=True)
-                    source_profile.rename(desired_profile)
+                if on_conflict == "fail" and requested_profile.exists():
+                    if not requested_profile.is_dir():
+                        raise NotADirectoryError(
+                            f"existing package profile is not a directory: {requested_profile}"
+                        )
+                    # Profiles contain user choices. A reinstall may replace the
+                    # plugin program, but it must not reject or overwrite an
+                    # already-existing profile for the same package identity.
+                    desired_profile = requested_profile
+                else:
+                    desired_profile = installer.resolve_target_dir(
+                        requested_profile,
+                        on_conflict=on_conflict,
+                    )
+                    if source_profile.resolve() != desired_profile.resolve():
+                        desired_profile.parent.mkdir(parents=True, exist_ok=True)
+                        source_profile.rename(desired_profile)
+                    promoted_profile_created = True
                 promoted_profile = desired_profile
 
             return InstallResult(
@@ -1208,7 +1327,7 @@ class PluginCliService:
         except Exception:
             for item in promoted_plugins:
                 shutil.rmtree(item.target_dir, ignore_errors=True)
-            if promoted_profile is not None:
+            if promoted_profile_created and promoted_profile is not None:
                 shutil.rmtree(promoted_profile, ignore_errors=True)
             raise
         finally:

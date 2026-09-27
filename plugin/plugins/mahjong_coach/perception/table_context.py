@@ -34,6 +34,14 @@ _MIN_SCORE_CONFIDENCE = 0.60
 _MIN_COUNTER_CONFIDENCE = 0.42
 _SCORE_PATTERN = re.compile(r"-?\d{3,6}")
 _COUNTER_PATTERN = re.compile(r"\d{1,2}")
+_COMMON_FOUR_PLAYER_POINT_POOLS = (100_000, 120_000, 140_000)
+_MAX_PLAUSIBLE_CARRIED_RIICHI_STICKS = 12
+_SEAT_MAPPING = {
+    "self": "bottom",
+    "right_opponent": "right",
+    "top_opponent": "top",
+    "left_opponent": "left",
+}
 
 NumericRecognizer = Callable[[Image.Image, str], tuple[str, float]]
 
@@ -62,6 +70,7 @@ class TableContextResult:
             "reason": self.reason,
             "score_reads": {key: dict(value) for key, value in self.score_reads.items()},
             "counter_reads": {key: dict(value) for key, value in self.counter_reads.items()},
+            "seat_mapping": dict(_SEAT_MAPPING),
             "elapsed_ms": round(float(self.elapsed_ms), 1),
         }
 
@@ -77,17 +86,20 @@ def detect_table_context(
 
     Four valid scores are mandatory. Counters are deliberately optional: a
     table skin or a temporary effect may cover the upper-left HUD while the
-    central score panel is still reliable. The engine applies its own
-    consecutive-frame confirmation before these values affect strategy.
+    central score panel is still reliable. The engine runs this comparatively
+    expensive OCR pass only once after each new hand is confirmed.
     """
     started = time.perf_counter()
     if not source_exists(image_source):
         return _result(reason="image_missing", started=started)
-    try:
-        with open_rgb(image_source) as opened:
-            frame = opened.copy()
-    except Exception:
-        return _result(reason="image_unreadable", started=started)
+    if isinstance(image_source, Image.Image):
+        frame = image_source if image_source.mode == "RGB" else image_source.convert("RGB")
+    else:
+        try:
+            with open_rgb(image_source) as opened:
+                frame = opened.copy()
+        except Exception:
+            return _result(reason="image_unreadable", started=started)
 
     surface = table_surface_result
     if surface is None:
@@ -110,12 +122,20 @@ def detect_table_context(
     score_reads: dict[str, dict[str, Any]] = {}
     scores: dict[str, int] = {}
     score_confidences: list[float] = []
-    warped = surface.warped_image.convert("RGB")
+    warped = (
+        surface.warped_image
+        if surface.warped_image.mode == "RGB"
+        else surface.warped_image.convert("RGB")
+    )
     for player, (crop_box, rotation) in _SCORE_CROPS.items():
         crop = _normalized_crop(warped, crop_box)
-        if rotation:
-            crop = crop.rotate(rotation, expand=True)
-        text, confidence = _safe_recognize(recognizer, crop, f"score:{player}")
+        rotated = crop.rotate(rotation, expand=True) if rotation else crop
+        try:
+            text, confidence = _safe_recognize(recognizer, rotated, f"score:{player}")
+        finally:
+            if rotated is not crop:
+                rotated.close()
+            crop.close()
         score = _parse_score(text, confidence)
         score_reads[player] = {
             "text": text,
@@ -131,7 +151,10 @@ def detect_table_context(
     counters: dict[str, int | None] = {}
     for field_name, crop_box in _COUNTER_CROPS.items():
         crop = _normalized_crop(frame, crop_box)
-        text, confidence = _safe_recognize(recognizer, crop, f"counter:{field_name}")
+        try:
+            text, confidence = _safe_recognize(recognizer, crop, f"counter:{field_name}")
+        finally:
+            crop.close()
         value = _parse_counter(text, confidence)
         counters[field_name] = value
         counter_reads[field_name] = {
@@ -252,6 +275,48 @@ def _score_total_is_plausible(scores: dict[str, int]) -> bool:
     return 40_000 <= total <= 200_000 and total % 1000 == 0
 
 
+def reconcile_riichi_stick_count(
+    scores: dict[str, int],
+    ocr_count: int | None,
+    *,
+    point_pool_total: int | None = None,
+) -> tuple[int | None, int | None, str]:
+    """Fuse the fragile HUD digit with the table's point-conservation rule.
+
+    Four displayed scores plus 1000 points per deposited riichi stick remain
+    constant throughout a match.  A known match pool is strongest; on the first
+    read, common four-player pools provide a conservative baseline before the
+    generic OCR value is used as a fallback for custom rooms.
+    """
+    if len(scores) != 4:
+        return ocr_count, point_pool_total, "insufficient_scores"
+    score_total = sum(int(value) for value in scores.values())
+
+    if point_pool_total is not None:
+        difference = int(point_pool_total) - score_total
+        if (
+            difference >= 0
+            and difference % 1000 == 0
+            and difference // 1000 <= _MAX_PLAUSIBLE_CARRIED_RIICHI_STICKS
+        ):
+            return difference // 1000, int(point_pool_total), "score_pool_conservation"
+
+    common_candidates = [
+        pool
+        for pool in _COMMON_FOUR_PLAYER_POINT_POOLS
+        if 0 <= pool - score_total <= _MAX_PLAUSIBLE_CARRIED_RIICHI_STICKS * 1000
+        and (pool - score_total) % 1000 == 0
+    ]
+    if common_candidates:
+        pool = min(common_candidates, key=lambda value: value - score_total)
+        return (pool - score_total) // 1000, pool, "common_point_pool"
+
+    if ocr_count is not None:
+        normalized = max(0, min(99, int(ocr_count)))
+        return normalized, score_total + normalized * 1000, "counter_ocr_baseline"
+    return None, point_pool_total, "counter_unresolved"
+
+
 def _resolve_rec_model_path(explicit_path: str | Path | None = None) -> Path:
     candidates: list[Path] = []
     if explicit_path:
@@ -324,3 +389,17 @@ def _recognizer_for_model(model_path: Path) -> NumericRecognizer:
         return "".join(output), confidence
 
     return recognize
+
+
+def release_table_context_runtime_cache() -> None:
+    """Release the numeric OCR session after live observation stops."""
+    _recognizer_for_model.cache_clear()
+
+
+def table_context_runtime_stats() -> dict[str, int]:
+    info = _recognizer_for_model.cache_info()
+    return {
+        "ocr_sessions": int(info.currsize),
+        "ocr_cache_hits": int(info.hits),
+        "ocr_cache_misses": int(info.misses),
+    }

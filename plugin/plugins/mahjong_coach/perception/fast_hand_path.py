@@ -104,12 +104,15 @@ def detect_fast_hand_path(
                 continue
             empty_streak_after_hand = 0
             crop = image.crop((slot.box.left, slot.box.top, slot.box.right, slot.box.bottom))
-            match = classify_hand_tile(
-                crop,
-                template_payload,
-                use_onnx=use_onnx_hand,
-                fallback_to_onnx=True,
-            )
+            try:
+                match = classify_hand_tile(
+                    crop,
+                    template_payload,
+                    use_onnx=use_onnx_hand,
+                    fallback_to_onnx=True,
+                )
+            finally:
+                crop.close()
             if match is None:
                 raw_detections.append(detection)
                 continue
@@ -183,26 +186,23 @@ def quick_frame_fingerprint(
             "hashes": {},
         }
 
-    with open_rgb(image_path) as opened:
-        image = opened.copy()
-    w, h = image.width, image.height
-    arr = np.asarray(image, dtype=np.int16)
+    with open_rgb(image_path) as image:
+        w, h = image.width, image.height
 
-    # Action bar region (same as action_detector.py uses)
-    ax = int(w * 0.18)
-    ay = int(h * 0.54)
-    aw = int(w * 0.68)
-    ah = int(h * 0.28)
-    action_crop = arr[ay:ay + ah:8, ax:ax + aw:8]
-    action_hash = _row_hash(action_crop)
-
-    # Hand region (same as hand_layout.py uses)
-    hx = int(w * 0.14)
-    hy = int(h * 0.72)
-    hw = int(w * 0.54)
-    hh = int(h * 0.15)
-    hand_crop = arr[hy:hy + hh:8, hx:hx + hw:8]
-    hand_hash = _row_hash(hand_crop)
+        # Hash only the two regions that drive scheduling. Building one int16
+        # array for the full 1080p/1440p frame retained 12-22 MB per pass.
+        ax, ay = int(w * 0.18), int(h * 0.54)
+        aw, ah = int(w * 0.68), int(h * 0.28)
+        action_hash = _sampled_row_hash(
+            image,
+            (ax, ay, ax + aw, ay + ah),
+        )
+        hx, hy = int(w * 0.14), int(h * 0.72)
+        hw, hh = int(w * 0.54), int(h * 0.15)
+        hand_hash = _sampled_row_hash(
+            image,
+            (hx, hy, hx + hw, hy + hh),
+        )
 
     hashes = {"action": action_hash, "hand": hand_hash}
     river_changes: dict[str, bool] = {}
@@ -211,12 +211,16 @@ def quick_frame_fingerprint(
         # it as unchanged would suppress opponent discards and riichi turns.
         river_changes = {owner: True for owner in RIVER_FINGERPRINT_ROIS}
     else:
-        table = warped_table.convert("RGB")
-        for owner, bounds in RIVER_FINGERPRINT_ROIS.items():
-            key = f"river:{owner}"
-            value = _region_hash(table, bounds)
-            hashes[key] = value
-            river_changes[owner] = value != last_hashes.get(key, b"")
+        table = warped_table if warped_table.mode == "RGB" else warped_table.convert("RGB")
+        try:
+            for owner, bounds in RIVER_FINGERPRINT_ROIS.items():
+                key = f"river:{owner}"
+                value = _region_hash(table, bounds)
+                hashes[key] = value
+                river_changes[owner] = value != last_hashes.get(key, b"")
+        finally:
+            if table is not warped_table:
+                table.close()
 
     return {
         "action_changed": action_hash != last_hashes.get("action", b""),
@@ -235,6 +239,15 @@ def _row_hash(crop: np.ndarray) -> bytes:
     return row_means.astype(np.float32).tobytes()
 
 
+def _sampled_row_hash(image: Image.Image, box: tuple[int, int, int, int]) -> bytes:
+    crop = image.crop(box)
+    try:
+        sampled = np.asarray(crop, dtype=np.uint8)[::8, ::8]
+        return _row_hash(sampled)
+    finally:
+        crop.close()
+
+
 def _region_hash(image: Image.Image, bounds: tuple[float, float, float, float]) -> bytes:
     """Return a compact spatial hash while retaining tile orientation changes."""
     width, height = image.size
@@ -242,8 +255,13 @@ def _region_hash(image: Image.Image, bounds: tuple[float, float, float, float]) 
     top = max(0, min(height - 1, int(round(height * bounds[1]))))
     right = max(left + 1, min(width, int(round(width * bounds[2]))))
     bottom = max(top + 1, min(height, int(round(height * bounds[3]))))
-    crop = image.crop((left, top, right, bottom)).resize((48, 24), Image.Resampling.BILINEAR)
-    # Five-bit color is enough to preserve a newly placed or rotated tile and
-    # avoids rerunning YOLO for insignificant one-level capture noise.
-    quantized = (np.asarray(crop, dtype=np.uint8) >> 3).tobytes()
-    return hashlib.blake2s(quantized, digest_size=16).digest()
+    crop = image.crop((left, top, right, bottom))
+    resized = crop.resize((48, 24), Image.Resampling.BILINEAR)
+    try:
+        # Five-bit color is enough to preserve a newly placed or rotated tile and
+        # avoids rerunning YOLO for insignificant one-level capture noise.
+        quantized = (np.asarray(resized, dtype=np.uint8) >> 3).tobytes()
+        return hashlib.blake2s(quantized, digest_size=16).digest()
+    finally:
+        resized.close()
+        crop.close()

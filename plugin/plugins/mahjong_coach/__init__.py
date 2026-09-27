@@ -2,23 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import copy
 import contextlib
 from collections import Counter
 from dataclasses import replace
 from io import BytesIO
+import json
 import math
 from pathlib import Path
+import sys
 import threading
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
+import uuid
 
 from PIL import Image
 
 from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr
 
-from .capture import CaptureSession, DefaultCaptureProvider, prune_frames
-from .coach import RoundCoachEngine
+from .capture import CaptureSession, DefaultCaptureProvider, ensure_windows_dpi_awareness, prune_frames
+from .companion_transport import DirectCompanionSubmitResult, submit_companion_direct
 from .models import (
     CapturePreferences,
     LiveSessionState,
@@ -26,6 +28,8 @@ from .models import (
     PlayerProfile,
     WindowTargetDescriptor,
     _clean_string_list,
+    _valid_inference_provider,
+    _valid_live_advice_mode,
     _valid_play_style,
     _valid_strategy_preset,
     _valid_river_tracking_mode,
@@ -38,17 +42,124 @@ from .overlay import (
     overlay_strategy_card_text_from_payload,
     overlay_text_from_payload,
 )
-from .player_profile import AmaeKoromoProvider, ProfileLookupError
-from .preferences import PreferencesStore
-from .perception.settlement_detector import (
-    detect_settlement_image,
-    render_settlement_diagnostic_image,
+from .presentation import (
+    build_absurd_banter_reply,
+    build_neko_companion_cue,
+    build_public_payload,
+    sanitize_round_history,
 )
-from .perception.table_surface import detect_table_surface
-from .perception.yolo26_visible_tiles import render_yolo26_region_diagnostic_image
+from .preferences import PreferencesStore
 from .tile_labels import normalize_tile
 from .window_binding import choose_window_candidate_native, list_window_candidates
-from .yakuman import YakumanEstimateService
+
+if TYPE_CHECKING:
+    from .coach import RoundCoachEngine
+    from .perception.settlement_detector import SettlementFrameResult
+
+
+# The N.E.K.O host imports the entry module in its parent process to scan
+# metadata.  Keep native perception dependencies out of that import path:
+# vendored cv2/numpy DLLs cannot be unloaded on Windows and otherwise keep the
+# plugin directory locked even after its child process has stopped.
+def release_strategy_runtime_caches() -> None:
+    from .coach import release_strategy_runtime_caches as release
+
+    release()
+
+
+def perception_runtime_stats() -> dict[str, object]:
+    from .perception import perception_runtime_stats as collect
+
+    return collect()
+
+
+def release_perception_runtime_caches() -> None:
+    from .perception import release_perception_runtime_caches as release
+
+    release()
+
+
+def source_identity(*args: Any, **kwargs: Any) -> Any:
+    from .perception.image_source import source_identity as identify
+
+    return identify(*args, **kwargs)
+
+
+def detect_settlement_image(*args: Any, **kwargs: Any) -> Any:
+    from .perception.settlement_detector import detect_settlement_image as detect
+
+    return detect(*args, **kwargs)
+
+
+def render_settlement_diagnostic_image(*args: Any, **kwargs: Any) -> Any:
+    from .perception.settlement_detector import render_settlement_diagnostic_image as render
+
+    return render(*args, **kwargs)
+
+
+def detect_table_surface(*args: Any, **kwargs: Any) -> Any:
+    from .perception.table_surface import detect_table_surface as detect
+
+    return detect(*args, **kwargs)
+
+
+def render_yolo26_region_diagnostic_image(*args: Any, **kwargs: Any) -> Any:
+    from .perception.yolo26_visible_tiles import render_yolo26_region_diagnostic_image as render
+
+    return render(*args, **kwargs)
+
+
+def warmup_yolo26_runtime(*args: Any, **kwargs: Any) -> Any:
+    from .perception.yolo26_visible_tiles import warmup_yolo26_runtime as warmup
+
+    return warmup(*args, **kwargs)
+
+
+_NEKO_RARE_JOKE_MIN_EVENTS = 12
+_NEKO_RARE_JOKE_MIN_INTERVAL_SECONDS = 15 * 60
+_NEKO_AMBIENT_MIN_INTERVAL_SECONDS = 6.0
+_NEKO_AMBIENT_SETTLE_SECONDS = 1.0
+_NEKO_IDLE_HEARTBEAT_SECONDS = 12.0
+_NEKO_AMBIENT_MAX_PER_ROUND = 24
+_NEKO_TRANSPORT_RETRY_SECONDS = 3.0
+_NEKO_TRANSPORT_PROBE_TIMEOUT_SECONDS = 0.25
+_NEKO_HOST_RECEIPT_WAIT_SECONDS = 2.0
+_YOLO_WARMUP_RETRY_SECONDS = 60.0
+_LIVE_PREVIEW_ACTIVE_INTERVAL_SECONDS = 0.8
+_LIVE_PREVIEW_ACTIVE_TTL_SECONDS = 3.0
+_LIVE_PREVIEW_IDLE_INTERVAL_SECONDS = 4.0
+
+
+class _CrossLoopAsyncLock:
+    """Small async context lock that is safe across host event-loop threads.
+
+    Plugin entries and the long-running live task can be dispatched by the host
+    on different asyncio loops. ``asyncio.Lock`` binds to one of those loops as
+    soon as it has a waiter, which can stop capture after a reload or status
+    request. A non-blocking ``threading.Lock`` keeps the same critical section
+    without binding mutable engine state to one event loop.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    async def acquire(self) -> bool:
+        while not self._lock.acquire(blocking=False):
+            await asyncio.sleep(0.005)
+        return True
+
+    def release(self) -> None:
+        self._lock.release()
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        self.release()
 
 
 @neko_plugin
@@ -59,10 +170,26 @@ class MahjongCoachPlugin(NekoPluginBase):
         self.logger = self.file_logger
         self._cfg = MahjongCoachConfig()
         self._engine: RoundCoachEngine | None = None
-        self._engine_lock = asyncio.Lock()
+        self._engine_lock = _CrossLoopAsyncLock()
         self._last_decision: dict[str, Any] = {}
         self._display_snapshot: dict[str, Any] = {}
         self._display_revision = 0
+        self._neko_companion_last_signature = ""
+        self._neko_companion_last_push_at = 0.0
+        self._neko_companion_push_count = 0
+        self._neko_companion_last_event_kind = ""
+        self._neko_companion_last_submit_ms: float | None = None
+        self._neko_companion_delivery_stage = "waiting_capture"
+        self._neko_companion_delivery_id = ""
+        self._neko_companion_last_error = ""
+        self._neko_companion_message_plane_received_count = 0
+        self._neko_companion_host_received_count = 0
+        self._neko_companion_failure_count = 0
+        self._neko_companion_next_transport_probe_at = 0.0
+        self._neko_companion_receipt_task: asyncio.Task | None = None
+        self._neko_companion_events_since_rare_joke = 0
+        self._neko_companion_last_rare_joke_at = 0.0
+        self._reset_neko_companion_ambient_state()
         self._live_state = LiveSessionState()
         self._live_task: asyncio.Task | None = None
         self._live_stop_event: asyncio.Event | None = None
@@ -72,7 +199,18 @@ class MahjongCoachPlugin(NekoPluginBase):
         self._live_gap_candidate_frames = 0
         self._live_last_checkpoint_at = 0.0
         self._live_timing_log: list[dict[str, Any]] = []
+        self._runtime_resource_samples: list[dict[str, Any]] = []
+        self._runtime_last_resource_sample_at = 0.0
+        self._live_frame_queue_size = 0
         self._live_last_preview_at = 0.0
+        self._live_preview_requested_at = 0.0
+        self._live_preview_yolo_snapshot: dict[str, Any] = {}
+        self._settlement_candidate_preview: dict[str, Any] = {}
+        self._settlement_confirmed_preview: dict[str, Any] = {}
+        self._settlement_preview_revision = 0
+        self._yolo_warmup_task: asyncio.Task | None = None
+        self._yolo_warmup_provider = ""
+        self._yolo_warmup_state: dict[str, Any] = {"status": "idle"}
         self._live_last_yakuman_key = ""
         self._loop: asyncio.AbstractEventLoop | None = None
         self._tk_loop: asyncio.AbstractEventLoop | None = None
@@ -82,18 +220,35 @@ class MahjongCoachPlugin(NekoPluginBase):
         )
         self._preferences_store = PreferencesStore(self.data_path("coach_preferences.json"))
         self._preferences = self._preferences_store.load()
-        self._profile_provider = AmaeKoromoProvider(cache_path=self.data_path("player_profile_cache.json"))
-        self._yakuman_service: YakumanEstimateService | None = None
+        # Player lookup and yakuman estimation are retained as cold legacy
+        # entries, but neither belongs in the companion-only startup path.
+        self._profile_provider: Any | None = None
+        self._yakuman_service: Any | None = None
 
     @lifecycle(id="startup")
     async def startup(self, **_):
         try:
+            from .coach import RoundCoachEngine
+
+            dpi_mode = ensure_windows_dpi_awareness()
+            self.logger.info("mahjong coach capture dpi awareness={}", dpi_mode)
             raw = await self.config.dump(timeout=5.0)
-            self._cfg = MahjongCoachConfig.from_payload(raw if isinstance(raw, dict) else {})
+            loaded_cfg = MahjongCoachConfig.from_payload(raw if isinstance(raw, dict) else {})
+            # The distributed plugin is companion-only.  Legacy fields remain
+            # readable so old profiles do not break, but live strategy cannot
+            # be restored through configuration or entry arguments.
+            self._cfg = replace(
+                loaded_cfg,
+                live_advice_mode="companion",
+                companion_only_runtime=True,
+                strategy_preset="simple",
+                per_turn_discard_prompt=False,
+                absurd_banter_enabled=False,
+            )
             self._preferences_store = PreferencesStore(self.data_path("coach_preferences.json"))
             self._preferences = self._preferences_store.load()
-            self._profile_provider = AmaeKoromoProvider(cache_path=self.data_path("player_profile_cache.json"))
-            self._yakuman_service = YakumanEstimateService()
+            self._profile_provider = None
+            self._yakuman_service = None
             if self._preferences.profile != PlayerProfile():
                 self._cfg = replace(
                     self._cfg,
@@ -108,57 +263,58 @@ class MahjongCoachPlugin(NekoPluginBase):
             self._overlay = CoachOverlayController(
                 prefs_path=self.data_path("overlay_prefs.json"),
                 on_start=self._on_overlay_start_sync,
+                on_preferences_change=self._on_overlay_preferences_sync,
                 on_stop=self._on_overlay_stop_sync,
             )
-            # 启动时只注册插件能力，不自动弹出 Tk 浮窗，避免浮窗遮挡牌桌截图。
-            # Register plugin capabilities on startup without auto-opening the Tk overlay,
-            # so the overlay cannot cover the Mahjong Soul frame being captured.
-            # 中文：开发中的工作台必须绕过浏览器缓存，避免重载后仍显示旧版 UI。
-            # English: Bypass browser caching so plugin reloads always show the current dashboard.
-            self.register_static_ui("static", cache_control="no-store")
-            self.set_list_actions(
-                [
-                    {
-                        "id": "open_ui",
-                        "kind": "ui",
-                        "target": f"/plugin/{self.plugin_id}/ui/",
-                        "open_in": "new_tab",
-                    },
-                    {
-                        "id": "status",
-                        "kind": "entry",
-                        "target": "mahjong_coach_status",
-                    },
-                    {
-                        "id": "show_overlay",
-                        "kind": "entry",
-                        "target": "mahjong_coach_show_overlay",
-                    },
-                    {
-                        "id": "analyze_frame",
-                        "kind": "entry",
-                        "target": "mahjong_coach_analyze_frame",
-                    },
-                    {
-                        "id": "start_live",
-                        "kind": "entry",
-                        "target": "mahjong_coach_start_live",
-                    },
-                    {
-                        "id": "stop_live",
-                        "kind": "entry",
-                        "target": "mahjong_coach_stop_live",
-                    },
-                ]
-            )
+            self._register_product_surface()
             if self._preferences.auto_start_live and (
                 self._preferences.target.title or self._preferences.target.app_name
             ):
-                asyncio.create_task(self._overlay_start_live(overlay=True))
+                asyncio.create_task(
+                    self._overlay_start_live(overlay=True, inference_provider="speed")
+                )
             return Ok({"status": "ready", "config": self._cfg.to_dict()})
         except Exception as exc:
             self.logger.warning("mahjong coach startup failed: {}", exc)
             return Err(SdkError("failed to start mahjong_coach"))
+
+    def _register_product_surface(self) -> None:
+        """Expose the native panel as the product launch surface.
+
+        The static dashboard remains routable for diagnostics, but it is not a
+        list action and therefore is not opened as the normal plugin UI.
+        """
+
+        self.register_static_ui("static", cache_control="no-store")
+        self.set_list_actions(
+            [
+                {
+                    "id": "show_overlay",
+                    "kind": "entry",
+                    "target": "mahjong_coach_show_overlay",
+                },
+                {
+                    "id": "start_live",
+                    "kind": "entry",
+                    "target": "mahjong_coach_start_live",
+                },
+                {
+                    "id": "stop_live",
+                    "kind": "entry",
+                    "target": "mahjong_coach_stop_live",
+                },
+                {
+                    "id": "status",
+                    "kind": "entry",
+                    "target": "mahjong_coach_status",
+                },
+            ]
+        )
+        if not self._show_overlay(strategy=False):
+            self.logger.warning(
+                "mahjong coach started but native companion window could not open: {}",
+                getattr(self._overlay, "last_error", "unknown overlay startup error"),
+            )
 
     def _show_overlay(self, *, strategy: bool = False) -> bool:
         if not self._overlay.start():
@@ -167,6 +323,9 @@ class MahjongCoachPlugin(NekoPluginBase):
                 getattr(self._overlay, "last_error", "unknown overlay startup error"),
             )
             return False
+        # Reopening the plugin restores a minimized surface without touching
+        # the capture task or the companion delivery session.
+        self._overlay.restore()
         logger = getattr(self, "logger", None)
         if logger is not None:
             logger.info(
@@ -175,6 +334,21 @@ class MahjongCoachPlugin(NekoPluginBase):
                 getattr(self._overlay, "window_handle", 0),
                 getattr(self._overlay, "window_visible", False),
             )
+        snapshot = dict(getattr(self, "_display_snapshot", {}) or {})
+        live_state = getattr(self, "_live_state", LiveSessionState())
+        companion_only = bool(
+            getattr(getattr(self, "_cfg", None), "companion_only_runtime", False)
+        )
+        self._overlay.update_payload(
+            text=str(snapshot.get("overlay_text") or "吐槽伙伴正在等待牌局事件。"),
+            strategy_card_text=("" if companion_only else str(snapshot.get("strategy_card_text") or "")),
+            strategy_card=({} if companion_only else dict(snapshot.get("strategy_card") or {})),
+            detail=str(snapshot.get("overlay_detail") or ""),
+            image_path=str(snapshot.get("image_path") or ""),
+            image_revision=int(snapshot.get("image_revision") or 0),
+            live_state=live_state.to_dict(),
+            companion_status=self._neko_companion_status_payload(),
+        )
         if strategy:
             self._overlay.show_strategy()
         else:
@@ -205,19 +379,95 @@ class MahjongCoachPlugin(NekoPluginBase):
             self.logger.warning("failed to start tk event loop: {}", exc)
             return None
 
-    def _on_overlay_start_sync(self, style: str, strategy_preset: str = "simple") -> None:
+    def _on_overlay_start_sync(
+        self,
+        style: str,
+        strategy_preset: str = "simple",
+        live_advice_mode: str = "companion",
+        neko_companion_enabled: bool = True,
+        absurd_banter_enabled: bool = False,
+    ) -> None:
         self.logger.info(
-            "_on_overlay_start_sync called style={} strategy_preset={}",
+            "_on_overlay_start_sync called style={} strategy_preset={} live_advice_mode={} neko_companion_enabled={} absurd_banter_enabled={}",
             style,
             strategy_preset,
+            live_advice_mode,
+            neko_companion_enabled,
+            absurd_banter_enabled,
         )
         self._schedule_on_loop(
-            self._overlay_start_live(play_style=style, strategy_preset=strategy_preset),
+            self._overlay_start_live(
+                play_style=style,
+                strategy_preset=strategy_preset,
+                live_advice_mode=live_advice_mode,
+                neko_companion_enabled=neko_companion_enabled,
+                absurd_banter_enabled=absurd_banter_enabled,
+                # The native overlay has no resource-mode selector.  Always
+                # request the accelerated runtime here so upgraded installs do
+                # not keep an old persisted ``memory`` value.  ONNX Runtime
+                # falls back to CPU when CUDA / DirectML is unavailable.
+                inference_provider="speed",
+            ),
             "overlay_start",
+        )
+
+    def _on_overlay_preferences_sync(
+        self,
+        strategy_preset: str,
+        live_advice_mode: str,
+        neko_companion_enabled: bool,
+        absurd_banter_enabled: bool = False,
+    ) -> None:
+        """Apply in-session overlay choices without restarting capture."""
+        self._schedule_on_loop(
+            self._overlay_update_preferences(
+                strategy_preset=strategy_preset,
+                live_advice_mode=live_advice_mode,
+                neko_companion_enabled=neko_companion_enabled,
+                absurd_banter_enabled=absurd_banter_enabled,
+            ),
+            "overlay_preferences",
         )
 
     def _on_overlay_stop_sync(self) -> None:
         self._schedule_on_loop(self._overlay_stop_live(hide_overlay=True), "overlay_stop")
+
+    async def _overlay_update_preferences(
+        self,
+        *,
+        strategy_preset: str,
+        live_advice_mode: str,
+        neko_companion_enabled: bool,
+        absurd_banter_enabled: bool = False,
+    ):
+        if self._engine is None:
+            return Err(SdkError("mahjong coach is not initialized"))
+        async with self._get_engine_lock():
+            preset_before = self._cfg.strategy_preset
+            mode_before = self._cfg.live_advice_mode
+            self._apply_runtime_strategy_preset(strategy_preset)
+            self._apply_runtime_live_advice_mode(live_advice_mode)
+            self._apply_runtime_neko_companion_enabled(neko_companion_enabled)
+            self._apply_runtime_absurd_banter_enabled(absurd_banter_enabled)
+            if self._cfg.strategy_preset != preset_before:
+                self._invalidate_live_plan_for_style_change()
+            if self._cfg.live_advice_mode != mode_before:
+                self._display_snapshot = {}
+            payload = {
+                "last_decision": dict(self._last_decision),
+                "round_state": self._engine.state.to_dict(),
+            }
+        if self._live_state.running and payload["last_decision"]:
+            self._update_overlay(payload)
+        return Ok(
+            {
+                "strategy_preset": self._cfg.strategy_preset,
+                "live_advice_mode": self._cfg.live_advice_mode,
+                "neko_companion_enabled": self._cfg.neko_companion_enabled,
+                "absurd_banter_enabled": self._cfg.absurd_banter_enabled,
+                "running": self._live_state.running,
+            }
+        )
 
     def _schedule_on_loop(self, coro, label: str) -> None:
         loop = None
@@ -253,15 +503,15 @@ class MahjongCoachPlugin(NekoPluginBase):
         self.clear_list_actions()
         return Ok({"status": "stopped"})
 
-    def _get_engine_lock(self) -> asyncio.Lock:
+    def _get_engine_lock(self) -> _CrossLoopAsyncLock:
         """Return the single mutex guarding the mutable round engine.
 
         A lazy fallback keeps direct ``__new__`` test fixtures and older host
         reloads compatible without creating a second lock in normal runtime.
         """
         lock = getattr(self, "_engine_lock", None)
-        if lock is None:
-            lock = asyncio.Lock()
+        if not isinstance(lock, _CrossLoopAsyncLock):
+            lock = _CrossLoopAsyncLock()
             self._engine_lock = lock
         return lock
 
@@ -288,35 +538,115 @@ class MahjongCoachPlugin(NekoPluginBase):
             raise asyncio.CancelledError
         return result
 
+    def _neko_companion_status_payload(self) -> dict[str, Any]:
+        cfg = getattr(self, "_cfg", MahjongCoachConfig())
+        live_state = getattr(self, "_live_state", LiveSessionState())
+        enabled = bool(cfg.neko_companion_enabled)
+        live_running = bool(getattr(live_state, "running", False))
+        stage = str(getattr(self, "_neko_companion_delivery_stage", "") or "")
+        if not enabled:
+            stage = "disabled"
+        elif not live_running:
+            stage = "waiting_capture"
+        elif stage in {"", "disabled", "waiting_capture"}:
+            stage = "ready"
+        return {
+            "enabled": enabled,
+            "active": bool(enabled and live_running),
+            "capture_running": live_running,
+            "capture_status": str(getattr(live_state, "status", "stopped") or "stopped"),
+            "delivery_stage": stage,
+            "delivery_id": str(getattr(self, "_neko_companion_delivery_id", "") or ""),
+            "submit_count": int(getattr(self, "_neko_companion_push_count", 0) or 0),
+            # Compatibility aliases.  These mean SDK submissions, not spoken replies.
+            "push_count": int(getattr(self, "_neko_companion_push_count", 0) or 0),
+            "last_submitted_at": float(getattr(self, "_neko_companion_last_push_at", 0.0) or 0.0),
+            "last_push_at": float(getattr(self, "_neko_companion_last_push_at", 0.0) or 0.0),
+            "message_plane_received_count": int(
+                getattr(self, "_neko_companion_message_plane_received_count", 0) or 0
+            ),
+            "host_received_count": int(
+                getattr(self, "_neko_companion_host_received_count", 0) or 0
+            ),
+            "failure_count": int(getattr(self, "_neko_companion_failure_count", 0) or 0),
+            "last_error": str(getattr(self, "_neko_companion_last_error", "") or ""),
+            "last_event_kind": str(getattr(self, "_neko_companion_last_event_kind", "") or ""),
+            "last_submit_ms": getattr(self, "_neko_companion_last_submit_ms", None),
+            "ambient_count": int(getattr(self, "_neko_companion_ambient_count", 0) or 0),
+            "ambient_limit": _NEKO_AMBIENT_MAX_PER_ROUND,
+            "ordinary_interval_seconds": _NEKO_AMBIENT_MIN_INTERVAL_SECONDS,
+            "idle_interval_seconds": _NEKO_IDLE_HEARTBEAT_SECONDS,
+            "critical_bypasses_cooldown": True,
+            "next_ordinary_in_seconds": _remaining_cooldown_seconds(
+                float(getattr(self, "_neko_companion_last_push_at", 0.0) or 0.0),
+                _NEKO_AMBIENT_MIN_INTERVAL_SECONDS,
+            ),
+            "next_idle_in_seconds": _remaining_cooldown_seconds(
+                float(getattr(self, "_neko_companion_last_push_at", 0.0) or 0.0),
+                _NEKO_IDLE_HEARTBEAT_SECONDS,
+            ),
+        }
+
     @plugin_entry(
         id="mahjong_coach_status",
         name=tr("entries.status.name", default="Mahjong Coach Status"),
         description=tr("entries.status.description", default="Inspect current Mahjong Coach round state."),
-        input_schema={"type": "object", "properties": {}},
-        llm_result_fields=["status", "current_plan", "last_update_reason"],
+        input_schema={
+            "type": "object",
+            "properties": {
+                "dashboard_visible": {"type": "boolean", "default": False},
+            },
+        },
+        llm_result_fields=["status", "guidance_mode", "last_update_reason"],
     )
-    async def mahjong_coach_status(self, **_):
+    async def mahjong_coach_status(self, dashboard_visible: bool = False, **_):
         if self._engine is None:
             return Err(SdkError("mahjong coach is not initialized"))
+        if dashboard_visible:
+            # The diagnostic page is actively watching the transformed table.
+            # Temporarily raise only the single overwritten preview cadence;
+            # normal headless play keeps the lower disk/CPU rate.
+            self._live_preview_requested_at = time.monotonic()
         async with self._get_engine_lock():
             state = self._engine.state.to_dict()
             round_history = self._engine.round_history
             last_decision = dict(self._last_decision)
             config = self._cfg.to_dict()
         payload = {"last_decision": last_decision, "round_state": state}
-        display_snapshot = copy.deepcopy(getattr(self, "_display_snapshot", {}))
-        if not display_snapshot:
-            display_snapshot = self._make_display_snapshot(payload, revision=0)
+        public_payload = build_public_payload(payload, mode=self._cfg.live_advice_mode)
+        display_snapshot = getattr(self, "_display_snapshot", {})
+        snapshot_mode = str((display_snapshot.get("presentation") or {}).get("mode") or "")
+        snapshot_round_id = str((display_snapshot.get("round_state") or {}).get("round_id") or "")
+        current_round_id = str(state.get("round_id") or "")
+        if (
+            not display_snapshot
+            or snapshot_mode != self._cfg.live_advice_mode
+            or snapshot_round_id != current_round_id
+        ):
+            display_snapshot = self._make_display_snapshot(
+                payload,
+                revision=int(getattr(self, "_display_revision", 0) or 0),
+            )
+        public_state = public_payload["round_state"]
+        public_decision = public_payload["last_decision"]
+        public_history = sanitize_round_history(round_history, mode=self._cfg.live_advice_mode)
         timing_log = list(getattr(self, "_live_timing_log", []))
+        yakuman_service = getattr(self, "_yakuman_service", None)
+        yakuman_runtime = yakuman_service.runtime_stats() if yakuman_service is not None else {}
+        self._sample_runtime_resources(
+            phase="live" if self._live_state.running else "stopped",
+            force=False,
+        )
+        resource_summary = self._runtime_resource_summary()
         return Ok(
             {
                 "status": "ready",
                 "config": config,
-                "round_state": state,
-                "last_decision": last_decision,
+                "round_state": public_state,
+                "last_decision": public_decision,
                 "display_snapshot": display_snapshot,
-                "round_history": round_history,
-                "last_round_archive": round_history[-1] if round_history else {},
+                "round_history": public_history,
+                "last_round_archive": public_history[-1] if public_history else {},
                 "overlay_text": str(display_snapshot.get("overlay_text") or ""),
                 "live": self._live_state.to_dict(),
                 "timing_log": timing_log,
@@ -324,11 +654,39 @@ class MahjongCoachPlugin(NekoPluginBase):
                     timing_log,
                     dropped_frames=int(getattr(self._live_state, "dropped_frames", 0) or 0),
                 ),
+                "yakuman_runtime": yakuman_runtime,
+                "runtime_resources": resource_summary,
+                "inference_runtime": self._inference_runtime_status(timing_log),
+                "yolo_warmup": dict(getattr(self, "_yolo_warmup_state", {"status": "idle"})),
+                "neko_companion_sync": self._neko_companion_status_payload(),
                 "preferences": getattr(self, "_preferences", CapturePreferences()).to_dict(),
                 "ui_path": f"/plugin/{self.plugin_id}/ui/",
-                **state,
+                **public_state,
             }
         )
+
+    @plugin_entry(
+        id="mahjong_coach_warmup_yolo26",
+        name="Warm Up Mahjong Coach YOLO26",
+        description="Preload and exercise the selected YOLO26 GPU runtime before live capture.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "inference_provider": {"type": "string", "default": "speed"},
+            },
+        },
+        llm_result_fields=["status", "elapsed_ms", "providers"],
+    )
+    async def mahjong_coach_warmup_yolo26(
+        self,
+        inference_provider: str = "speed",
+        **_,
+    ):
+        provider = _valid_inference_provider(inference_provider)
+        if provider != "speed":
+            return Ok({"status": "skipped", "reason": "gpu_warmup_not_requested"})
+        state = await self._ensure_yolo26_warmup(provider)
+        return Ok(dict(state))
 
     @plugin_entry(
         id="mahjong_coach_save_preferences",
@@ -427,9 +785,12 @@ class MahjongCoachPlugin(NekoPluginBase):
         force_refresh: bool = False,
         **_,
     ):
+        from .player_profile import ProfileLookupError
+
+        provider = self._get_profile_provider()
         try:
             candidates = await asyncio.to_thread(
-                self._profile_provider.search,
+                provider.search,
                 nickname,
                 limit=limit,
                 force_refresh=bool(force_refresh),
@@ -466,9 +827,12 @@ class MahjongCoachPlugin(NekoPluginBase):
         force_refresh: bool = False,
         **_,
     ):
+        from .player_profile import ProfileLookupError
+
+        provider = self._get_profile_provider()
         try:
             profile = await asyncio.to_thread(
-                self._profile_provider.fetch_profile,
+                provider.fetch_profile,
                 account_id,
                 nickname=nickname,
                 force_refresh=bool(force_refresh),
@@ -510,9 +874,12 @@ class MahjongCoachPlugin(NekoPluginBase):
         room: str = "",
         **_,
     ):
+        from .player_profile import ProfileLookupError
+
+        provider = self._get_profile_provider()
         try:
             suggested = await asyncio.to_thread(
-                self._profile_provider.fetch_profile,
+                provider.fetch_profile,
                 account_id,
                 nickname=nickname,
             )
@@ -536,6 +903,17 @@ class MahjongCoachPlugin(NekoPluginBase):
         profile = replace(profile, confirmed=True, source="amae_koromo")
         self._apply_player_profile(profile)
         return Ok({"status": "confirmed", "profile": profile.to_dict()})
+
+    def _get_profile_provider(self) -> Any:
+        provider = getattr(self, "_profile_provider", None)
+        if provider is None:
+            from .player_profile import AmaeKoromoProvider
+
+            provider = AmaeKoromoProvider(
+                cache_path=self.data_path("player_profile_cache.json"),
+            )
+            self._profile_provider = provider
+        return provider
 
     def _apply_player_profile(self, profile: PlayerProfile) -> None:
         self._preferences = self._preferences_store.update(profile=profile)
@@ -596,10 +974,42 @@ class MahjongCoachPlugin(NekoPluginBase):
 
         raw_detections: list[dict[str, Any]] = []
         opponent_melds: dict[str, list[dict[str, Any]]] = {}
+        exact_preview: dict[str, Any] = {}
+        live_snapshot = getattr(self, "_live_preview_yolo_snapshot", {})
+        snapshot_path = str(live_snapshot.get("image_path") or "")
+        snapshot_revision = int(live_snapshot.get("revision") or 0)
+        snapshot_round_id = str(live_snapshot.get("round_id") or "")
+        current_round_id = str(self._engine.state.round_id or "")
+        if (
+            snapshot_path
+            and Path(snapshot_path).resolve() == frame_path
+            and snapshot_revision == int(self._live_state.last_frame_revision or 0)
+            and snapshot_round_id == current_round_id
+        ):
+            raw_detections = [
+                dict(item)
+                for item in live_snapshot.get("raw_detections") or []
+                if isinstance(item, dict)
+            ]
+            opponent_melds = {
+                str(owner): [dict(item) for item in items if isinstance(item, dict)]
+                for owner, items in (live_snapshot.get("opponent_melds") or {}).items()
+                if isinstance(items, list)
+            }
+            cached_preview = live_snapshot.get("table_region_preview")
+            if isinstance(cached_preview, dict):
+                exact_preview = dict(cached_preview)
+        if exact_preview.get("data_url"):
+            return Ok({"status": "ready", **exact_preview})
         async with self._get_engine_lock():
             yolo_path = getattr(self._engine, "_last_yolo26_path", None)
             yolo_result = getattr(self._engine, "_last_yolo26_result", None)
-            if isinstance(yolo_path, Path) and yolo_path.resolve() == frame_path and yolo_result is not None:
+            if (
+                not raw_detections
+                and isinstance(yolo_path, Path)
+                and yolo_path.resolve() == frame_path
+                and yolo_result is not None
+            ):
                 raw_detections = [dict(item) for item in yolo_result.raw_detections if isinstance(item, dict)]
                 opponent_melds = {
                     str(owner): [dict(item) for item in items if isinstance(item, dict)]
@@ -629,9 +1039,25 @@ class MahjongCoachPlugin(NekoPluginBase):
     async def mahjong_coach_settlement_preview(self, image_path: str = "", **_):
         if self._engine is None:
             return Err(SdkError("mahjong coach is not initialized"))
-        raw_path = str(image_path or self._live_state.last_frame_path or "").strip()
+        settlement_phase = str(self._engine.state.settlement_phase or "playing")
+        frozen = (
+            dict(getattr(self, "_settlement_candidate_preview", {}))
+            if settlement_phase == "settlement_candidate"
+            else dict(getattr(self, "_settlement_confirmed_preview", {}))
+        )
+        if str(frozen.get("round_id") or "") != str(self._engine.state.round_id or ""):
+            frozen = {}
+        if frozen:
+            return Ok(frozen)
+        raw_path = str(image_path or "").strip()
         if not raw_path:
-            return Ok({"status": "empty", "image_path": "", "data_url": ""})
+            return Ok({
+                "status": "empty",
+                "phase": settlement_phase,
+                "image_path": "",
+                "data_url": "",
+                "reason": "no_frozen_settlement_evidence",
+            })
         frame_path = _resolve_preview_frame_path(raw_path, self.data_path("live_frames"))
         if frame_path is None:
             return Err(SdkError("latest frame is unavailable"))
@@ -643,7 +1069,7 @@ class MahjongCoachPlugin(NekoPluginBase):
             )
         except (OSError, ValueError):
             return Err(SdkError("failed to build settlement diagnostic preview"))
-        return Ok({"status": "ready", **preview})
+        return Ok({"status": "ready" if preview.get("data_url") else "empty", **preview})
 
     @plugin_entry(
         id="mahjong_coach_reset_round",
@@ -657,23 +1083,23 @@ class MahjongCoachPlugin(NekoPluginBase):
             return Err(SdkError("mahjong coach is not initialized"))
         async with self._get_engine_lock():
             state = self._engine.reset_round(round_id)
-            self._last_decision = {}
-            self._display_snapshot = {}
-            self._live_last_hand_signature = ""
-            self._live_state.observed_hand_changes = 0
-            self._clear_live_hand_gap()
-            self._live_last_checkpoint_at = 0.0
+            self._reset_live_round_caches(current_hand_signature="", clear_last_decision=True)
             getattr(self, "_live_timing_log", []).clear()
             history = self._engine.round_history
             state_payload = state.to_dict()
             state_round_id = state.round_id
+        public_state = build_public_payload(
+            {"last_decision": {}, "round_state": state_payload},
+            mode=self._cfg.live_advice_mode,
+        )["round_state"]
+        public_history = sanitize_round_history(history, mode=self._cfg.live_advice_mode)
         return Ok(
             {
                 "status": "reset",
-                "round_state": state_payload,
+                "round_state": public_state,
                 "round_id": state_round_id,
-                "round_history": history,
-                "last_round_archive": history[-1] if history else {},
+                "round_history": public_history,
+                "last_round_archive": public_history[-1] if public_history else {},
             }
         )
 
@@ -695,10 +1121,9 @@ class MahjongCoachPlugin(NekoPluginBase):
                 "round_wind": {"type": "string", "default": ""},
                 "seat_wind": {"type": "string", "default": ""},
                 "dora_tiles": {"type": "array", "items": {"type": "string"}, "default": []},
-                "play_style": {"type": "string", "default": ""},
-                "strategy_preset": {"type": "string", "default": ""},
                 "river_tracking_mode": {"type": "string", "default": ""},
                 "tile_recognition_mode": {"type": "string", "default": ""},
+                "inference_provider": {"type": "string", "default": "speed"},
                 "settlement_recognition_enabled": {"type": "boolean"},
                 "settlement_min_confidence": {"type": "number"},
                 "settlement_confirm_frames": {"type": "integer"},
@@ -706,7 +1131,7 @@ class MahjongCoachPlugin(NekoPluginBase):
             },
         },
         timeout=20.0,
-        llm_result_fields=["decision_type", "summary", "suggestion"],
+        llm_result_fields=["decision_type", "summary", "detail"],
     )
     async def mahjong_coach_analyze_frame(
         self,
@@ -720,8 +1145,10 @@ class MahjongCoachPlugin(NekoPluginBase):
         dora_tiles: list[str] | None = None,
         play_style: str = "",
         strategy_preset: str = "",
+        live_advice_mode: str = "",
         river_tracking_mode: str = "",
         tile_recognition_mode: str = "",
+        inference_provider: str = "speed",
         settlement_recognition_enabled: bool | None = None,
         settlement_min_confidence: float | None = None,
         settlement_confirm_frames: int | None = None,
@@ -739,8 +1166,10 @@ class MahjongCoachPlugin(NekoPluginBase):
                     play_style=play_style,
                 )
                 self._apply_runtime_strategy_preset(strategy_preset)
+                self._apply_runtime_live_advice_mode(live_advice_mode)
                 self._apply_runtime_river_tracking_mode(river_tracking_mode)
                 self._apply_runtime_tile_recognition_mode(tile_recognition_mode)
+                self._apply_runtime_inference_provider(inference_provider)
                 self._apply_runtime_settlement_config(
                     enabled=settlement_recognition_enabled,
                     min_confidence=settlement_min_confidence,
@@ -755,15 +1184,22 @@ class MahjongCoachPlugin(NekoPluginBase):
                     force_checkpoint=bool(force_checkpoint),
                     riichi_players=riichi_players or [],
                 )
+                self._observe_live_round_transition(decision)
                 decision = self._enrich_yakuman_decision(decision)
                 self._last_decision = decision.to_dict()
-                decision_payload = dict(self._last_decision)
+                raw_decision_payload = dict(self._last_decision)
                 engine_state = self._engine.state.to_dict()
         except Exception as exc:
             self.logger.warning("mahjong coach frame analysis failed: {}", exc)
             return Err(SdkError(str(exc)))
-        if not getattr(decision, "quiet", False):
-            self._update_overlay({"last_decision": decision_payload, "round_state": engine_state})
+        # The external panel follows every completed recognition transaction.
+        # Quiet observations must remain visible to both diagnostics and the
+        # companion cadence; the cue builder decides whether speech is due.
+        self._update_overlay({"last_decision": raw_decision_payload, "round_state": engine_state})
+        decision_payload = build_public_payload(
+            {"last_decision": raw_decision_payload, "round_state": engine_state},
+            mode=self._cfg.live_advice_mode,
+        )["last_decision"]
         self._append_live_timing(
             {
                 **_mahjong_timing_from_decision(decision_payload),
@@ -782,7 +1218,7 @@ class MahjongCoachPlugin(NekoPluginBase):
         name=tr("entries.start_live.name", default="Start Mahjong Coach Live"),
         description=tr(
             "entries.start_live.description",
-            default="Start screenshot-only live observation for Mahjong Soul and update the strategy board.",
+            default="Start screenshot-only Mahjong Soul observation for N.E.K.O companion banter.",
         ),
         input_schema={
             "type": "object",
@@ -793,10 +1229,11 @@ class MahjongCoachPlugin(NekoPluginBase):
                 "round_wind": {"type": "string", "default": ""},
                 "seat_wind": {"type": "string", "default": ""},
                 "dora_tiles": {"type": "array", "items": {"type": "string"}, "default": []},
-                "play_style": {"type": "string", "default": ""},
-                "strategy_preset": {"type": "string", "default": ""},
+                "neko_companion_enabled": {"type": "boolean"},
+                "absurd_banter_enabled": {"type": "boolean"},
                 "river_tracking_mode": {"type": "string", "default": ""},
                 "tile_recognition_mode": {"type": "string", "default": ""},
+                "inference_provider": {"type": "string", "default": "speed"},
                 "target_window_title": {"type": "string", "default": ""},
                 "auto_start_live": {"type": "boolean"},
                 "settlement_recognition_enabled": {"type": "boolean"},
@@ -817,8 +1254,12 @@ class MahjongCoachPlugin(NekoPluginBase):
         dora_tiles: list[str] | None = None,
         play_style: str = "",
         strategy_preset: str = "",
+        live_advice_mode: str = "",
+        neko_companion_enabled: bool | None = None,
+        absurd_banter_enabled: bool | None = None,
         river_tracking_mode: str = "",
         tile_recognition_mode: str = "",
+        inference_provider: str = "speed",
         target_window_title: str = "",
         auto_start_live: bool | None = None,
         settlement_recognition_enabled: bool | None = None,
@@ -830,14 +1271,22 @@ class MahjongCoachPlugin(NekoPluginBase):
         return await self._overlay_start_live(
             keywords=keywords,
             interval_ms=interval_ms,
-            overlay=overlay,
+            # Starting observation from the plugin entry always opens the
+            # external companion panel. Keep the input field for callers built
+            # against older schemas, but do not allow stale UI state to turn
+            # the visible product into an invisible background task.
+            overlay=True,
             round_wind=round_wind,
             seat_wind=seat_wind,
             dora_tiles=dora_tiles,
             play_style=play_style,
             strategy_preset=strategy_preset,
+            live_advice_mode=live_advice_mode,
+            neko_companion_enabled=neko_companion_enabled,
+            absurd_banter_enabled=absurd_banter_enabled,
             river_tracking_mode=river_tracking_mode,
             tile_recognition_mode=tile_recognition_mode,
+            inference_provider=inference_provider,
             target_window_title=target_window_title,
             auto_start_live=auto_start_live,
             settlement_recognition_enabled=settlement_recognition_enabled,
@@ -856,8 +1305,12 @@ class MahjongCoachPlugin(NekoPluginBase):
         dora_tiles: list[str] | None = None,
         play_style: str = "",
         strategy_preset: str = "",
+        live_advice_mode: str = "",
+        neko_companion_enabled: bool | None = None,
+        absurd_banter_enabled: bool | None = None,
         river_tracking_mode: str = "",
         tile_recognition_mode: str = "",
+        inference_provider: str = "speed",
         target_window_title: str = "",
         auto_start_live: bool | None = None,
         settlement_recognition_enabled: bool | None = None,
@@ -865,15 +1318,25 @@ class MahjongCoachPlugin(NekoPluginBase):
         settlement_confirm_frames: int | None = None,
         settlement_confirm_max_gap_ms: int | None = None,
     ):
-        self.logger.info("_overlay_start_live called play_style={} strategy_preset={} river_tracking_mode={} tile_recognition_mode={}", play_style, strategy_preset, river_tracking_mode, tile_recognition_mode)
+        self.logger.info(
+            "_overlay_start_live called play_style={} strategy_preset={} live_advice_mode={} river_tracking_mode={} tile_recognition_mode={} inference_provider={}",
+            play_style,
+            strategy_preset,
+            live_advice_mode,
+            river_tracking_mode,
+            tile_recognition_mode,
+            inference_provider,
+        )
         if self._engine is None:
             self.logger.warning("_overlay_start_live early return: engine is None")
             return Err(SdkError("mahjong coach is not initialized"))
         async with self._get_engine_lock():
             style_before = self._cfg.play_style
             strategy_preset_before = self._cfg.strategy_preset
+            advice_mode_before = self._cfg.live_advice_mode
             river_mode_before = self._cfg.river_tracking_mode
             tile_mode_before = self._cfg.tile_recognition_mode
+            inference_provider_before = self._cfg.inference_provider
             self._apply_runtime_round_context(
                 round_wind=round_wind,
                 seat_wind=seat_wind,
@@ -881,8 +1344,12 @@ class MahjongCoachPlugin(NekoPluginBase):
                 play_style=play_style,
             )
             self._apply_runtime_strategy_preset(strategy_preset)
+            self._apply_runtime_live_advice_mode(live_advice_mode)
+            self._apply_runtime_neko_companion_enabled(neko_companion_enabled)
+            self._apply_runtime_absurd_banter_enabled(absurd_banter_enabled)
             self._apply_runtime_river_tracking_mode(river_tracking_mode)
             self._apply_runtime_tile_recognition_mode(tile_recognition_mode)
+            self._apply_runtime_inference_provider(inference_provider)
             self._apply_runtime_settlement_config(
                 enabled=settlement_recognition_enabled,
                 min_confidence=settlement_min_confidence,
@@ -899,8 +1366,21 @@ class MahjongCoachPlugin(NekoPluginBase):
                 self._invalidate_live_plan_for_style_change()
             if strategy_preset and self._cfg.strategy_preset != strategy_preset_before:
                 self._invalidate_live_plan_for_style_change()
+            if live_advice_mode and self._cfg.live_advice_mode != advice_mode_before:
+                self._display_snapshot = {}
             if tile_recognition_mode and self._cfg.tile_recognition_mode != tile_mode_before:
                 self._invalidate_live_plan_for_style_change()
+            if inference_provider and self._cfg.inference_provider != inference_provider_before:
+                warmup_state = getattr(self, "_yolo_warmup_state", {})
+                warmup_matches = (
+                    self._yolo_warmup_provider == self._cfg.inference_provider
+                    and warmup_state.get("status") in {"warming", "ready"}
+                )
+                if not warmup_matches:
+                    await self._stop_yolo26_warmup()
+                    release_perception_runtime_caches()
+            if self._cfg.tile_recognition_mode == "yolo26" and self._cfg.inference_provider == "speed":
+                self._start_yolo26_warmup("speed")
             already_running = self._live_task is not None and not self._live_task.done()
             if not already_running:
                 selected_keywords = _clean_string_list(keywords) or list(self._cfg.live_window_keywords)
@@ -965,6 +1445,18 @@ class MahjongCoachPlugin(NekoPluginBase):
                     updated_at=time.time(),
                     overlay_enabled=overlay_enabled,
                 )
+                self._neko_companion_delivery_stage = (
+                    "ready" if self._cfg.neko_companion_enabled else "disabled"
+                )
+                self._neko_companion_last_error = ""
+                self._live_preview_yolo_snapshot = {}
+                self._settlement_candidate_preview = {}
+                self._settlement_confirmed_preview = {}
+                self._settlement_preview_revision = 0
+                self._runtime_resource_samples = []
+                self._runtime_last_resource_sample_at = 0.0
+                self._live_frame_queue_size = 0
+                self._reset_neko_companion_ambient_state()
                 self._clear_live_hand_gap()
                 self._live_task = asyncio.create_task(
                     self._run_live_loop(
@@ -1029,14 +1521,136 @@ class MahjongCoachPlugin(NekoPluginBase):
             self._engine.config = updated
 
     def _apply_runtime_strategy_preset(self, strategy_preset: str = "") -> None:
-        if not strategy_preset:
-            return
-        preset = _valid_strategy_preset(strategy_preset)
+        preset = (
+            "simple"
+            if self._cfg.companion_only_runtime
+            else _valid_strategy_preset(strategy_preset or self._cfg.strategy_preset)
+        )
         updated = replace(self._cfg, strategy_preset=preset)
         self._cfg = updated
         if self._engine is not None:
             self._engine.config = updated
             self._engine.state.strategy_preset = preset
+
+    def _apply_runtime_live_advice_mode(self, live_advice_mode: str = "") -> None:
+        mode = (
+            "companion"
+            if self._cfg.companion_only_runtime
+            else _valid_live_advice_mode(live_advice_mode or self._cfg.live_advice_mode)
+        )
+        updated = replace(self._cfg, live_advice_mode=mode)
+        self._cfg = updated
+        if self._engine is not None:
+            self._engine.config = updated
+
+    def _apply_runtime_neko_companion_enabled(self, enabled: bool | None = None) -> None:
+        if enabled is None:
+            return
+        normalized = bool(enabled)
+        changed = normalized != self._cfg.neko_companion_enabled
+        updated = replace(self._cfg, neko_companion_enabled=normalized)
+        self._cfg = updated
+        if changed:
+            self._neko_companion_last_signature = ""
+            self._reset_neko_companion_ambient_state()
+            self._neko_companion_delivery_stage = (
+                "ready"
+                if normalized and bool(getattr(self._live_state, "running", False))
+                else "waiting_capture" if normalized else "disabled"
+            )
+            self._neko_companion_last_error = ""
+        if self._engine is not None:
+            self._engine.config = updated
+
+    def _apply_runtime_absurd_banter_enabled(self, enabled: bool | None = None) -> None:
+        if enabled is None:
+            return
+        normalized = bool(enabled)
+        changed = normalized != self._cfg.absurd_banter_enabled
+        updated = replace(self._cfg, absurd_banter_enabled=normalized)
+        self._cfg = updated
+        if changed:
+            # Force the next eligible companion event to be rebuilt under the
+            # new dialogue policy instead of being hidden by the old signature.
+            self._neko_companion_last_signature = ""
+        if self._engine is not None:
+            self._engine.config = updated
+
+    def _apply_runtime_inference_provider(self, inference_provider: str = "") -> None:
+        if not inference_provider:
+            return
+        provider = _valid_inference_provider(inference_provider)
+        updated = replace(self._cfg, inference_provider=provider)
+        self._cfg = updated
+        if self._engine is not None:
+            self._engine.config = updated
+
+    def _start_yolo26_warmup(self, provider: str = "speed") -> asyncio.Task | None:
+        normalized = _valid_inference_provider(provider)
+        if normalized != "speed":
+            return None
+        task = getattr(self, "_yolo_warmup_task", None)
+        if task is not None and not task.done() and self._yolo_warmup_provider == normalized:
+            return task
+        state = getattr(self, "_yolo_warmup_state", {})
+        if state.get("status") == "ready" and self._yolo_warmup_provider == normalized:
+            return task
+        if (
+            state.get("status") in {"failed", "unavailable"}
+            and self._yolo_warmup_provider == normalized
+            and time.time() - float(state.get("completed_at") or 0.0) < _YOLO_WARMUP_RETRY_SECONDS
+        ):
+            return task
+        self._yolo_warmup_provider = normalized
+        self._yolo_warmup_state = {
+            "status": "warming",
+            "inference_provider": normalized,
+            "started_at": time.time(),
+        }
+        task = asyncio.create_task(self._run_yolo26_warmup(normalized))
+        self._yolo_warmup_task = task
+        return task
+
+    async def _run_yolo26_warmup(self, provider: str) -> dict[str, Any]:
+        try:
+            result, cancelled = await self._await_thread_result(
+                warmup_yolo26_runtime,
+                inference_provider=provider,
+            )
+            if cancelled:
+                raise asyncio.CancelledError
+            self._yolo_warmup_state = {
+                **dict(result),
+                "completed_at": time.time(),
+            }
+        except asyncio.CancelledError:
+            self._yolo_warmup_state = {"status": "idle"}
+            raise
+        except Exception as exc:
+            self._yolo_warmup_state = {
+                "status": "failed",
+                "reason": type(exc).__name__,
+                "inference_provider": provider,
+                "completed_at": time.time(),
+            }
+        return dict(self._yolo_warmup_state)
+
+    async def _ensure_yolo26_warmup(self, provider: str = "speed") -> dict[str, Any]:
+        task = self._start_yolo26_warmup(provider)
+        if task is not None and not task.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(task)
+        return dict(getattr(self, "_yolo_warmup_state", {"status": "idle"}))
+
+    async def _stop_yolo26_warmup(self) -> None:
+        task = getattr(self, "_yolo_warmup_task", None)
+        self._yolo_warmup_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        self._yolo_warmup_provider = ""
+        self._yolo_warmup_state = {"status": "idle"}
 
     def _apply_runtime_tile_recognition_mode(self, tile_recognition_mode: str = "") -> None:
         if not tile_recognition_mode:
@@ -1124,8 +1738,19 @@ class MahjongCoachPlugin(NekoPluginBase):
     )
     async def mahjong_coach_show_overlay(self, **_):
         running = self._live_task is not None and not self._live_task.done()
-        if not self._show_overlay(strategy=running):
+        # Opening the external panel is always an explicit strategy-selection
+        # action. Background analysis may already be running, but it must not
+        # skip the user's choice and jump straight into the result card.
+        if not self._show_overlay(strategy=False):
             return Err(SdkError("failed to show mahjong coach overlay"))
+        # Start model/session creation while the user is choosing a play style.
+        # By the time capture starts, the first actionable frame can use the
+        # hot CUDA / DirectML session instead of paying the cold-start cost.
+        if (
+            getattr(self, "_engine", None) is not None
+            and self._cfg.tile_recognition_mode == "yolo26"
+        ):
+            self._start_yolo26_warmup("speed")
         return Ok({"status": "overlay_open", "running": running, "live": self._live_state.to_dict()})
 
     async def _overlay_stop_live(self, hide_overlay: bool = False):
@@ -1271,6 +1896,10 @@ class MahjongCoachPlugin(NekoPluginBase):
                         force_checkpoint_by_time=True,
                     )
                     analyze_ms = _elapsed_ms(analyze_started)
+                    decision_ready_at_ms = int(time.time() * 1000)
+                    companion_pushed = False
+                    companion_ms: float | None = None
+                    companion_ready_at_ms = 0
                     self._live_state.running = True
                     if decision.decision_type in paused_decisions:
                         self._live_state.status = decision.decision_type
@@ -1290,13 +1919,34 @@ class MahjongCoachPlugin(NekoPluginBase):
                     }.get(self._live_state.status, "")
                     if self._live_state.status == "waiting_for_game":
                         self._live_state.last_error = "尚未确认正式牌桌；识别与策略分析已暂停。"
+                    payload = {"last_decision": dict(self._last_decision), "round_state": engine_state}
+                    snapshot = self._update_overlay(payload)
+                    # Evaluate every recognized frame, including quiet observe
+                    # frames. Previously this was guarded by ``decision.quiet``
+                    # and therefore made the ambient/idle cadence unreachable
+                    # during exactly the uneventful stretches it was built for.
+                    companion_started = time.perf_counter()
+                    companion_pushed = await self._push_neko_companion_if_needed(snapshot)
+                    companion_ms = _elapsed_ms(companion_started)
+                    if companion_pushed:
+                        companion_ready_at_ms = int(time.time() * 1000)
+                    await self._capture_settlement_evidence(packet, decision)
+                    # Diagnostic JPEG persistence is deliberately after overlay
+                    # and companion submission so a critical riichi/call event
+                    # never waits for disk encoding.
                     if packet.image is not None and self._should_persist_preview(decision):
                         preview_path = frames_dir / "last-preview.jpg"
                         await asyncio.to_thread(provider.persist_packet, packet, preview_path)
                         self._live_state.last_frame_path = str(preview_path)
+                        self._live_state.last_frame_revision += 1
+                        self._remember_live_preview_yolo_snapshot(
+                            preview_path,
+                            image_source=packet.image,
+                        )
                         self._live_last_preview_at = time.monotonic()
-                    if not getattr(decision, "quiet", False):
-                        payload = {"last_decision": dict(self._last_decision), "round_state": engine_state}
+                        # Publish a second lightweight revision after the JPEG
+                        # has actually been replaced. Text was already visible,
+                        # while the detail pane now receives the matching image.
                         self._update_overlay(payload)
                     self._log_live_timing(
                         decision=dict(self._last_decision),
@@ -1304,7 +1954,14 @@ class MahjongCoachPlugin(NekoPluginBase):
                         capture_ms=capture_ms,
                         analyze_ms=analyze_ms,
                         loop_ms=_elapsed_ms(loop_started),
+                        captured_at_ms=int(packet.timestamp_ms or 0),
+                        decision_ready_at_ms=decision_ready_at_ms,
+                        companion_pushed=companion_pushed,
+                        companion_ms=companion_ms,
+                        companion_ready_at_ms=companion_ready_at_ms,
                     )
+                    self._live_frame_queue_size = frame_queue.qsize()
+                    self._sample_runtime_resources(phase="live", force=False)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -1316,6 +1973,8 @@ class MahjongCoachPlugin(NekoPluginBase):
                         with contextlib.suppress(Exception):
                             await asyncio.to_thread(provider.persist_packet, packet, error_path)
                             self._live_state.last_frame_path = str(error_path)
+                            self._live_state.last_frame_revision += 1
+                            self._live_preview_yolo_snapshot = {}
                     self._append_live_timing(
                         {
                             "frame": self._live_state.frame_index,
@@ -1425,10 +2084,149 @@ class MahjongCoachPlugin(NekoPluginBase):
     def _should_persist_preview(self, decision: Any) -> bool:
         if bool(getattr(decision, "action_required", False)) or not bool(getattr(decision, "quiet", False)):
             return True
-        return (time.monotonic() - self._live_last_preview_at) >= max(
-            4.0,
-            float(self._cfg.live_checkpoint_interval_seconds),
+        now = time.monotonic()
+        requested_at = float(getattr(self, "_live_preview_requested_at", 0.0) or 0.0)
+        dashboard_active = requested_at > 0 and (now - requested_at) <= _LIVE_PREVIEW_ACTIVE_TTL_SECONDS
+        if self._cfg.companion_only_runtime and not dashboard_active:
+            # In normal companion use nobody consumes the JPEG dashboard
+            # preview.  Preserve event evidence and on-demand diagnostics, but
+            # avoid an idle encode/write every few seconds in the background.
+            return False
+        interval = (
+            _LIVE_PREVIEW_ACTIVE_INTERVAL_SECONDS
+            if dashboard_active
+            else max(
+                _LIVE_PREVIEW_IDLE_INTERVAL_SECONDS,
+                float(self._cfg.live_checkpoint_interval_seconds),
+            )
         )
+        return (now - self._live_last_preview_at) >= interval
+
+    def _remember_live_preview_yolo_snapshot(
+        self,
+        frame_path: Path,
+        *,
+        image_source: Any | None = None,
+    ) -> None:
+        """Pin the exact YOLO warped input and detections to one dashboard revision."""
+
+        self._live_preview_yolo_snapshot = {}
+        if self._engine is None or self._cfg.tile_recognition_mode != "yolo26":
+            return
+        result = getattr(self._engine, "_last_yolo26_result", None)
+        if result is None:
+            return
+        engine_state = getattr(self._engine, "state", None)
+        table_region_preview: dict[str, Any] = {}
+        scene = getattr(self._engine, "_last_game_scene_result", None)
+        table_surface = getattr(scene, "table_surface", None)
+        warped_image = getattr(table_surface, "warped_image", None)
+        current_identity = source_identity(image_source) if image_source is not None else None
+        scene_identity = getattr(self._engine, "_last_game_scene_identity", None)
+        yolo_identity = getattr(self._engine, "_last_yolo26_identity", None)
+        scene_matches_current = current_identity is None or current_identity == scene_identity
+        yolo_matches_current = current_identity is None or current_identity == yolo_identity
+        if (
+            scene_matches_current
+            and bool(getattr(table_surface, "ok", False))
+            and warped_image is not None
+        ):
+            try:
+                table_region_preview = _build_warped_table_region_preview_payload(
+                    warped_image,
+                    image_path=frame_path,
+                    raw_detections=result.raw_detections,
+                    opponent_melds=result.opponent_melds,
+                    reason=str(getattr(table_surface, "reason", "") or ""),
+                    table_surface_method=str(getattr(table_surface, "method", "") or ""),
+                    evidence_source=(
+                        "engine_inference_warp"
+                        if yolo_matches_current
+                        else "engine_current_warp_reused_detections"
+                    ),
+                )
+            except (OSError, ValueError):
+                table_region_preview = {}
+        self._live_preview_yolo_snapshot = {
+            "image_path": str(frame_path.resolve()),
+            "revision": int(self._live_state.last_frame_revision or 0),
+            "round_id": str(getattr(engine_state, "round_id", "") or ""),
+            "raw_detections": [
+                dict(item) for item in result.raw_detections if isinstance(item, dict)
+            ],
+            "opponent_melds": {
+                str(owner): [dict(item) for item in items if isinstance(item, dict)]
+                for owner, items in result.opponent_melds.items()
+            },
+            "table_region_preview": table_region_preview,
+        }
+
+    async def _capture_settlement_evidence(self, packet: Any, decision: Any) -> None:
+        """Freeze only real settlement candidate/confirmation frames for diagnostics."""
+
+        decision_type = str(getattr(decision, "decision_type", "") or "")
+        if decision_type not in {"settlement_candidate", "round_settlement"}:
+            if (
+                self._engine is not None
+                and str(self._engine.state.settlement_phase or "playing") == "playing"
+            ):
+                self._settlement_candidate_preview = {}
+            return
+
+        perception = getattr(decision, "perception", {})
+        settlement = perception.get("settlement") if isinstance(perception, dict) else {}
+        if not isinstance(settlement, dict) or not bool(settlement.get("detected")):
+            return
+        image = getattr(packet, "image", None)
+        if image is None:
+            raw_path = str(getattr(packet, "image_path", "") or "").strip()
+            if not raw_path:
+                return
+            try:
+                with Image.open(raw_path) as source:
+                    image = source.convert("RGB")
+            except (OSError, ValueError):
+                return
+        else:
+            image = image.copy()
+
+        from .perception.settlement_detector import SettlementFrameResult
+
+        result = SettlementFrameResult(
+            detected=True,
+            kind=str(settlement.get("kind") or "unknown"),
+            confidence=float(settlement.get("confidence") or 0.0),
+            reason=str(settlement.get("reason") or "settlement_evidence"),
+            evidence=[str(item) for item in (settlement.get("evidence") or [])],
+            metrics=dict(settlement.get("metrics") or {}),
+            elapsed_ms=float(settlement.get("elapsed_ms") or 0.0),
+        )
+        phase = "candidate" if decision_type == "settlement_candidate" else "confirmed"
+        self._settlement_preview_revision += 1
+        try:
+            preview = await asyncio.to_thread(
+                _build_settlement_diagnostic_preview_from_image,
+                image,
+                result=result,
+                image_path=str(getattr(packet, "image_path", "") or "memory://live-frame"),
+                min_confidence=self._cfg.settlement_min_confidence,
+            )
+        finally:
+            image.close()
+        preview.update(
+            {
+                "status": "ready",
+                "phase": phase,
+                "round_id": str(self._engine.state.round_id if self._engine is not None else ""),
+                "captured_at": float(getattr(packet, "timestamp_ms", 0) or 0) / 1000.0,
+                "revision": self._settlement_preview_revision,
+            }
+        )
+        if phase == "candidate":
+            self._settlement_candidate_preview = preview
+        else:
+            self._settlement_confirmed_preview = preview
+            self._settlement_candidate_preview = {}
 
     async def _prune_live_frames(self, frames_dir: Path) -> None:
         """Enforce retention after every loop outcome, including cancellation."""
@@ -1451,6 +2249,8 @@ class MahjongCoachPlugin(NekoPluginBase):
     ) -> tuple[Any, str, set[str], dict[str, Any]]:
         """Run one complete live engine transaction under the shared mutex."""
         assert self._engine is not None
+        if self._cfg.tile_recognition_mode == "yolo26" and self._cfg.inference_provider == "speed":
+            await self._ensure_yolo26_warmup("speed")
         async with self._get_engine_lock():
             force_checkpoint = self._checkpoint_due_by_time() if force_checkpoint_by_time else False
             decision = await self._await_engine_thread(
@@ -1514,6 +2314,8 @@ class MahjongCoachPlugin(NekoPluginBase):
             return decision, gap_state, paused_decisions, self._engine.state.to_dict()
 
     def _enrich_yakuman_decision(self, decision: Any) -> Any:
+        if str(getattr(self._cfg, "live_advice_mode", "companion")) != "strategy":
+            return decision
         service = getattr(self, "_yakuman_service", None)
         if service is None or self._engine is None:
             return decision
@@ -1533,6 +2335,10 @@ class MahjongCoachPlugin(NekoPluginBase):
             hand_tiles,
             visible_tiles=visible_tiles,
             open_melds=self._engine.state.last_open_meld_count,
+            run_background=(
+                str(getattr(getattr(self._cfg, "player_profile", None), "goal_bias", "balanced"))
+                == "yakuman"
+            ),
         )
         perception = dict(getattr(decision, "perception", {}) or {})
         perception["yakuman"] = payload
@@ -1557,6 +2363,11 @@ class MahjongCoachPlugin(NekoPluginBase):
         capture_ms: float,
         analyze_ms: float,
         loop_ms: float,
+        captured_at_ms: int = 0,
+        decision_ready_at_ms: int = 0,
+        companion_pushed: bool = False,
+        companion_ms: float | None = None,
+        companion_ready_at_ms: int = 0,
     ) -> None:
         timing = _mahjong_timing_from_decision(decision)
         timing.update(
@@ -1567,6 +2378,18 @@ class MahjongCoachPlugin(NekoPluginBase):
                 "capture_ms": round(float(capture_ms), 1),
                 "analyze_ms": round(float(analyze_ms), 1),
                 "loop_ms": round(float(loop_ms), 1),
+                "capture_to_decision_ms": (
+                    max(0, int(decision_ready_at_ms) - int(captured_at_ms))
+                    if captured_at_ms > 0 and decision_ready_at_ms > 0
+                    else None
+                ),
+                "companion_pushed": bool(companion_pushed),
+                "companion_ms": round(float(companion_ms), 1) if companion_ms is not None else None,
+                "capture_to_companion_ms": (
+                    max(0, int(companion_ready_at_ms) - int(captured_at_ms))
+                    if companion_pushed and captured_at_ms > 0 and companion_ready_at_ms > 0
+                    else None
+                ),
             }
         )
         entry = self._append_live_timing(timing)
@@ -1605,7 +2428,144 @@ class MahjongCoachPlugin(NekoPluginBase):
         del self._live_timing_log[:-80]
         return entry
 
+    def _sample_runtime_resources(self, *, phase: str, force: bool) -> dict[str, Any]:
+        now = time.monotonic()
+        last_at = float(getattr(self, "_runtime_last_resource_sample_at", 0.0) or 0.0)
+        samples = getattr(self, "_runtime_resource_samples", None)
+        if not isinstance(samples, list):
+            samples = []
+            self._runtime_resource_samples = samples
+        if not force and samples and now - last_at < 10.0:
+            return dict(samples[-1])
+
+        engine = getattr(self, "_engine", None)
+        config = getattr(self, "_cfg", None)
+        engine_stats = engine.runtime_stats() if engine is not None else {}
+        perception_stats = perception_runtime_stats()
+        memory_stats = _process_memory_snapshot()
+        sample = {
+            "timestamp_ms": int(time.time() * 1000),
+            "monotonic_s": round(now, 3),
+            "phase": str(phase),
+            **memory_stats,
+            **perception_stats,
+            "engine": engine_stats,
+            "timing_log_entries": len(getattr(self, "_live_timing_log", [])),
+            "frame_queue_size": max(0, int(getattr(self, "_live_frame_queue_size", 0) or 0)),
+            "live_task_active": bool(
+                getattr(self, "_live_task", None) is not None
+                and not self._live_task.done()
+            ),
+            "warmup_task_active": bool(
+                getattr(self, "_yolo_warmup_task", None) is not None
+                and not self._yolo_warmup_task.done()
+            ),
+            "inference_provider": str(getattr(config, "inference_provider", "memory")),
+            # ONNX Runtime does not expose portable per-process VRAM figures for
+            # DirectML. Keep the field explicit instead of presenting system GPU
+            # allocation as plugin-owned memory.
+            "gpu_memory_mb": None,
+            "gpu_memory_note": "per-process DirectML/CUDA VRAM unavailable from portable ONNX Runtime APIs",
+        }
+        samples.append(sample)
+        del samples[:-360]
+        self._runtime_last_resource_sample_at = now
+        return dict(sample)
+
+    def _runtime_resource_summary(self) -> dict[str, Any]:
+        samples = list(getattr(self, "_runtime_resource_samples", []))
+        if not samples:
+            return {"sample_count": 0}
+        latest = dict(samples[-1])
+        rss_values = [
+            float(item["rss_mb"])
+            for item in samples
+            if isinstance(item.get("rss_mb"), (int, float))
+        ]
+        elapsed_seconds = max(
+            0.0,
+            float(samples[-1].get("monotonic_s") or 0.0)
+            - float(samples[0].get("monotonic_s") or 0.0),
+        )
+        rss_delta = round(rss_values[-1] - rss_values[0], 2) if len(rss_values) >= 2 else 0.0
+        growth_per_hour = (
+            round(rss_delta * 3600.0 / elapsed_seconds, 2)
+            if elapsed_seconds >= 60.0
+            else None
+        )
+        engine_stats = latest.get("engine") if isinstance(latest.get("engine"), dict) else {}
+        caches_released = bool(
+            latest.get("phase") == "stopped"
+            and int(latest.get("yolo_sessions") or 0) == 0
+            and int(latest.get("tile_classifier_sessions") or 0) == 0
+            and int(latest.get("ocr_sessions") or 0) == 0
+            and not engine_stats.get("yolo_frame_cached")
+            and not engine_stats.get("game_scene_frame_cached")
+            and not latest.get("live_task_active")
+            and not latest.get("warmup_task_active")
+        )
+        return {
+            "sample_count": len(samples),
+            "sample_interval_seconds": 10,
+            "retention_samples": 360,
+            "observed_seconds": round(elapsed_seconds, 1),
+            "rss_start_mb": rss_values[0] if rss_values else None,
+            "rss_current_mb": rss_values[-1] if rss_values else None,
+            "rss_peak_mb": max(rss_values) if rss_values else None,
+            "rss_delta_mb": rss_delta,
+            "rss_growth_mb_per_hour": growth_per_hour,
+            "caches_released_after_stop": caches_released,
+            "latest": latest,
+        }
+
+    def _inference_runtime_status(self, timing_log: list[dict[str, Any]]) -> dict[str, Any]:
+        stats = perception_runtime_stats()
+        yolo_runtime = stats.get("yolo_runtime")
+        runtime = dict(yolo_runtime) if isinstance(yolo_runtime, dict) else {}
+        warmup = dict(getattr(self, "_yolo_warmup_state", {"status": "idle"}))
+        providers = [str(item) for item in (runtime.get("actual_providers") or [])]
+        if not providers and warmup.get("status") == "ready":
+            providers = [str(item) for item in (warmup.get("providers") or [])]
+        if "CUDAExecutionProvider" in providers:
+            backend = "NVIDIA CUDA"
+        elif "DmlExecutionProvider" in providers:
+            backend = "DirectML"
+        elif "CPUExecutionProvider" in providers:
+            backend = "CPU"
+        else:
+            backend = "未加载"
+        latest = next(
+            (
+                item
+                for item in reversed(timing_log)
+                if isinstance(item, dict) and item.get("timestamp_ms")
+            ),
+            {},
+        )
+        updated_ms = int(latest.get("timestamp_ms") or 0)
+        configured = str(getattr(self._cfg, "inference_provider", "speed") or "speed")
+        fallback_reason = str(runtime.get("fallback_reason") or latest.get("fallback_reason") or "")
+        return {
+            "configured_mode": configured,
+            "configured_label": "极速" if configured == "speed" else "低内存",
+            "backend": backend,
+            "actual_providers": providers,
+            "available_providers": list(runtime.get("available_providers") or []),
+            "session_loaded": bool(runtime.get("session_loaded")),
+            "accelerated": backend in {"NVIDIA CUDA", "DirectML"},
+            "fallback_reason": fallback_reason,
+            "warmup_status": str(warmup.get("status") or "idle"),
+            "warmup_elapsed_ms": warmup.get("elapsed_ms"),
+            "last_recognition_at": updated_ms / 1000.0 if updated_ms else 0.0,
+            "last_recognition_age_seconds": (
+                round(max(0.0, time.time() - updated_ms / 1000.0), 1) if updated_ms else None
+            ),
+            "last_recognition_ms": latest.get("analyze_ms"),
+            "last_decision": str(latest.get("decision") or ""),
+        }
+
     async def _stop_live_task(self) -> None:
+        await self._stop_yolo26_warmup()
         if self._live_stop_event is not None:
             self._live_stop_event.set()
         task = self._live_task
@@ -1619,9 +2579,22 @@ class MahjongCoachPlugin(NekoPluginBase):
                         await task
             except RuntimeError:
                 pass
+        if task is None or task.done():
+            engine = getattr(self, "_engine", None)
+            if engine is not None:
+                async with self._get_engine_lock():
+                    engine.release_transient_resources()
+            release_strategy_runtime_caches()
+            await asyncio.to_thread(release_perception_runtime_caches)
+            self._live_preview_yolo_snapshot = {}
+        self._live_frame_queue_size = 0
         self._live_state.running = False
         self._live_state.status = "stopped"
         self._live_state.updated_at = time.time()
+        self._neko_companion_delivery_stage = (
+            "waiting_capture" if self._cfg.neko_companion_enabled else "disabled"
+        )
+        self._sample_runtime_resources(phase="stopped", force=True)
 
     async def _sleep_live(self, loop_started: float, sleep_ms: int) -> None:
         elapsed_ms = (time.monotonic() - loop_started) * 1000.0
@@ -1649,10 +2622,10 @@ class MahjongCoachPlugin(NekoPluginBase):
         reason_codes = {str(item) for item in (getattr(decision, "reason_codes", []) or [])}
         if "auto_new_round_detected" not in reason_codes or self._engine is None:
             return False
-        self._live_last_hand_signature = str(self._engine.state.last_hand_signature or "")
-        self._live_last_checkpoint_at = 0.0
-        self._live_state.observed_hand_changes = 0
-        self._clear_live_hand_gap()
+        self._reset_live_round_caches(
+            current_hand_signature=str(self._engine.state.last_hand_signature or ""),
+            clear_last_decision=True,
+        )
         self.logger.info(
             "mahjong coach auto new round round_id={} river_before={} river_now={}",
             self._engine.state.round_id,
@@ -1660,6 +2633,35 @@ class MahjongCoachPlugin(NekoPluginBase):
             getattr(decision, "engine_meta", {}).get("current_river_count"),
         )
         return True
+
+    def _reset_live_round_caches(
+        self,
+        *,
+        current_hand_signature: str,
+        clear_last_decision: bool,
+    ) -> None:
+        """Drop every presentation/dedupe cache that is scoped to one hand."""
+
+        if clear_last_decision:
+            self._last_decision = {}
+        self._display_snapshot = {}
+        self._live_preview_yolo_snapshot = {}
+        self._settlement_candidate_preview = {}
+        self._settlement_confirmed_preview = {}
+        self._settlement_preview_revision = int(
+            getattr(self, "_settlement_preview_revision", 0) or 0
+        ) + 1
+        self._live_last_yakuman_key = ""
+        self._neko_companion_last_signature = ""
+        self._reset_neko_companion_ambient_state()
+        self._live_last_hand_signature = str(current_hand_signature or "")
+        self._live_last_checkpoint_at = 0.0
+        self._live_last_preview_at = 0.0
+        if hasattr(self, "_live_state"):
+            self._live_state.observed_hand_changes = 0
+            self._live_state.last_frame_path = ""
+            self._live_state.last_frame_revision += 1
+        self._clear_live_hand_gap()
 
     def _clear_live_hand_gap(self) -> None:
         # 中文：只清除遮挡判定的临时证据，不触碰本局策略、牌河和立直状态。
@@ -1711,7 +2713,7 @@ class MahjongCoachPlugin(NekoPluginBase):
                 return "resumed"
 
             if 12 <= len(current_tiles) <= 14:
-                if str(getattr(self._engine.config, "tile_recognition_mode", "legacy")) == "yolo26":
+                if str(getattr(self._engine.config, "tile_recognition_mode", "yolo26")) == "yolo26":
                     # 中文：YOLO 模式必须同时拿到牌河归零证据；只换了手牌不能证明是新局。
                     # English: YOLO mode requires river-reset evidence; a changed hand alone is insufficient.
                     if self._engine.has_pending_new_round_confirmation():
@@ -1781,34 +2783,644 @@ class MahjongCoachPlugin(NekoPluginBase):
             return False
         return (time.time() - self._live_last_checkpoint_at) >= self._cfg.live_checkpoint_interval_seconds
 
-    def _update_overlay(self, payload: dict[str, Any]) -> None:
+    async def _read_companion_bus_records(
+        self,
+        namespace_name: str,
+        **kwargs: Any,
+    ) -> list[Any] | None:
+        """Read message-plane records; ``None`` means no SDK context in a unit stub."""
+
+        if not hasattr(self, "ctx"):
+            return None
+        try:
+            bus = self.bus
+            namespace = getattr(bus, namespace_name, None) if bus is not None else None
+            getter = getattr(namespace, "get", None)
+            if not callable(getter):
+                raise RuntimeError(f"message-plane {namespace_name} bus is unavailable")
+            result = getter(**kwargs)
+            if asyncio.iscoroutine(result):
+                result = await result
+            if isinstance(result, Err):
+                raise RuntimeError(str(result.error))
+            value = result.value if isinstance(result, Ok) else result
+            if value is None:
+                return []
+            return list(value)
+        except Exception as exc:
+            raise RuntimeError(f"message-plane {namespace_name} query failed") from exc
+
+    async def _probe_companion_message_plane(self, *, now: float) -> bool | None:
+        try:
+            records = await self._read_companion_bus_records(
+                "messages",
+                plugin_id=self.plugin_id if hasattr(self, "ctx") else "mahjong_coach",
+                source="mahjong_coach",
+                max_count=1,
+                since_ts=max(0.0, now - 1.0),
+                timeout=_NEKO_TRANSPORT_PROBE_TIMEOUT_SECONDS,
+            )
+        except RuntimeError:
+            return False
+        return None if records is None else True
+
+    @staticmethod
+    def _record_delivery_id(record: Any) -> str:
+        metadata = getattr(record, "metadata", None)
+        if not isinstance(metadata, dict):
+            raw = getattr(record, "raw", None)
+            metadata = raw.get("metadata") if isinstance(raw, dict) else None
+        return str(metadata.get("delivery_id") or "") if isinstance(metadata, dict) else ""
+
+    async def _confirm_companion_message_ingest(
+        self,
+        delivery_id: str,
+        *,
+        submitted_at: float,
+    ) -> bool | None:
+        if not hasattr(self, "ctx"):
+            return None
+        for delay in (0.0, 0.03, 0.07):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                records = await self._read_companion_bus_records(
+                    "messages",
+                    plugin_id=self.plugin_id,
+                    source="mahjong_coach",
+                    max_count=12,
+                    since_ts=max(0.0, submitted_at - 1.0),
+                    timeout=_NEKO_TRANSPORT_PROBE_TIMEOUT_SECONDS,
+                )
+            except RuntimeError:
+                return False
+            if records is not None and any(
+                self._record_delivery_id(record) == delivery_id for record in records
+            ):
+                return True
+        return False
+
+    async def _watch_companion_host_receipt(
+        self,
+        delivery_id: str,
+        *,
+        submitted_at: float,
+    ) -> None:
+        deadline = time.monotonic() + _NEKO_HOST_RECEIPT_WAIT_SECONDS
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+            try:
+                records = await self._read_companion_bus_records(
+                    "events",
+                    plugin_id=self.plugin_id,
+                    max_count=20,
+                    filter={"type": "plugin_delivery_receipt"},
+                    since_ts=max(0.0, submitted_at - 1.0),
+                    timeout=_NEKO_TRANSPORT_PROBE_TIMEOUT_SECONDS,
+                )
+            except RuntimeError:
+                break
+            for record in records or []:
+                if self._record_delivery_id(record) != delivery_id:
+                    continue
+                metadata = getattr(record, "metadata", {})
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                if delivery_id != str(getattr(self, "_neko_companion_delivery_id", "") or ""):
+                    return
+                stage = str(metadata.get("stage") or "host_received")
+                if stage == "host_rejected":
+                    self._neko_companion_delivery_stage = "host_rejected"
+                    self._neko_companion_last_error = str(
+                        metadata.get("reason") or "宿主未接受本次搭话"
+                    )
+                    self._neko_companion_failure_count = int(
+                        getattr(self, "_neko_companion_failure_count", 0) or 0
+                    ) + 1
+                else:
+                    self._neko_companion_delivery_stage = "host_received"
+                    self._neko_companion_last_error = ""
+                    self._neko_companion_host_received_count = int(
+                        getattr(self, "_neko_companion_host_received_count", 0) or 0
+                    ) + 1
+                return
+        if delivery_id == str(getattr(self, "_neko_companion_delivery_id", "") or ""):
+            self._neko_companion_delivery_stage = "host_unconfirmed"
+
+    async def _submit_companion_direct_fallback(
+        self,
+        cue: str,
+        *,
+        delivery_id: str,
+        event_kind: str,
+        priority: int,
+        metadata: dict[str, Any],
+        direct_reply: bool = False,
+    ) -> DirectCompanionSubmitResult:
+        """Bypass a dead message-plane while keeping the host event contract."""
+
+        return await asyncio.to_thread(
+            submit_companion_direct,
+            cue,
+            delivery_id=delivery_id,
+            event_kind=event_kind,
+            priority=priority,
+            metadata=metadata,
+            direct_reply=direct_reply,
+        )
+
+    async def _push_neko_companion_if_needed(self, snapshot: dict[str, Any]) -> bool:
+        """Send a hidden, non-prescriptive event cue to the active N.E.K.O chat."""
+        if not self._cfg.neko_companion_enabled:
+            return False
+        events_since_rare = int(
+            getattr(self, "_neko_companion_events_since_rare_joke", 0) or 0
+        )
+        last_rare_at = float(
+            getattr(self, "_neko_companion_last_rare_joke_at", 0.0) or 0.0
+        )
+        now = time.time()
+        rare_joke_due = bool(
+            events_since_rare >= (_NEKO_RARE_JOKE_MIN_EVENTS - 1)
+            and (
+                last_rare_at <= 0
+                or (now - last_rare_at) >= _NEKO_RARE_JOKE_MIN_INTERVAL_SECONDS
+            )
+        )
+        absurd_banter_enabled = bool(
+            self._cfg.neko_companion_enabled and self._cfg.absurd_banter_enabled
+        )
+        absurd_variant = int(getattr(self, "_neko_companion_push_count", 0) or 0)
+        activity_signature = self._observe_neko_companion_activity(snapshot, now=now)
+        opponent_meld_event = self._observe_neko_companion_opponent_meld(snapshot)
+        cue, signature, event_kind = build_neko_companion_cue(
+            snapshot,
+            include_rare_joke=rare_joke_due,
+            opponent_meld_event=opponent_meld_event,
+            absurd_banter_enabled=absurd_banter_enabled,
+            absurd_variant=absurd_variant,
+        )
+        if not cue:
+            ambient_event = self._select_neko_companion_ambient_event(
+                snapshot,
+                activity_signature=activity_signature,
+                now=now,
+            )
+            if not ambient_event:
+                return False
+            cue_activity_signature = activity_signature
+            if ambient_event in {"idle_heartbeat", "casual_chat"}:
+                # Keep a quiet but continuing conversation alive even when the
+                # recognized table facts stay unchanged for several intervals.
+                # The cadence counter makes each heartbeat independently
+                # deduplicatable without inventing a fake table event.
+                cadence_label = "casual" if ambient_event == "casual_chat" else "idle"
+                cue_activity_signature = (
+                    f"{activity_signature}|{cadence_label}:"
+                    f"{int(getattr(self, '_neko_companion_ambient_count', 0) or 0)}"
+                )
+            cue, signature, event_kind = build_neko_companion_cue(
+                snapshot,
+                include_rare_joke=rare_joke_due,
+                ambient_event=ambient_event,
+                ambient_signature=cue_activity_signature,
+                absurd_banter_enabled=absurd_banter_enabled,
+                absurd_variant=absurd_variant,
+            )
+        if not cue or not signature:
+            return False
+        if signature == str(getattr(self, "_neko_companion_last_signature", "") or ""):
+            return False
+        if now < float(getattr(self, "_neko_companion_next_transport_probe_at", 0.0) or 0.0):
+            return False
+        delivery_id = str(uuid.uuid4())
+        priority = (
+            2
+            if event_kind in {"ambient_observation", "idle_heartbeat", "casual_chat"}
+            else 4
+        )
+        delivery_metadata = {
+            "context_type": "mahjong_companion",
+            "event_kind": event_kind,
+            "non_prescriptive": True,
+            "reply_max_sentences": 2,
+            "dialogue_policy_owner": "plugin",
+            "delivery_id": delivery_id,
+        }
+        absurd_direct_reply = (
+            build_absurd_banter_reply(
+                snapshot,
+                event_kind=event_kind,
+                absurd_variant=absurd_variant,
+                opponent_meld_event=opponent_meld_event,
+            )
+            if absurd_banter_enabled and not rare_joke_due
+            else ""
+        )
+        if absurd_direct_reply:
+            direct_started = time.perf_counter()
+            direct_result = await self._submit_companion_direct_fallback(
+                absurd_direct_reply,
+                delivery_id=delivery_id,
+                event_kind=event_kind,
+                priority=priority,
+                metadata=delivery_metadata,
+                direct_reply=True,
+            )
+            if not direct_result.submitted:
+                self._neko_companion_delivery_stage = "direct_reply_unavailable"
+                self._neko_companion_last_error = (
+                    "逆天模式固定话术未送达"
+                    f"（{direct_result.reason or 'unknown'}）"
+                )
+                self._neko_companion_failure_count = int(
+                    getattr(self, "_neko_companion_failure_count", 0) or 0
+                ) + 1
+                return False
+            self._neko_companion_last_submit_ms = _elapsed_ms(direct_started)
+            self._neko_companion_delivery_stage = "direct_reply_submitted"
+            self._neko_companion_delivery_id = delivery_id
+            self._neko_companion_last_error = ""
+            self._neko_companion_last_signature = signature
+            self._neko_companion_last_push_at = now
+            self._neko_companion_last_event_kind = event_kind
+            self._neko_companion_push_count = int(
+                getattr(self, "_neko_companion_push_count", 0) or 0
+            ) + 1
+            self._finalize_neko_companion_cadence(
+                event_kind=event_kind,
+                activity_signature=activity_signature,
+                rare_joke_due=rare_joke_due,
+                events_since_rare=events_since_rare,
+                now=now,
+            )
+            return True
+        transport_ready = await self._probe_companion_message_plane(now=now)
+        if transport_ready is False:
+            direct_started = time.perf_counter()
+            direct_result = await self._submit_companion_direct_fallback(
+                cue,
+                delivery_id=delivery_id,
+                event_kind=event_kind,
+                priority=priority,
+                metadata=delivery_metadata,
+            )
+            if direct_result.submitted:
+                self._neko_companion_last_submit_ms = _elapsed_ms(direct_started)
+                self._neko_companion_delivery_stage = "direct_host_submitted"
+                self._neko_companion_delivery_id = delivery_id
+                self._neko_companion_last_error = "消息平面不可用，已通过兼容通道直接提交"
+                self._neko_companion_next_transport_probe_at = 0.0
+                self._neko_companion_last_signature = signature
+                self._neko_companion_last_push_at = now
+                self._neko_companion_last_event_kind = event_kind
+                self._neko_companion_push_count = int(
+                    getattr(self, "_neko_companion_push_count", 0) or 0
+                ) + 1
+                self._finalize_neko_companion_cadence(
+                    event_kind=event_kind,
+                    activity_signature=activity_signature,
+                    rare_joke_due=rare_joke_due,
+                    events_since_rare=events_since_rare,
+                    now=now,
+                )
+                return True
+            self._neko_companion_delivery_stage = "message_plane_unavailable"
+            self._neko_companion_last_error = (
+                f"消息平面未启动，兼容通道也不可用（{direct_result.reason or 'unknown'}）"
+            )
+            self._neko_companion_next_transport_probe_at = now + _NEKO_TRANSPORT_RETRY_SECONDS
+            self._neko_companion_failure_count = int(
+                getattr(self, "_neko_companion_failure_count", 0) or 0
+            ) + 1
+            return False
+        submit_started = time.perf_counter()
+        try:
+            result = self.push_message(
+                source="mahjong_coach",
+                visibility=[],
+                ai_behavior="respond",
+                parts=[{"type": "text", "text": cue}],
+                priority=priority,
+                coalesce_key="mahjong_companion",
+                metadata=delivery_metadata,
+            )
+            if asyncio.iscoroutine(result):
+                # Await submission so critical-event latency is measurable and
+                # repeated ambient cues cannot leave untracked background tasks.
+                await asyncio.wait_for(result, timeout=0.75)
+        except Exception as exc:
+            logger = getattr(self, "logger", None)
+            if logger is not None:
+                logger.warning(
+                    "mahjong companion cue push failed event={} error_type={}",
+                    event_kind,
+                    type(exc).__name__,
+                )
+            return False
+        if isinstance(result, dict) and result.get("submitted") is False:
+            direct_result = await self._submit_companion_direct_fallback(
+                cue,
+                delivery_id=delivery_id,
+                event_kind=event_kind,
+                priority=priority,
+                metadata=delivery_metadata,
+            )
+            if not direct_result.submitted:
+                self._neko_companion_delivery_stage = "message_plane_unavailable"
+                self._neko_companion_last_error = (
+                    "SDK 拒绝提交，兼容通道也不可用"
+                    f"（{direct_result.reason or result.get('reason') or 'unknown'}）"
+                )
+                self._neko_companion_next_transport_probe_at = now + _NEKO_TRANSPORT_RETRY_SECONDS
+                self._neko_companion_failure_count = int(
+                    getattr(self, "_neko_companion_failure_count", 0) or 0
+                ) + 1
+                return False
+            self._neko_companion_last_submit_ms = _elapsed_ms(submit_started)
+            self._neko_companion_delivery_stage = "direct_host_submitted"
+            self._neko_companion_delivery_id = delivery_id
+            self._neko_companion_last_error = "SDK 通道拒绝提交，已改走兼容通道"
+            self._neko_companion_next_transport_probe_at = 0.0
+            self._neko_companion_last_signature = signature
+            self._neko_companion_last_push_at = now
+            self._neko_companion_last_event_kind = event_kind
+            self._neko_companion_push_count = int(
+                getattr(self, "_neko_companion_push_count", 0) or 0
+            ) + 1
+            self._finalize_neko_companion_cadence(
+                event_kind=event_kind,
+                activity_signature=activity_signature,
+                rare_joke_due=rare_joke_due,
+                events_since_rare=events_since_rare,
+                now=now,
+            )
+            return True
+        self._neko_companion_last_submit_ms = _elapsed_ms(submit_started)
+        self._neko_companion_delivery_stage = "submitted"
+        self._neko_companion_delivery_id = delivery_id
+        self._neko_companion_last_error = ""
+        self._neko_companion_next_transport_probe_at = 0.0
+        self._neko_companion_last_signature = signature
+        self._neko_companion_last_push_at = now
+        self._neko_companion_last_event_kind = event_kind
+        self._neko_companion_push_count = int(
+            getattr(self, "_neko_companion_push_count", 0) or 0
+        ) + 1
+        ingested = await self._confirm_companion_message_ingest(
+            delivery_id,
+            submitted_at=now,
+        )
+        if ingested is True:
+            self._neko_companion_delivery_stage = "message_plane_received"
+            self._neko_companion_message_plane_received_count = int(
+                getattr(self, "_neko_companion_message_plane_received_count", 0) or 0
+            ) + 1
+            receipt_task = asyncio.create_task(
+                self._watch_companion_host_receipt(delivery_id, submitted_at=now)
+            )
+            self._neko_companion_receipt_task = receipt_task
+        elif ingested is False and transport_ready is not None:
+            self._neko_companion_delivery_stage = "submitted_unconfirmed"
+            self._neko_companion_last_error = "SDK 已提交，但消息平面尚未确认接收"
+        self._finalize_neko_companion_cadence(
+            event_kind=event_kind,
+            activity_signature=activity_signature,
+            rare_joke_due=rare_joke_due,
+            events_since_rare=events_since_rare,
+            now=now,
+        )
+        return True
+
+    def _finalize_neko_companion_cadence(
+        self,
+        *,
+        event_kind: str,
+        activity_signature: str,
+        rare_joke_due: bool,
+        events_since_rare: int,
+        now: float,
+    ) -> None:
+        if event_kind in {"ambient_observation", "idle_heartbeat", "casual_chat"}:
+            self._neko_companion_ambient_count = int(
+                getattr(self, "_neko_companion_ambient_count", 0) or 0
+            ) + 1
+            self._neko_companion_pending_activity_signature = ""
+            if event_kind in {"idle_heartbeat", "casual_chat"}:
+                self._neko_companion_last_idle_signature = activity_signature
+        elif event_kind == "opponent_meld":
+            self._neko_companion_pending_opponent_meld_event = {}
+        elif (
+            activity_signature
+            and activity_signature
+            == str(getattr(self, "_neko_companion_pending_activity_signature", "") or "")
+        ):
+            self._neko_companion_pending_activity_signature = ""
+        if rare_joke_due:
+            self._neko_companion_events_since_rare_joke = 0
+            self._neko_companion_last_rare_joke_at = now
+        else:
+            self._neko_companion_events_since_rare_joke = events_since_rare + 1
+
+    def _reset_neko_companion_ambient_state(self) -> None:
+        self._neko_companion_round_id = ""
+        self._neko_companion_activity_signature = ""
+        self._neko_companion_activity_changed_at = 0.0
+        self._neko_companion_pending_activity_signature = ""
+        self._neko_companion_last_idle_signature = ""
+        self._neko_companion_ambient_count = 0
+        self._neko_companion_opponent_melds_initialized = False
+        self._neko_companion_seen_opponent_meld_counts: dict[str, dict[str, int]] = {}
+        self._neko_companion_pending_opponent_meld_event: dict[str, Any] = {}
+
+    def _observe_neko_companion_activity(self, snapshot: dict[str, Any], *, now: float) -> str:
+        state = snapshot.get("round_state") if isinstance(snapshot.get("round_state"), dict) else {}
+        round_id = str(state.get("round_id") or "")
+        tracked_round = str(getattr(self, "_neko_companion_round_id", "") or "")
+        if round_id != tracked_round:
+            self._reset_neko_companion_ambient_state()
+            self._neko_companion_round_id = round_id
+        if not bool(state.get("opening_emitted")):
+            return ""
+        if str(state.get("settlement_phase") or "playing") != "playing":
+            return ""
+        signature = _neko_companion_activity_signature(state)
+        previous = str(getattr(self, "_neko_companion_activity_signature", "") or "")
+        if signature and signature != previous:
+            self._neko_companion_activity_signature = signature
+            self._neko_companion_activity_changed_at = now
+            self._neko_companion_pending_activity_signature = signature
+            self._neko_companion_last_idle_signature = ""
+        return signature
+
+    def _observe_neko_companion_opponent_meld(
+        self,
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return only newly confirmed opponent calls within the current round.
+
+        Opponent meld recognition is already stabilized by the coach engine.
+        This tracker is monotonic within a round so a temporary visual dropout
+        cannot make the same pon/chi/kan look new a second time.
+        """
+
+        state = snapshot.get("round_state") if isinstance(snapshot.get("round_state"), dict) else {}
+        current_melds = _normalized_opponent_melds(state)
+        current_counts = _opponent_meld_counts(current_melds)
+        pending_event = getattr(self, "_neko_companion_pending_opponent_meld_event", {})
+        pending_event = dict(pending_event) if isinstance(pending_event, dict) else {}
+        if not bool(getattr(self, "_neko_companion_opponent_melds_initialized", False)):
+            self._neko_companion_opponent_melds_initialized = True
+            self._neko_companion_seen_opponent_meld_counts = current_counts
+            return {}
+
+        seen_counts = getattr(self, "_neko_companion_seen_opponent_meld_counts", {})
+        seen_counts = seen_counts if isinstance(seen_counts, dict) else {}
+        new_melds: list[dict[str, Any]] = []
+        for player in ("left_opponent", "top_opponent", "right_opponent"):
+            observed_occurrences: Counter[str] = Counter()
+            player_seen = seen_counts.get(player)
+            player_seen = player_seen if isinstance(player_seen, dict) else {}
+            for meld in current_melds.get(player, []):
+                identity = _opponent_meld_identity(meld)
+                observed_occurrences[identity] += 1
+                if observed_occurrences[identity] > int(player_seen.get(identity) or 0):
+                    new_melds.append({"owner": player, **meld})
+
+        merged_counts: dict[str, dict[str, int]] = {}
+        for player in ("left_opponent", "top_opponent", "right_opponent"):
+            previous = seen_counts.get(player)
+            previous = previous if isinstance(previous, dict) else {}
+            observed = current_counts.get(player, {})
+            merged_counts[player] = {
+                identity: max(int(previous.get(identity) or 0), int(observed.get(identity) or 0))
+                for identity in set(previous) | set(observed)
+            }
+        self._neko_companion_seen_opponent_meld_counts = merged_counts
+        if new_melds:
+            pending_melds = [
+                item
+                for item in (pending_event.get("new_melds") or [])
+                if isinstance(item, dict)
+            ]
+            known = {
+                f"{str(item.get('owner') or '')}:{_opponent_meld_identity(item)}"
+                for item in pending_melds
+            }
+            for meld in new_melds:
+                identity = f"{str(meld.get('owner') or '')}:{_opponent_meld_identity(meld)}"
+                if identity not in known:
+                    pending_melds.append(meld)
+                    known.add(identity)
+            pending_event = {
+                "new_melds": pending_melds,
+                "current_melds": current_melds,
+            }
+            self._neko_companion_pending_opponent_meld_event = pending_event
+        elif pending_event and any(current_melds.values()):
+            pending_event["current_melds"] = current_melds
+            self._neko_companion_pending_opponent_meld_event = pending_event
+        return pending_event
+
+    def _select_neko_companion_ambient_event(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        activity_signature: str,
+        now: float,
+    ) -> str:
+        presentation = (
+            snapshot.get("presentation")
+            if isinstance(snapshot.get("presentation"), dict)
+            else {}
+        )
+        state = snapshot.get("round_state") if isinstance(snapshot.get("round_state"), dict) else {}
+        if str(presentation.get("source_decision_type") or "") != "observe":
+            return ""
+        if not activity_signature or not bool(state.get("opening_emitted")):
+            return ""
+        if str(state.get("settlement_phase") or "playing") != "playing":
+            return ""
+        if int(getattr(self, "_neko_companion_ambient_count", 0) or 0) >= _NEKO_AMBIENT_MAX_PER_ROUND:
+            return ""
+
+        last_push_at = float(getattr(self, "_neko_companion_last_push_at", 0.0) or 0.0)
+        changed_at = float(getattr(self, "_neko_companion_activity_changed_at", 0.0) or 0.0)
+        pending = str(getattr(self, "_neko_companion_pending_activity_signature", "") or "")
+        since_push = now - last_push_at if last_push_at > 0 else float("inf")
+        since_change = now - changed_at if changed_at > 0 else float("inf")
+        riichi_players = [str(player) for player in (state.get("riichi_players") or []) if str(player)]
+        if not riichi_players:
+            quiet_elapsed = since_push if last_push_at > 0 else since_change
+            if (
+                quiet_elapsed >= _NEKO_IDLE_HEARTBEAT_SECONDS
+                and since_change >= _NEKO_AMBIENT_SETTLE_SECONDS
+            ):
+                return "casual_chat"
+            return ""
+        if (
+            pending == activity_signature
+            and since_push >= _NEKO_AMBIENT_MIN_INTERVAL_SECONDS
+            and since_change >= _NEKO_AMBIENT_SETTLE_SECONDS
+        ):
+            return "ambient_observation"
+
+        if (
+            not pending
+            and since_push >= _NEKO_IDLE_HEARTBEAT_SECONDS
+            and since_change >= _NEKO_IDLE_HEARTBEAT_SECONDS
+        ):
+            return "idle_heartbeat"
+        return ""
+
+    def _update_overlay(self, payload: dict[str, Any]) -> dict[str, Any]:
         snapshot = self._publish_display_snapshot(payload)
         if not self._live_state.overlay_enabled:
-            return
+            return snapshot
+        companion_only = bool(getattr(self._cfg, "companion_only_runtime", False))
         self._overlay.update_payload(
             text=str(snapshot.get("overlay_text") or ""),
-            strategy_card_text=str(snapshot.get("strategy_card_text") or snapshot.get("overlay_text") or ""),
-            strategy_card=copy.deepcopy(snapshot.get("strategy_card") or {}),
+            strategy_card_text=("" if companion_only else str(snapshot.get("strategy_card_text") or "")),
+            strategy_card=({} if companion_only else dict(snapshot.get("strategy_card") or {})),
             detail=str(snapshot.get("overlay_detail") or ""),
             image_path=str(snapshot.get("image_path") or ""),
+            image_revision=int(snapshot.get("image_revision") or 0),
+            live_state=snapshot.get("live") or self._live_state.to_dict(),
+            companion_status=self._neko_companion_status_payload(),
         )
+        return snapshot
 
     def _make_display_snapshot(self, payload: dict[str, Any], *, revision: int) -> dict[str, Any]:
         """Build the single published view consumed by both dashboard and overlay."""
-        overlay_payload = copy.deepcopy(dict(payload))
+        overlay_payload = build_public_payload(payload, mode=self._cfg.live_advice_mode)
         overlay_payload.setdefault("live", self._live_state.to_dict())
         prefs_path = getattr(getattr(self, "_overlay", None), "prefs_path", None)
+        compact_text = overlay_text_from_payload(overlay_payload, prefs_path=prefs_path)
+        companion_only = bool(getattr(self._cfg, "companion_only_runtime", False))
+        strategy_card = {} if companion_only else overlay_strategy_card_from_payload(overlay_payload)
+        strategy_card_text = (
+            ""
+            if companion_only
+            else overlay_strategy_card_text_from_payload(
+                overlay_payload,
+                prefs_path=prefs_path,
+                compact_text=compact_text,
+                strategy_card=strategy_card,
+            )
+        )
         return {
             "revision": int(revision),
             "published_at": time.time(),
-            "last_decision": copy.deepcopy(overlay_payload.get("last_decision") or {}),
-            "round_state": copy.deepcopy(overlay_payload.get("round_state") or {}),
-            "live": copy.deepcopy(overlay_payload.get("live") or {}),
-            "overlay_text": overlay_text_from_payload(overlay_payload, prefs_path=prefs_path),
-            "strategy_card_text": overlay_strategy_card_text_from_payload(overlay_payload, prefs_path=prefs_path),
-            "strategy_card": overlay_strategy_card_from_payload(overlay_payload),
+            "last_decision": overlay_payload.get("last_decision") or {},
+            "round_state": overlay_payload.get("round_state") or {},
+            "presentation": overlay_payload.get("presentation") or {},
+            "live": overlay_payload.get("live") or {},
+            "overlay_text": compact_text,
+            "strategy_card_text": strategy_card_text,
+            "strategy_card": strategy_card,
             "overlay_detail": overlay_detail_text_from_payload(overlay_payload),
             "image_path": str(self._live_state.last_frame_path or ""),
+            "image_revision": int(self._live_state.last_frame_revision or 0),
         }
 
     def _publish_display_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1821,6 +3433,182 @@ class MahjongCoachPlugin(NekoPluginBase):
 
 def _elapsed_ms(started: float) -> float:
     return round((time.perf_counter() - started) * 1000.0, 1)
+
+
+def _remaining_cooldown_seconds(last_at: float, interval: float) -> float:
+    if last_at <= 0:
+        return 0.0
+    return round(max(0.0, float(interval) - (time.time() - float(last_at))), 1)
+
+
+def _process_memory_snapshot() -> dict[str, float | None]:
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class ProcessMemoryCountersEx(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                    ("PrivateUsage", ctypes.c_size_t),
+                ]
+
+            counters = ProcessMemoryCountersEx()
+            counters.cb = ctypes.sizeof(counters)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            psapi = ctypes.WinDLL("psapi", use_last_error=True)
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            psapi.GetProcessMemoryInfo.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(ProcessMemoryCountersEx),
+                wintypes.DWORD,
+            ]
+            psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+            handle = kernel32.GetCurrentProcess()
+            if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                raise ctypes.WinError(ctypes.get_last_error())
+            scale = 1024.0 * 1024.0
+            return {
+                "rss_mb": round(counters.WorkingSetSize / scale, 2),
+                "peak_rss_mb": round(counters.PeakWorkingSetSize / scale, 2),
+                "private_memory_mb": round(counters.PrivateUsage / scale, 2),
+            }
+        except Exception:
+            return {"rss_mb": None, "peak_rss_mb": None, "private_memory_mb": None}
+    try:
+        import resource
+
+        peak = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        if sys.platform != "darwin":
+            peak /= 1024.0
+        else:
+            peak /= 1024.0 * 1024.0
+        return {
+            "rss_mb": round(peak, 2),
+            "peak_rss_mb": round(peak, 2),
+            "private_memory_mb": None,
+        }
+    except Exception:
+        return {"rss_mb": None, "peak_rss_mb": None, "private_memory_mb": None}
+
+
+def _normalized_opponent_melds(state: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    raw_melds = state.get("last_opponent_melds")
+    raw_melds = raw_melds if isinstance(raw_melds, dict) else {}
+    normalized: dict[str, list[dict[str, Any]]] = {}
+    for player in ("left_opponent", "top_opponent", "right_opponent"):
+        groups: list[dict[str, Any]] = []
+        for raw_group in raw_melds.get(player) or []:
+            if not isinstance(raw_group, dict):
+                continue
+            tiles = [
+                tile
+                for value in (raw_group.get("tiles") or [])
+                if (tile := normalize_tile(value))
+            ]
+            if not tiles:
+                continue
+            groups.append(
+                {
+                    "kind": str(raw_group.get("kind") or "unknown").lower(),
+                    "tiles": tiles,
+                }
+            )
+        normalized[player] = groups
+    return normalized
+
+
+def _opponent_meld_identity(meld: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "kind": str(meld.get("kind") or "unknown").lower(),
+            "tiles": sorted(
+                tile
+                for value in (meld.get("tiles") or [])
+                if (tile := normalize_tile(value))
+            ),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _opponent_meld_counts(
+    melds: dict[str, list[dict[str, Any]]],
+) -> dict[str, dict[str, int]]:
+    return {
+        player: dict(Counter(_opponent_meld_identity(meld) for meld in groups))
+        for player, groups in melds.items()
+    }
+
+
+def _neko_companion_activity_signature(state: dict[str, Any]) -> str:
+    """Summarize stable table facts without retaining frame geometry or confidence noise."""
+
+    discard_piles = state.get("last_discard_piles")
+    discard_summary: dict[str, list[str]] = {}
+    if isinstance(discard_piles, dict):
+        for player, items in discard_piles.items():
+            if not isinstance(items, list):
+                continue
+            tiles: list[str] = []
+            for item in items:
+                raw_tile = item.get("tile") if isinstance(item, dict) else item
+                tiles.append(normalize_tile(raw_tile) or "?")
+            discard_summary[str(player)] = tiles
+
+    opponent_melds = state.get("last_opponent_melds")
+    opponent_meld_summary: dict[str, list[dict[str, Any]]] = {}
+    if isinstance(opponent_melds, dict):
+        for player, melds in opponent_melds.items():
+            if not isinstance(melds, list):
+                continue
+            groups: list[dict[str, Any]] = []
+            for meld in melds:
+                raw_tiles = meld.get("tiles") if isinstance(meld, dict) else []
+                groups.append(
+                    {
+                        "kind": str(meld.get("kind") or "unknown")
+                        if isinstance(meld, dict)
+                        else "unknown",
+                        "tiles": sorted(
+                            tile
+                            for value in (raw_tiles or [])
+                            if (tile := normalize_tile(value))
+                        ),
+                    }
+                )
+            opponent_meld_summary[str(player)] = groups
+
+    payload = {
+        "round": str(state.get("round_id") or ""),
+        "hand": sorted(
+            tile
+            for value in (state.get("last_hand_tiles") or [])
+            if (tile := normalize_tile(value))
+        ),
+        "self_melds": sorted(
+            tile
+            for value in (state.get("last_meld_tiles") or [])
+            if (tile := normalize_tile(value))
+        ),
+        "opponent_melds": opponent_meld_summary,
+        "discards": discard_summary,
+        "riichi": sorted(str(value) for value in (state.get("riichi_players") or []) if str(value)),
+        "scores": state.get("player_scores") if isinstance(state.get("player_scores"), dict) else {},
+        "ranks": state.get("player_ranks") if isinstance(state.get("player_ranks"), dict) else {},
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _normalized_tiles(tiles: Any) -> list[str]:
@@ -1877,11 +3665,14 @@ def _build_table_region_preview_payload(
     raw_detections: list[dict[str, Any]] | None = None,
     opponent_melds: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    # 中文：面板分区图严格来自透视变换结果；变换失败时不拿原图冒充。
-    # English: The region panel must use the perspective-corrected table and never masquerade the raw frame as warped.
+    """Fallback reconstruction for manually supplied frames without live evidence."""
+
     with Image.open(image_path) as source:
         full_image = source.convert("RGB")
+    try:
         table_surface = detect_table_surface(full_image)
+    finally:
+        full_image.close()
     if not table_surface.ok or table_surface.warped_image is None:
         return {
             "image_path": str(image_path),
@@ -1893,6 +3684,32 @@ def _build_table_region_preview_payload(
             "detection_count": 0,
         }
 
+    try:
+        return _build_warped_table_region_preview_payload(
+            table_surface.warped_image,
+            image_path=image_path,
+            raw_detections=raw_detections,
+            opponent_melds=opponent_melds,
+            reason=table_surface.reason,
+            table_surface_method=table_surface.method,
+            evidence_source="reconstructed_from_saved_frame",
+        )
+    finally:
+        table_surface.warped_image.close()
+
+
+def _build_warped_table_region_preview_payload(
+    warped_image: Image.Image,
+    *,
+    image_path: Path,
+    raw_detections: list[dict[str, Any]] | None = None,
+    opponent_melds: dict[str, list[dict[str, Any]]] | None = None,
+    reason: str = "",
+    table_surface_method: str = "",
+    evidence_source: str,
+) -> dict[str, Any]:
+    """Encode one exact warped-table image without locating or warping it again."""
+
     warped_detections = [
         dict(item)
         for item in raw_detections or []
@@ -1900,24 +3717,29 @@ def _build_table_region_preview_payload(
         and str(item.get("coordinate_space") or "warped_table") == "warped_table"
     ]
     preview = render_yolo26_region_diagnostic_image(
-        table_surface.warped_image,
+        warped_image,
         raw_detections=warped_detections,
         opponent_melds=opponent_melds,
     )
-    output = BytesIO()
-    preview.save(output, format="JPEG", quality=84, optimize=True)
+    try:
+        output = BytesIO()
+        preview.save(output, format="JPEG", quality=84, optimize=True)
+        width, height = preview.size
+    finally:
+        preview.close()
     encoded = base64.b64encode(output.getvalue()).decode("ascii")
     return {
         "image_path": str(image_path),
         "data_url": f"data:image/jpeg;base64,{encoded}",
         "transformed": True,
         "input_space": "warped_table",
-        "reason": table_surface.reason,
-        "width": preview.width,
-        "height": preview.height,
+        "evidence_source": evidence_source,
+        "reason": reason,
+        "width": width,
+        "height": height,
         "detection_count": len(warped_detections),
         "opponent_meld_count": sum(len(items) for items in (opponent_melds or {}).values()),
-        "table_surface_method": table_surface.method,
+        "table_surface_method": table_surface_method,
     }
 
 
@@ -1930,22 +3752,56 @@ def _build_settlement_diagnostic_preview_payload(
     # English: Build the diagnostic preview in memory without creating sidecar files.
     with Image.open(image_path) as source:
         full_image = source.convert("RGB")
+    try:
         result = detect_settlement_image(full_image, min_confidence=min_confidence)
-        preview = full_image.copy()
+        if not result.detected:
+            return {
+                "image_path": str(image_path),
+                "data_url": "",
+                "width": 0,
+                "height": 0,
+                "phase": "none",
+                **result.to_dict(),
+            }
+        return _build_settlement_diagnostic_preview_from_image(
+            full_image,
+            result=result,
+            image_path=str(image_path),
+            min_confidence=min_confidence,
+        )
+    finally:
+        full_image.close()
+
+
+def _build_settlement_diagnostic_preview_from_image(
+    image: Image.Image,
+    *,
+    result: SettlementFrameResult,
+    image_path: str,
+    min_confidence: float = 0.72,
+) -> dict[str, Any]:
+    preview = image.copy()
+    try:
         preview.thumbnail((960, 540), Image.Resampling.LANCZOS)
-        preview = render_settlement_diagnostic_image(
+        annotated = render_settlement_diagnostic_image(
             preview,
             result=result,
             min_confidence=min_confidence,
         )
-        output = BytesIO()
-        preview.save(output, format="JPEG", quality=82, optimize=True)
+        try:
+            output = BytesIO()
+            annotated.save(output, format="JPEG", quality=82, optimize=True)
+            width, height = annotated.size
+        finally:
+            annotated.close()
+    finally:
+        preview.close()
     encoded = base64.b64encode(output.getvalue()).decode("ascii")
     return {
-        "image_path": str(image_path),
+        "image_path": image_path,
         "data_url": f"data:image/jpeg;base64,{encoded}",
-        "width": preview.width,
-        "height": preview.height,
+        "width": width,
+        "height": height,
         **result.to_dict(),
     }
 
@@ -2004,6 +3860,7 @@ def _mahjong_timing_from_decision(decision: dict[str, Any]) -> dict[str, Any]:
     perception = decision.get("perception") if isinstance(decision.get("perception"), dict) else {}
     engine_meta = decision.get("engine_meta") if isinstance(decision.get("engine_meta"), dict) else {}
     engine_timings = engine_meta.get("timings_ms") if isinstance(engine_meta.get("timings_ms"), dict) else {}
+    riichi_meta = engine_meta.get("riichi_detection") if isinstance(engine_meta.get("riichi_detection"), dict) else {}
 
     def _step_ms(name: str) -> float | None:
         payload = perception.get(name) if isinstance(perception.get(name), dict) else {}
@@ -2020,11 +3877,12 @@ def _mahjong_timing_from_decision(decision: dict[str, Any]) -> dict[str, Any]:
     river_visible = river.get("visible_tiles") if isinstance(river.get("visible_tiles"), list) else []
     river_piles = river.get("discard_piles") if isinstance(river.get("discard_piles"), dict) else {}
     river_tile_count = len(river_visible) or sum(len(items) for items in river_piles.values() if isinstance(items, list))
+    decision_type = str(decision.get("decision_type") or "")
 
     return {
-        "decision": str(decision.get("decision_type") or ""),
+        "decision": decision_type,
         "source": str(engine_meta.get("source") or ""),
-        "tile_mode": str(engine_meta.get("tile_recognition_mode") or "legacy"),
+        "tile_mode": str(engine_meta.get("tile_recognition_mode") or "yolo26"),
         "river_mode": str(engine_meta.get("river_tracking_mode") or "checkpoint"),
         "river_reason": str(river.get("reason") or ""),
         "fallback_reason": _first_fallback_reason(perception),
@@ -2046,6 +3904,13 @@ def _mahjong_timing_from_decision(decision: dict[str, Any]) -> dict[str, Any]:
         "settlement_evidence": list(settlement.get("evidence") or []),
         "round_archive_id": str(settlement.get("round_archive_id") or ""),
         "strategy_ms": round(float(engine_timings.get("strategy") or 0.0), 1) if "strategy" in engine_timings else None,
+        "riichi_event": decision_type in {"riichi_window", "defense_alert"} and bool(
+            decision_type == "riichi_window" or riichi_meta.get("confirmed_players")
+        ),
+        "riichi_detection_ms": _read_float(engine_timings, "riichi_detection"),
+        "riichi_detection_mode": str(riichi_meta.get("mode") or ""),
+        "riichi_immediate_players": list(riichi_meta.get("immediate_players") or []),
+        "riichi_pending_players": dict(riichi_meta.get("pending_players") or {}),
     }
 
 

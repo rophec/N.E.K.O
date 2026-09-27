@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -8,7 +10,31 @@ from PIL import Image, ImageDraw
 
 from plugin.plugins.mahjong_coach import capture, window_binding
 from plugin.plugins.mahjong_coach.capture import CaptureContext, DefaultCaptureProvider, prune_frames
+from plugin.plugins.mahjong_coach.perception import browser_canvas
+from plugin.plugins.mahjong_coach.perception.browser_canvas import BrowserCanvasResult
 from plugin.plugins.mahjong_coach.window_binding import WindowBindingResult
+
+
+def test_entry_metadata_import_does_not_load_vendored_native_perception_modules() -> None:
+    script = """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path('plugin/plugins/mahjong_coach/vendor').resolve()))
+import plugin.plugins.mahjong_coach
+blocked = [name for name in ('pyautogui', 'pyscreeze', 'cv2', 'numpy', 'onnxruntime') if name in sys.modules]
+if blocked:
+    raise SystemExit('eager native imports: ' + ', '.join(blocked))
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[4],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def _context(tmp_path: Path) -> CaptureContext:
@@ -24,6 +50,60 @@ def _context(tmp_path: Path) -> CaptureContext:
             height=720,
         ),
     )
+
+
+def test_windows_dpi_awareness_prefers_per_monitor_v2(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class FakeUser32:
+        @staticmethod
+        def SetProcessDpiAwarenessContext(value):
+            calls.append(("v2", value.value))
+            return 1
+
+        @staticmethod
+        def SetProcessDPIAware():
+            calls.append(("system", None))
+            return 1
+
+    fake_windll = SimpleNamespace(
+        user32=FakeUser32(),
+        shcore=SimpleNamespace(
+            SetProcessDpiAwareness=lambda value: calls.append(("per-monitor", value)) or 0,
+        ),
+    )
+    monkeypatch.setattr(capture.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(capture.ctypes, "windll", fake_windll, raising=False)
+    monkeypatch.setattr(capture, "_windows_dpi_awareness_initialized", False)
+    monkeypatch.setattr(capture, "_windows_dpi_awareness_mode", "uninitialized")
+
+    assert capture.ensure_windows_dpi_awareness() == "per-monitor-v2"
+    assert capture.ensure_windows_dpi_awareness() == "per-monitor-v2"
+    assert calls == [("v2", 18446744073709551612)]
+
+
+def test_windows_dpi_awareness_falls_back_without_importing_pyautogui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    fake_windll = SimpleNamespace(
+        user32=SimpleNamespace(
+            SetProcessDpiAwarenessContext=lambda _value: calls.append(("v2", None)) or 0,
+            SetProcessDPIAware=lambda: calls.append(("system", None)) or 1,
+        ),
+        shcore=SimpleNamespace(
+            SetProcessDpiAwareness=lambda value: calls.append(("per-monitor", value)) or 1,
+        ),
+    )
+    monkeypatch.setattr(capture.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(capture.ctypes, "windll", fake_windll, raising=False)
+    monkeypatch.setattr(capture, "_windows_dpi_awareness_initialized", False)
+    monkeypatch.setattr(capture, "_windows_dpi_awareness_mode", "uninitialized")
+    monkeypatch.setattr(capture, "_pyautogui_import_attempted", False)
+
+    assert capture.ensure_windows_dpi_awareness() == "system"
+    assert calls == [("v2", None), ("per-monitor", 2), ("system", None)]
+    assert capture._pyautogui_import_attempted is False
 
 
 def test_windows_capture_prefers_print_window_before_other_backends(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -97,6 +177,82 @@ def test_window_capture_validation_rejects_uniform_but_accepts_table_like_image(
     image = Image.new("RGB", (1280, 720), (20, 55, 85))
     ImageDraw.Draw(image).rectangle((300, 200, 900, 600), fill=(225, 220, 205))
     provider._validate_window_capture(image)
+
+
+def test_browser_canvas_discovery_uses_bitmap_edges_and_scene_validation() -> None:
+    frame = Image.new("RGB", (1200, 800), (9, 20, 31))
+    draw = ImageDraw.Draw(frame)
+    expected_box = (88, 190, 1112, 766)
+    draw.rectangle((88, 190, 1111, 765), fill=(22, 71, 112))
+    draw.rectangle((500, 390, 700, 570), fill=(30, 40, 45))
+
+    def detect(candidate: Image.Image) -> SimpleNamespace:
+        matched = candidate.size == (1024, 576) and candidate.getpixel((0, 0)) == (22, 71, 112)
+        return SimpleNamespace(
+            detected=matched,
+            confidence=0.97 if matched else 0.0,
+            table_surface=None,
+        )
+
+    result = browser_canvas.find_browser_game_canvas(frame, scene_detector=detect)
+
+    assert result is not None
+    assert result.box == expected_box
+    assert result.confidence == pytest.approx(0.97)
+    assert result.normalized_box == pytest.approx((88 / 1200, 190 / 800, 1112 / 1200, 766 / 800))
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "雀魂麻将 - Microsoft Edge",
+        "Mahjong Soul - Google Chrome",
+        "雀魂 - Mozilla Firefox",
+    ],
+)
+def test_browser_window_detection_accepts_supported_browser_titles(title: str) -> None:
+    assert browser_canvas.is_browser_window(title)
+
+
+def test_memory_capture_auto_crops_browser_once_then_reuses_cached_box(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = DefaultCaptureProvider()
+    full = Image.new("RGB", (1200, 800), (10, 20, 30))
+    calls: list[tuple[int, int]] = []
+    result = BrowserCanvasResult(
+        box=(88, 190, 1112, 766),
+        normalized_box=(88 / 1200, 190 / 800, 1112 / 1200, 766 / 800),
+        confidence=0.97,
+    )
+    monkeypatch.setattr(
+        provider,
+        "_capture_image",
+        lambda _binding: (full.copy(), "print-window-fullcontent"),
+    )
+    monkeypatch.setattr(
+        browser_canvas,
+        "find_browser_game_canvas",
+        lambda image: calls.append(image.size) or result,
+    )
+    binding = WindowBindingResult(
+        bound=True,
+        window_title="雀魂麻将 - Microsoft Edge",
+        hwnd=4321,
+        width=800,
+        height=533,
+    )
+
+    first = provider.capture_memory_frame(binding_result=binding)
+    second = provider.capture_memory_frame(binding_result=binding)
+
+    assert first.image is not None and first.image.size == (1024, 576)
+    assert second.image is not None and second.image.size == (1024, 576)
+    assert first.source == "print-window-fullcontent+browser-canvas-auto"
+    assert calls == [(1200, 800)]
+    first.image.close()
+    second.image.close()
+    full.close()
 
 
 def test_matching_window_lookup_never_activates_window(monkeypatch: pytest.MonkeyPatch) -> None:

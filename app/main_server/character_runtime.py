@@ -23,7 +23,7 @@ from typing import Any, Optional
 
 from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
-from main_logic.agent_event_bus import notify_analyze_ack
+from main_logic.agent_event_bus import notify_analyze_ack, publish_session_event
 from utils.config_manager import get_reserved
 
 from ._shared import runtime
@@ -284,6 +284,28 @@ async def _broadcast_to_all_connected(event_payload: dict) -> int:
     return sum(1 for r in results if r is True)
 
 
+async def _publish_plugin_delivery_receipt(
+    event: dict[str, Any],
+    *,
+    stage: str,
+    reason: str = "",
+) -> None:
+    metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    delivery_id = str(metadata.get("delivery_id") or "")
+    plugin_id = str(event.get("source_name") or "")
+    if not delivery_id or not plugin_id:
+        return
+    await publish_session_event(
+        {
+            "event_type": "plugin_delivery_receipt",
+            "plugin_id": plugin_id,
+            "delivery_id": delivery_id,
+            "stage": stage,
+            "reason": reason,
+        }
+    )
+
+
 async def _handle_agent_event(event: dict):
     """Receive agent_server events over ZeroMQ and dispatch them to core/websocket."""
     try:
@@ -487,12 +509,22 @@ async def _handle_agent_event(event: dict):
                     lanlan,
                     [name for name, _ in _iter_session_managers()],
                 )
+                await _publish_plugin_delivery_receipt(
+                    event,
+                    stage="host_rejected",
+                    reason="no_target_session",
+                )
                 return
         if not mgr:
             logger.info(
                 "[EventBus] %s dropped: no session_manager for lanlan=%s",
                 event_type,
                 lanlan,
+            )
+            await _publish_plugin_delivery_receipt(
+                event,
+                stage="host_rejected",
+                reason="no_session_manager",
             )
             return
         if event_type in ("task_result", "proactive_message"):
@@ -757,6 +789,11 @@ async def _handle_agent_event(event: dict):
                         "[EventBus] %s delivery=silent: skipping LLM channel (frontend HUD still fires)",
                         event_type,
                     )
+
+                await _publish_plugin_delivery_receipt(
+                    event,
+                    stage="host_received",
+                )
 
                 # v2 chat+blind passthrough: render verbatim into chat
                 # bubble WITHOUT entering chat-LLM context. Distinct from

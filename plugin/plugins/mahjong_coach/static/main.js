@@ -38,15 +38,34 @@ const buttonsInput = document.getElementById('buttonsInput');
 const forceCheckpointInput = document.getElementById('forceCheckpointInput');
 const keywordsInput = document.getElementById('keywordsInput');
 const intervalInput = document.getElementById('intervalInput');
-const overlayInput = document.getElementById('overlayInput');
+const nekoCompanionEnabledInput = document.getElementById('nekoCompanionEnabledInput');
+const companionStatusTitle = document.getElementById('companionStatusTitle');
+const companionStatusDetail = document.getElementById('companionStatusDetail');
+const companionChannelState = document.getElementById('companionChannelState');
+const companionEventKind = document.getElementById('companionEventKind');
+const companionSubmitCount = document.getElementById('companionSubmitCount');
 const riverTrackingModeInput = document.getElementById('riverTrackingModeInput');
 const strategyPresetInput = document.getElementById('strategyPresetInput');
+const guidanceModeInput = document.getElementById('guidanceModeInput');
+
+function guidanceModeValue() {
+  return 'companion';
+}
+
+function setGuidanceMode(value) {
+  if (guidanceModeInput) {
+    guidanceModeInput.checked = false;
+  }
+}
+
+const inferenceProviderInput = document.getElementById('inferenceProviderInput');
 const tileRecognitionModeInput = document.getElementById('tileRecognitionModeInput');
 const settlementEnabledInput = document.getElementById('settlementEnabledInput');
 const settlementConfidenceInput = document.getElementById('settlementConfidenceInput');
 const settlementFramesInput = document.getElementById('settlementFramesInput');
 const settlementGapInput = document.getElementById('settlementGapInput');
 const settlementConfigSummary = document.getElementById('settlementConfigSummary');
+const runtimeConfigSummary = document.getElementById('runtimeConfigSummary');
 const roundWindInput = document.getElementById('roundWindInput');
 const seatWindInput = document.getElementById('seatWindInput');
 const doraTilesInput = document.getElementById('doraTilesInput');
@@ -136,8 +155,11 @@ const settlementPreviewEmpty = document.getElementById('settlementPreviewEmpty')
 const settlementPreviewState = document.getElementById('settlementPreviewState');
 let autoRefreshTimer = 0;
 let previewLoading = false;
-let lastPreviewPath = '';
-let queuedPreviewPath = null;
+let lastPreviewKey = '';
+let queuedPreviewRequest = null;
+let yoloWarmupPromise = null;
+let yoloWarmupLabel = '';
+let inferenceRuntimeLabel = '';
 let preferencesHydrated = false;
 
 function setStatus(text) {
@@ -145,7 +167,7 @@ function setStatus(text) {
 }
 
 function setRecognitionMode(mode) {
-  const normalized = mode === 'yolo26' ? 'yolo26' : 'legacy';
+  const normalized = mode === 'legacy' ? 'legacy' : 'yolo26';
   if (tileRecognitionModeInput) {
     tileRecognitionModeInput.value = normalized;
   }
@@ -894,7 +916,7 @@ function buildPipelineSteps(data = {}) {
     pipelineStep('meld', '副露识别', meldStatus, meldDetail),
     pipelineStep('action', '按钮识别', actionStatus, actionDetail),
     pipelineStep('river', '牌河/立直', riverStatus, riverDetail),
-    pipelineStep('strategy', '策略输出', strategyStatus, strategyDetail),
+    pipelineStep('strategy', '事件整理', strategyStatus, strategyDetail),
   ];
 }
 
@@ -961,14 +983,14 @@ function shortDecision(value) {
 
 // 渲染插件内后端耗时日志，避免必须另开命令行窗口。
 // Render the in-plugin backend timing log so the user does not need a separate terminal.
-function renderTimingLog(rows = []) {
+function renderTimingLog(rows = [], resources = {}) {
   timingLogBody.replaceChildren();
   const items = Array.isArray(rows) ? rows.slice(-30).reverse() : [];
   if (!items.length) {
     timingSummary.textContent = '等待第一帧';
     const emptyRow = document.createElement('tr');
     const empty = document.createElement('td');
-    empty.colSpan = 18;
+    empty.colSpan = 20;
     empty.className = 'timing-empty';
     empty.textContent = '实战启动后，这里会显示每一帧的定位、截图、识别、策略耗时。';
     emptyRow.appendChild(empty);
@@ -977,7 +999,10 @@ function renderTimingLog(rows = []) {
   }
 
   const latest = items[0];
-  timingSummary.textContent = `最近 ${items.length} 条，最新整轮 ${formatMs(latest.loop_ms)}`;
+  const rss = Number(resources?.rss_current_mb);
+  const rssText = Number.isFinite(rss) ? ` · RSS ${rss.toFixed(0)} MB` : '';
+  const releasedText = resources?.caches_released_after_stop ? ' · 缓存已释放' : '';
+  timingSummary.textContent = `最近 ${items.length} 条，最新整轮 ${formatMs(latest.loop_ms)}${rssText}${releasedText}`;
   items.forEach((item) => {
     const row = document.createElement('tr');
     if (item.status === 'error') {
@@ -1003,6 +1028,8 @@ function renderTimingLog(rows = []) {
       formatMs(item.action_ms),
       formatMs(item.river_ms),
       formatMs(item.strategy_ms),
+      formatMs(item.capture_to_decision_ms),
+      item.companion_pushed ? formatMs(item.capture_to_companion_ms) : '-',
       formatMs(item.loop_ms),
     ].forEach((value, index) => {
       const cell = document.createElement('td');
@@ -1028,6 +1055,7 @@ function renderPreferences(data = {}, force = false) {
   const preferences = data.preferences || {};
   const profile = preferences.profile || data.config?.player_profile || {};
   const target = preferences.target || {};
+  const syncRuntimeChoices = !preferencesHydrated || force || Boolean(data.live?.running);
   if (!preferencesHydrated || force) {
     autoStartLiveInput.checked = Boolean(preferences.auto_start_live);
     setSelectValue(rankInput, profile.rank || 'unknown');
@@ -1035,7 +1063,9 @@ function renderPreferences(data = {}, force = false) {
     setSelectValue(riskToleranceInput, profile.risk_tolerance || 'balanced');
     setSelectValue(goalBiasInput, profile.goal_bias || 'balanced');
     setSelectValue(callBiasInput, profile.call_bias || 'balanced');
-    setSelectValue(strategyPresetInput, data.config?.strategy_preset || strategyPresetInput?.value || 'simple');
+    if (nekoCompanionEnabledInput && data.config?.neko_companion_enabled !== undefined) {
+      nekoCompanionEnabledInput.checked = Boolean(data.config.neko_companion_enabled);
+    }
     if (target.title) {
       const existing = [...windowCandidateSelect.options].find((item) => item.value === target.title);
       if (!existing) {
@@ -1046,9 +1076,85 @@ function renderPreferences(data = {}, force = false) {
     }
     preferencesHydrated = true;
   }
+  if (syncRuntimeChoices) {
+    // The native overlay can change these choices while capture is running.
+    // Keep unsaved pre-start form edits intact, but treat the running backend
+    // as the source of truth so the web panel cannot display stale modes.
+    setSelectValue(strategyPresetInput, data.config?.strategy_preset || strategyPresetInput?.value || 'simple');
+    setGuidanceMode(data.config?.live_advice_mode || guidanceModeValue());
+    if (nekoCompanionEnabledInput && data.config?.neko_companion_enabled !== undefined) {
+      nekoCompanionEnabledInput.checked = Boolean(data.config.neko_companion_enabled);
+    }
+    setSelectValue(inferenceProviderInput, data.config?.inference_provider || inferenceProviderInput?.value || 'speed');
+  }
   const sourceLabel = profile.source === 'amae_koromo' ? '牌谱屋建议' : '手动';
   const confirmedLabel = profile.confirmed ? '已确认' : '待确认';
   profileSummary.textContent = `${sourceLabel} · ${confirmedLabel} · ${profile.risk_tolerance || 'balanced'}`;
+  renderRuntimeConfigSummary();
+}
+
+function renderRuntimeConfigSummary() {
+  if (!runtimeConfigSummary) return;
+  const riverLabel = riverTrackingModeInput?.value === 'live' ? '实时牌河' : '检查点';
+  const resourceLabel = inferenceProviderInput?.value === 'speed' ? '极速' : '低内存';
+  const warmupSuffix = yoloWarmupLabel ? ` · ${yoloWarmupLabel}` : '';
+  const actualSuffix = inferenceRuntimeLabel ? ` · ${inferenceRuntimeLabel}` : '';
+  runtimeConfigSummary.textContent = `${Number(intervalInput?.value || 400)} ms · ${riverLabel} · ${resourceLabel}${actualSuffix}${warmupSuffix}`;
+}
+
+function syncInferenceRuntime(runtime = {}) {
+  const backend = compact(runtime.backend, '未加载');
+  const recognitionMs = Number(runtime.last_recognition_ms);
+  const timing = Number.isFinite(recognitionMs) ? ` · 最近识别 ${formatMs(recognitionMs)}` : '';
+  const fallback = runtime.fallback_reason ? ` · 降级 ${compact(runtime.fallback_reason)}` : '';
+  inferenceRuntimeLabel = `实际 ${backend}${timing}${fallback}`;
+  renderRuntimeConfigSummary();
+}
+
+function requestYoloWarmup() {
+  const wantsGpu = tileRecognitionModeInput?.value === 'yolo26'
+    && inferenceProviderInput?.value === 'speed';
+  if (!wantsGpu) {
+    yoloWarmupLabel = '';
+    renderRuntimeConfigSummary();
+    return Promise.resolve({ status: 'skipped' });
+  }
+  if (yoloWarmupPromise) return yoloWarmupPromise;
+  if (yoloWarmupLabel.startsWith('GPU 已就绪')) {
+    return Promise.resolve({ status: 'ready' });
+  }
+  yoloWarmupLabel = 'GPU 预热中';
+  renderRuntimeConfigSummary();
+  yoloWarmupPromise = callPlugin('mahjong_coach_warmup_yolo26', {
+    inference_provider: 'speed',
+  }, 15000).then((result) => {
+    if (result.status === 'ready') {
+      yoloWarmupLabel = `GPU 已就绪 ${Number(result.elapsed_ms || 0).toFixed(0)} ms`;
+    } else {
+      yoloWarmupLabel = 'GPU 预热不可用';
+    }
+    return result;
+  }).catch((error) => {
+    yoloWarmupLabel = 'GPU 预热失败';
+    throw error;
+  }).finally(() => {
+    yoloWarmupPromise = null;
+    renderRuntimeConfigSummary();
+  });
+  return yoloWarmupPromise;
+}
+
+function syncYoloWarmupState(state = {}) {
+  if (state.status === 'warming') {
+    yoloWarmupLabel = 'GPU 预热中';
+  } else if (state.status === 'ready') {
+    yoloWarmupLabel = `GPU 已就绪 ${Number(state.elapsed_ms || 0).toFixed(0)} ms`;
+  } else if (state.status === 'failed' || state.status === 'unavailable') {
+    yoloWarmupLabel = 'GPU 预热失败';
+  } else if (!yoloWarmupPromise) {
+    yoloWarmupLabel = '';
+  }
+  renderRuntimeConfigSummary();
 }
 
 function renderDefenseCandidates(strategy = {}) {
@@ -1059,16 +1165,23 @@ function renderDefenseCandidates(strategy = {}) {
   defenseCandidatePanel.hidden = candidates.length === 0;
   candidates.forEach((item, index) => {
     const card = document.createElement('article');
-    card.className = 'defense-candidate-card';
+    card.className = `defense-candidate-card${item.recommended ? ' is-recommended' : ''}`;
     const title = document.createElement('strong');
-    title.textContent = `方案${String.fromCharCode(65 + index)} · 候选牌 ${compact(item.tile, '?')}`;
+    const tileLabel = compact(item.tile_label || item.tile, '待确认牌');
+    title.textContent = `${item.recommended ? '主建议' : `方案${String.fromCharCode(65 + index)}`} · 打${tileLabel}`;
     const safety = document.createElement('span');
-    safety.textContent = `${compact(item.safety, '安全度未知')} · 危险 ${Number(item.defense_risk || 0).toFixed(1)}`;
+    const riskValue = Number(item.risk ?? item.defense_risk ?? 0);
+    safety.textContent = item.risk_summary
+      ? `${compact(item.safety, '安全度未知')} · ${item.risk_summary}`
+      : `${compact(item.safety, '安全度未知')} · 危险 ${riskValue.toFixed(1)}`;
     const shape = document.createElement('span');
     const effectiveDelta = Number(item.effective_count_delta || 0);
     const effectiveDeltaText = `${effectiveDelta >= 0 ? '+' : ''}${effectiveDelta}`;
-    shape.textContent = `向听 ${Number(item.shanten ?? 8)} · 牌型损失 ${Number(item.shape_loss || 0)} · 有效牌 ${Number(item.effective_count || 0)} 张（${effectiveDeltaText}）`;
-    card.append(title, safety, shape);
+    shape.textContent = item.shape_summary
+      || `向听 ${Number(item.shanten ?? 8)} · 牌型损失 ${Number(item.shape_loss || 0)} · 有效牌 ${Number(item.effective_count || 0)} 张（${effectiveDeltaText}）`;
+    const reason = document.createElement('p');
+    reason.textContent = compact(item.tradeoff || item.comparison_reason, '等待稳定的风险与牌型解释');
+    card.append(title, safety, shape, reason);
     defenseCandidateList.appendChild(card);
   });
 }
@@ -1113,7 +1226,7 @@ function renderTableContext(state = {}, strategy = {}) {
   const sticks = context.riichi_stick_count ?? state.table_riichi_stick_count;
   tableCounterSummary.textContent = `本场 ${Number(honba || 0)}｜供托 ${Number(sticks || 0)}`;
   const confidence = Number(state.table_context_confidence || 0);
-  tableContextStatus.textContent = `已连续两帧确认 · 置信度 ${(confidence * 100).toFixed(0)}%`;
+  tableContextStatus.textContent = `本局单次扫描 · 置信度 ${(confidence * 100).toFixed(0)}%`;
   const budgetModel = strategy.risk_budget_model && typeof strategy.risk_budget_model === 'object'
     ? strategy.risk_budget_model
     : {};
@@ -1129,6 +1242,46 @@ function renderTableContext(state = {}, strategy = {}) {
   tableStrategyImpact.textContent = `${placementText}；本场/供托共 ${rewardBonus.toLocaleString('zh-CN')} 点计入预计和牌收益。`;
 }
 
+function renderCompanionStatus(sync = {}, live = {}) {
+  const enabled = sync.enabled !== false;
+  const running = Boolean(sync.capture_running ?? live.running);
+  const stage = compact(sync.delivery_stage, running ? 'ready' : 'waiting_capture');
+  const stageLabels = {
+    disabled: '搭话已关闭',
+    waiting_capture: '等待开始观察牌局',
+    ready: '正在观察，等待牌局事件',
+    submitted: '搭话已提交，等待 N.E.K.O 接收',
+    submitted_unconfirmed: '搭话已提交，宿主回执未确认',
+    message_plane_received: '消息通道已接收搭话',
+    host_received: 'N.E.K.O 已接收搭话',
+    direct_reply_submitted: '搭话已直接提交',
+    direct_host_submitted: '搭话已交给 N.E.K.O',
+    direct_reply_unavailable: '直接搭话暂不可用',
+    message_plane_unavailable: '消息通道暂不可用',
+    host_unconfirmed: 'N.E.K.O 回执未确认',
+    host_rejected: 'N.E.K.O 拒绝了本次搭话',
+  };
+  const headline = stageLabels[stage] || `伙伴通道：${stage}`;
+  companionStatusTitle.textContent = !enabled
+    ? '吐槽伙伴已关闭'
+    : (!running ? '等待开始观察牌局' : headline);
+
+  const error = compact(sync.last_error, '');
+  if (!enabled) {
+    companionStatusDetail.textContent = '开启“伙伴搭话”后，识别到的牌局事件才会交给 N.E.K.O。';
+  } else if (!running) {
+    companionStatusDetail.textContent = '点击“开始观察”，伙伴会识别立直、吃碰、副露、和牌、结算与普通局面变化。';
+  } else if (error && stage.includes('unavailable')) {
+    companionStatusDetail.textContent = `通道异常：${error}`;
+  } else {
+    companionStatusDetail.textContent = '正在观察牌局；重复事件会被去重，没有关键事件时会按间隔自然聊两句。';
+  }
+
+  companionChannelState.textContent = headline;
+  companionEventKind.textContent = compact(sync.last_event_kind, '暂无');
+  companionSubmitCount.textContent = `${Number(sync.submit_count || 0)} 条`;
+}
+
 function renderDashboard(data = {}) {
   const currentState = data.round_state || data.coach_state || data || {};
   const currentDecision = data.last_decision || data;
@@ -1139,9 +1292,12 @@ function renderDashboard(data = {}) {
   // published snapshot. Current/quiet frames remain available to diagnostics.
   const state = displaySnapshot.round_state || currentState;
   const decision = displaySnapshot.last_decision || currentDecision;
+  const presentation = displaySnapshot.presentation || decision.presentation || {};
   const live = data.live || {};
   const config = data.config || {};
+  syncInferenceRuntime(data.inference_runtime || {});
   renderPreferences(data);
+  syncYoloWarmupState(data.yolo_warmup || {});
   if (riverTrackingModeInput && config.river_tracking_mode) {
     riverTrackingModeInput.value = config.river_tracking_mode;
   }
@@ -1165,22 +1321,30 @@ function renderDashboard(data = {}) {
 
   if (overlayText) {
     const lines = overlayText.split('\n');
-    mainPlan.textContent = lines[0] || '等待手牌';
-    planDetail.textContent = lines.slice(1).join('\n') || '还没有稳定手牌输入';
+    if (presentation.mode === 'strategy' && presentation.primary_action) {
+      mainPlan.textContent = presentation.primary_action;
+      planDetail.textContent = [
+        presentation.headline,
+        presentation.primary_reason,
+        presentation.strategy_direction,
+      ].filter(Boolean).join('\n') || '等待策略理由';
+    } else {
+      mainPlan.textContent = lines[0] || '等待手牌';
+      planDetail.textContent = lines.slice(1).join('\n') || '还没有稳定手牌输入';
+    }
   } else {
     mainPlan.textContent = strategyHeadline(localPlan, listValues(state.target_shapes), '等待手牌');
     planDetail.textContent = strategyBrief(localPlan, localDetail, listValues(state.target_shapes), listValues(state.caution_points), '还没有稳定手牌输入');
   }
   analysisSource.textContent = '本地';
   analysisSource.classList.remove('is-ai');
-  const style = state.play_style || 'riichi';
-  const styleLabel = style === 'fast' ? '快攻' : '立直';
-  biasValue.textContent = `${styleLabel} / ${compact(state.attack_defense_bias, 'neutral')}`;
+  biasValue.textContent = `${compact(presentation.mode_label, '局势观察')} / ${compact(presentation.pressure_level, '待评估')}`;
   const displayStrategy = decision.perception?.strategy || decision.strategy || {};
-  const posture = state.defense_posture || displayStrategy.posture || displayStrategy.mode || 'observe';
-  defensePostureValue.textContent = ({ push: '推进', mawashi: '兜牌', fold: '全退' })[posture] || compact(posture, '观察');
-  const riskBudget = state.defense_risk_budget ?? displayStrategy.risk_budget;
-  riskBudgetValue.textContent = Number.isFinite(Number(riskBudget)) ? Number(riskBudget).toFixed(1) : '-';
+  defensePostureValue.textContent = compact(presentation.hand_viability, '待评估');
+  const riskRange = presentation.risk_range || displayStrategy.risk_range || {};
+  riskBudgetValue.textContent = Number.isFinite(Number(riskRange.min)) && Number.isFinite(Number(riskRange.max))
+    ? `${Number(riskRange.min).toFixed(0)}–${Number(riskRange.max).toFixed(0)}/100`
+    : '-';
   renderTableContext(state, displayStrategy);
   renderDefenseCandidates(displayStrategy);
   lastReason.textContent = compact(state.last_update_reason || decision.decision_type, '-');
@@ -1200,15 +1364,16 @@ function renderDashboard(data = {}) {
   renderRiver(firstNonEmptyPiles(state.last_discard_piles, decision.perception?.river?.discard_piles));
   renderRoundArchive(data);
   renderPipeline(data);
-  renderTimingLog(data.timing_log || []);
+  renderTimingLog(data.timing_log || [], data.runtime_resources || {});
   decisionOutput.textContent = JSON.stringify(decision && Object.keys(decision).length ? decision : state, null, 2);
   renderLive(live);
-  refreshFramePreview(live.last_frame_path).catch(() => {});
+  renderCompanionStatus(data.neko_companion_sync || {}, live);
+  refreshFramePreview(live.last_frame_path, live.last_frame_revision).catch(() => {});
 }
 
 async function refreshStatus() {
   setStatus('刷新中');
-  const data = await callPlugin('mahjong_coach_status', {}, 15000);
+  const data = await callPlugin('mahjong_coach_status', { dashboard_visible: true }, 15000);
   renderDashboard(data);
   setStatus('ready');
 }
@@ -1238,7 +1403,7 @@ function renderLive(live = {}) {
 }
 
 function clearFramePreview(message = '等待实战截图') {
-  lastPreviewPath = '';
+  lastPreviewKey = '';
   framePreview.removeAttribute('src');
   framePreview.hidden = true;
   framePreviewEmpty.hidden = false;
@@ -1256,13 +1421,15 @@ function clearFramePreview(message = '等待实战截图') {
   framePreviewState.textContent = message;
 }
 
-async function refreshFramePreview(path) {
+async function refreshFramePreview(path, revision = 0) {
   const requestedPath = String(path || '').trim();
+  const requestedRevision = Number(revision || 0);
+  const requestedKey = `${requestedPath}#${requestedRevision}`;
   framePreviewPath.textContent = requestedPath || '-';
   if (previewLoading) {
     // 加载期间只保留最新帧，当前请求完成后立刻补跑，避免结算图停在旧帧。
     // Keep only the newest queued frame while loading so settlement evidence cannot remain stale.
-    queuedPreviewPath = requestedPath;
+    queuedPreviewRequest = { path: requestedPath, revision: requestedRevision, key: requestedKey };
     if (!requestedPath) {
       clearFramePreview();
     }
@@ -1272,46 +1439,63 @@ async function refreshFramePreview(path) {
     clearFramePreview();
     return;
   }
-  if (requestedPath === lastPreviewPath) {
+  if (requestedKey === lastPreviewKey) {
     return;
   }
   previewLoading = true;
-  queuedPreviewPath = null;
+  queuedPreviewRequest = null;
   framePreviewState.textContent = '加载截图';
   tableRegionPreviewState.textContent = '生成变换分区图';
   settlementPreviewState.textContent = '生成诊断图';
   try {
     const previewArgs = { image_path: requestedPath };
-    const [frameResult, tableRegionResult, settlementResult] = await Promise.allSettled([
+    const settlementPromise = Promise.allSettled([
+      callPlugin('mahjong_coach_settlement_preview', previewArgs, 15000),
+    ]).then((results) => results[0]);
+    const [frameResult, tableRegionResult] = await Promise.allSettled([
       callPlugin('mahjong_coach_frame_preview', previewArgs, 15000),
       callPlugin('mahjong_coach_table_region_preview', previewArgs, 15000),
-      callPlugin('mahjong_coach_settlement_preview', previewArgs, 15000),
     ]);
-    if (queuedPreviewPath !== null && queuedPreviewPath !== requestedPath) {
+    if (queuedPreviewRequest !== null && queuedPreviewRequest.key !== requestedKey) {
       return;
     }
     const data = frameResult.status === 'fulfilled' ? frameResult.value : {};
-    if (!data.data_url) {
-      clearFramePreview('截图不可用');
-      return;
+    if (data.data_url) {
+      framePreview.src = data.data_url;
+      framePreview.hidden = false;
+      framePreviewEmpty.hidden = true;
+      framePreviewPath.textContent = compact(data.image_path, requestedPath);
+      framePreviewState.textContent = `${Number(data.width || 0)} × ${Number(data.height || 0)}`;
+    } else {
+      framePreview.removeAttribute('src');
+      framePreview.hidden = true;
+      framePreviewEmpty.hidden = false;
+      framePreviewEmpty.textContent = '原始截图不可用';
+      framePreviewState.textContent = '原图加载失败';
     }
-    framePreview.src = data.data_url;
-    framePreview.hidden = false;
-    framePreviewEmpty.hidden = true;
-    framePreviewPath.textContent = compact(data.image_path, requestedPath);
-    framePreviewState.textContent = `${Number(data.width || 0)} × ${Number(data.height || 0)}`;
     const tableRegion = tableRegionResult.status === 'fulfilled' ? tableRegionResult.value : {};
     if (tableRegion.data_url && tableRegion.transformed) {
       tableRegionPreview.src = tableRegion.data_url;
       tableRegionPreview.hidden = false;
       tableRegionPreviewEmpty.hidden = true;
-      tableRegionPreviewState.textContent = `${Number(tableRegion.width || 0)} × ${Number(tableRegion.height || 0)} · ${Number(tableRegion.detection_count || 0)} 框`;
+      const evidenceSource = {
+        engine_inference_warp: '实际识别帧',
+        engine_current_warp_reused_detections: '当前变换 / 复用检测框',
+        reconstructed_from_saved_frame: '保存帧重建',
+      }[tableRegion.evidence_source] || '来源未标记';
+      tableRegionPreviewState.textContent = `帧 #${requestedRevision} · ${evidenceSource} · ${Number(tableRegion.width || 0)} × ${Number(tableRegion.height || 0)} · ${Number(tableRegion.detection_count || 0)} 框`;
     } else {
       tableRegionPreview.removeAttribute('src');
       tableRegionPreview.hidden = true;
       tableRegionPreviewEmpty.hidden = false;
       tableRegionPreviewEmpty.textContent = `牌桌变换不可用：${compact(tableRegion.reason, '未定位牌桌')}`;
       tableRegionPreviewState.textContent = '变换失败';
+    }
+    // The transformed table is the primary evidence and is painted before the
+    // slower settlement diagnostic finishes, so settlement work cannot hold it back.
+    const settlementResult = await settlementPromise;
+    if (queuedPreviewRequest !== null && queuedPreviewRequest.key !== requestedKey) {
+      return;
     }
     const diagnostic = settlementResult.status === 'fulfilled' ? settlementResult.value : {};
     if (diagnostic.data_url) {
@@ -1324,26 +1508,31 @@ async function refreshFramePreview(path) {
         abortive_draw: '途中流局',
         unknown: '未分类结算',
       }[diagnostic.kind] || '未命中';
+      const evidenceFrameLabel = diagnostic.phase === 'candidate'
+        ? '候选证据帧'
+        : (diagnostic.phase === 'confirmed' ? '确认结算帧' : '当前检测帧');
       settlementPreviewState.textContent = diagnostic.detected
-        ? `${kindLabel} · ${percent(diagnostic.confidence)} · 当前帧`
-        : `未命中 · ${compact(diagnostic.reason, '-')} · 当前帧`;
+        ? `${kindLabel} · ${percent(diagnostic.confidence)} · ${evidenceFrameLabel}`
+        : `未命中 · ${compact(diagnostic.reason, '-')} · ${evidenceFrameLabel}`;
     } else {
       settlementPreview.removeAttribute('src');
       settlementPreview.hidden = true;
       settlementPreviewEmpty.hidden = false;
-      settlementPreviewEmpty.textContent = '诊断图不可用';
-      settlementPreviewState.textContent = '生成失败';
+      settlementPreviewEmpty.textContent = diagnostic.reason === 'no_frozen_settlement_evidence'
+        ? '当前没有结算候选；普通牌局不会绘制结算框。'
+        : `当前未检测到结算：${compact(diagnostic.reason, '无结算特征')}`;
+      settlementPreviewState.textContent = '无结算证据';
     }
-    lastPreviewPath = String(data.image_path || requestedPath);
+    lastPreviewKey = requestedKey;
   } catch (_error) {
     clearFramePreview('预览加载失败');
   } finally {
     previewLoading = false;
-    const nextPath = queuedPreviewPath;
-    queuedPreviewPath = null;
-    if (nextPath !== null && nextPath !== requestedPath) {
-      if (nextPath) {
-        refreshFramePreview(nextPath).catch(() => {});
+    const nextRequest = queuedPreviewRequest;
+    queuedPreviewRequest = null;
+    if (nextRequest !== null && nextRequest.key !== requestedKey) {
+      if (nextRequest.path) {
+        refreshFramePreview(nextRequest.path, nextRequest.revision).catch(() => {});
       } else {
         clearFramePreview();
       }
@@ -1380,7 +1569,7 @@ function scheduleAutoRefresh(running) {
     refreshStatus().catch((error) => {
       setStatus(error instanceof Error ? error.message : String(error));
     });
-  }, 1200);
+  }, 700);
 }
 
 function keywordValues() {
@@ -1416,8 +1605,10 @@ async function analyzeFrame() {
     self_turn_index: Number(turnInput.value || 0),
     force_checkpoint: Boolean(forceCheckpointInput.checked),
     ...settlementRuntimeArgs(),
-    tile_recognition_mode: tileRecognitionModeInput ? tileRecognitionModeInput.value : 'legacy',
-    strategy_preset: strategyPresetInput ? strategyPresetInput.value : 'simple',
+    tile_recognition_mode: tileRecognitionModeInput ? tileRecognitionModeInput.value : 'yolo26',
+    strategy_preset: 'simple',
+    live_advice_mode: 'companion',
+    inference_provider: inferenceProviderInput ? inferenceProviderInput.value : 'speed',
     round_wind: analysisRoundWindInput.value.trim(),
     seat_wind: analysisSeatWindInput.value.trim(),
     dora_tiles: tileValues(analysisDoraTilesInput.value),
@@ -1542,17 +1733,21 @@ async function confirmPlayer() {
 
 async function startLive() {
   setStatus('启动实战观察');
-  const overlayRequested = Boolean(overlayInput.checked);
+  const overlayRequested = true;
   const data = await callPlugin('mahjong_coach_start_live', {
     keywords: keywordValues(),
     interval_ms: Number(intervalInput.value || 400),
-    overlay: overlayRequested,
+    overlay: true,
     target_window_title: windowCandidateSelect.value,
     auto_start_live: Boolean(autoStartLiveInput.checked),
     ...settlementRuntimeArgs(),
     river_tracking_mode: riverTrackingModeInput ? riverTrackingModeInput.value : 'checkpoint',
-    tile_recognition_mode: tileRecognitionModeInput ? tileRecognitionModeInput.value : 'legacy',
-    strategy_preset: strategyPresetInput ? strategyPresetInput.value : 'simple',
+    tile_recognition_mode: tileRecognitionModeInput ? tileRecognitionModeInput.value : 'yolo26',
+    strategy_preset: 'simple',
+    live_advice_mode: 'companion',
+    neko_companion_enabled: Boolean(nekoCompanionEnabledInput?.checked),
+    absurd_banter_enabled: false,
+    inference_provider: inferenceProviderInput ? inferenceProviderInput.value : 'speed',
     round_wind: roundWindInput.value.trim(),
     seat_wind: seatWindInput.value.trim(),
     dora_tiles: tileValues(doraTilesInput.value),
@@ -1577,12 +1772,15 @@ async function startYoloLive() {
   // English: The quick entry enables YOLO26 and live river tracking while keeping legacy selectable.
   setRecognitionMode('yolo26');
   riverTrackingModeInput.value = 'live';
+  requestYoloWarmup().catch(() => {});
   await startLive();
 }
 
 async function stopLive() {
   setStatus('停止实战观察');
   const data = await callPlugin('mahjong_coach_stop_live', {}, 15000);
+  yoloWarmupLabel = '';
+  renderRuntimeConfigSummary();
   renderLive(data.live || {});
   await refreshStatus();
 }
@@ -1623,8 +1821,13 @@ playerCandidateSelect.addEventListener('change', () => {
   });
 });
 
-legacyModeBtn.addEventListener('click', () => setRecognitionMode('legacy'));
-yoloModeBtn.addEventListener('click', () => setRecognitionMode('yolo26'));
+legacyModeBtn.addEventListener('click', () => {
+  setRecognitionMode('legacy');
+});
+yoloModeBtn.addEventListener('click', () => {
+  setRecognitionMode('yolo26');
+  requestYoloWarmup().catch(() => {});
+});
 [
   settlementEnabledInput,
   settlementConfidenceInput,
@@ -1635,7 +1838,21 @@ yoloModeBtn.addEventListener('click', () => setRecognitionMode('yolo26'));
   input.addEventListener('change', renderSettlementConfigSummary);
 });
 
+[
+  intervalInput,
+  riverTrackingModeInput,
+  strategyPresetInput,
+  inferenceProviderInput,
+].filter(Boolean).forEach((input) => {
+  input.addEventListener('input', renderRuntimeConfigSummary);
+  input.addEventListener('change', renderRuntimeConfigSummary);
+});
+inferenceProviderInput?.addEventListener('change', () => {
+  yoloWarmupLabel = '';
+  requestYoloWarmup().catch(() => {});
+});
 renderSettlementConfigSummary();
+renderRuntimeConfigSummary();
 refreshStatus().catch((error) => {
   setStatus(error instanceof Error ? error.message : String(error));
 });

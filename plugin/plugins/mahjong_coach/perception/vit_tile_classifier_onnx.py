@@ -12,6 +12,8 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from .onnx_runtime import create_inference_session
+
 
 DEFAULT_MODEL_SUBDIR = Path("data") / "models" / "vit_tile_classifier"
 DEFAULT_TOP_K = 3
@@ -69,15 +71,20 @@ def classify_tile_crops_onnx(
     if not crops:
         return []
     loaded = _load_model(_resolve_model_dir(model_dir))
-    images = [crop.convert("RGB") for crop in crops]
-    batch = np.stack([_preprocess(image, loaded.preprocessor) for image in images], axis=0)
-    raw = loaded.session.run(None, {loaded.input_name: batch})
-    if not raw:
-        return [None] * len(crops)
-    logits = np.asarray(raw[0], dtype=np.float32)
-    probabilities = _softmax(logits)
-    clean_top_k = max(1, int(top_k or DEFAULT_TOP_K))
-    return [_prediction_from_probs(row, loaded.labels, top_k=clean_top_k) for row in probabilities]
+    images = [crop if crop.mode == "RGB" else crop.convert("RGB") for crop in crops]
+    try:
+        batch = np.stack([_preprocess(image, loaded.preprocessor) for image in images], axis=0)
+        raw = loaded.session.run(None, {loaded.input_name: batch})
+        if not raw:
+            return [None] * len(crops)
+        logits = np.asarray(raw[0], dtype=np.float32)
+        probabilities = _softmax(logits)
+        clean_top_k = max(1, int(top_k or DEFAULT_TOP_K))
+        return [_prediction_from_probs(row, loaded.labels, top_k=clean_top_k) for row in probabilities]
+    finally:
+        for source, image in zip(crops, images):
+            if image is not source:
+                image.close()
 
 
 def onnx_tile_classifier_available(*, model_dir: str | os.PathLike[str] | None = None) -> bool:
@@ -142,8 +149,27 @@ def _load_model(model_dir: Path) -> _LoadedModel:
         except OnnxTileClassifierUnavailable as exc:
             _MODEL_FAILURES[identity] = str(exc)
             raise
+        # Only one classifier can be active in the plugin configuration. Drop
+        # a previous model directory instead of retaining multiple native ONNX
+        # sessions after a runtime model switch.
+        _MODEL_CACHE.clear()
         _MODEL_CACHE[identity] = loaded
         return loaded
+
+
+def release_onnx_tile_classifier_cache() -> None:
+    """Drop native classifier sessions and stale load failures."""
+    with _MODEL_LOCK:
+        _MODEL_CACHE.clear()
+        _MODEL_FAILURES.clear()
+
+
+def onnx_tile_classifier_runtime_stats() -> dict[str, int]:
+    with _MODEL_LOCK:
+        return {
+            "tile_classifier_sessions": len(_MODEL_CACHE),
+            "tile_classifier_failures": len(_MODEL_FAILURES),
+        }
 
 
 def _model_identity(model_dir: Path) -> _ModelIdentity:
@@ -189,7 +215,7 @@ def _build_loaded_model(model_dir: Path) -> _LoadedModel:
 
     providers = resolve_onnx_providers(available=tuple(ort.get_available_providers()))
     try:
-        session = ort.InferenceSession(str(model_dir / "model.onnx"), providers=list(providers))
+        session = create_inference_session(ort, str(model_dir / "model.onnx"), providers)
     except Exception as exc:
         raise OnnxTileClassifierUnavailable(f"Failed to load ONNX session: {exc}") from exc
 
@@ -250,14 +276,17 @@ def _preprocess(image: Image.Image, preprocessor: _Preprocessor) -> np.ndarray:
         resized = _letterbox_resize(image, preprocessor.width, preprocessor.height)
     else:
         resized = image.resize((preprocessor.width, preprocessor.height), Image.BILINEAR)
-    array = np.asarray(resized, dtype=np.float32)
-    if preprocessor.do_rescale:
-        array = array * preprocessor.rescale_factor
-    if preprocessor.do_normalize:
-        mean = np.asarray(preprocessor.mean, dtype=np.float32)
-        std = np.asarray(preprocessor.std, dtype=np.float32)
-        array = (array - mean) / std
-    return np.transpose(array, (2, 0, 1)).astype(np.float32, copy=False)
+    try:
+        array = np.asarray(resized, dtype=np.float32)
+        if preprocessor.do_rescale:
+            array = array * preprocessor.rescale_factor
+        if preprocessor.do_normalize:
+            mean = np.asarray(preprocessor.mean, dtype=np.float32)
+            std = np.asarray(preprocessor.std, dtype=np.float32)
+            array = (array - mean) / std
+        return np.transpose(array, (2, 0, 1)).astype(np.float32, copy=False)
+    finally:
+        resized.close()
 
 
 def _letterbox_resize(image: Image.Image, target_w: int, target_h: int) -> Image.Image:
@@ -266,7 +295,10 @@ def _letterbox_resize(image: Image.Image, target_w: int, target_h: int) -> Image
     new_w, new_h = int(w * scale), int(h * scale)
     resized = image.resize((new_w, new_h), Image.BILINEAR)
     canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
-    canvas.paste(resized, ((target_w - new_w) // 2, (target_h - new_h) // 2))
+    try:
+        canvas.paste(resized, ((target_w - new_w) // 2, (target_h - new_h) // 2))
+    finally:
+        resized.close()
     return canvas
 
 

@@ -5,7 +5,7 @@ import math
 import random
 import threading
 import time
-from collections import Counter
+from collections import Counter, OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from functools import lru_cache
@@ -165,13 +165,23 @@ def monte_carlo_yakuman(
 class YakumanEstimateService:
     """One-worker latest-result service so live advice never waits for simulation."""
 
-    def __init__(self, *, max_trials: int = 10_000, time_budget_ms: int = 250) -> None:
+    def __init__(
+        self,
+        *,
+        max_trials: int = 10_000,
+        time_budget_ms: int = 250,
+        result_cache_size: int = 4,
+    ) -> None:
         self.max_trials = max_trials
         self.time_budget_ms = time_budget_ms
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mahjong-yakuman")
+        self.result_cache_size = max(1, int(result_cache_size))
+        self._executor: ThreadPoolExecutor | None = None
         self._lock = threading.Lock()
-        self._futures: dict[str, Future[list[YakumanEstimate]]] = {}
-        self._results: dict[str, list[YakumanEstimate]] = {}
+        self._active_key = ""
+        self._active_future: Future[list[YakumanEstimate]] | None = None
+        self._pending_job: tuple[str, list[str], list[str], int] | None = None
+        self._results: OrderedDict[str, list[YakumanEstimate]] = OrderedDict()
+        self._closed = False
 
     def request(
         self,
@@ -179,32 +189,92 @@ class YakumanEstimateService:
         *,
         visible_tiles: list[str] | None = None,
         open_melds: int = 0,
+        run_background: bool = True,
     ) -> dict[str, Any]:
         hand = _canonical_tiles(hand_tiles)
         visible = _canonical_tiles(visible_tiles or [])
         key = "|".join([",".join(sorted(hand)), ",".join(sorted(visible)), str(open_melds)])
         immediate = assess_yakuman_routes(hand, visible_tiles=visible, open_melds=open_melds)
+        if not run_background:
+            with self._lock:
+                self._pending_job = None
+                future = self._active_future
+                if future is not None and future.cancel():
+                    self._active_future = None
+                    self._active_key = ""
+            return self._payload("instant", key, immediate)
         with self._lock:
-            future = self._futures.get(key)
-            if future is not None and future.done():
-                try:
-                    self._results[key] = future.result()
-                finally:
-                    self._futures.pop(key, None)
+            self._collect_finished_locked()
             ready = self._results.get(key)
             if ready is not None:
+                self._results.move_to_end(key)
+                self._pending_job = None
                 return self._payload("ready", key, ready)
-            if future is None:
-                self._futures[key] = self._executor.submit(
-                    monte_carlo_yakuman,
-                    hand,
-                    visible_tiles=visible,
-                    open_melds=open_melds,
-                    max_trials=self.max_trials,
-                    time_budget_ms=self.time_budget_ms,
-                    seed=None,
-                )
+            if self._closed:
+                return self._payload("instant", key, immediate)
+            job = (key, hand, visible, int(open_melds))
+            if self._active_future is None:
+                self._submit_locked(job)
+            elif self._active_key == key:
+                # The active calculation is already the newest request.
+                self._pending_job = None
+            else:
+                # Keep one newest request instead of accumulating a Future for
+                # every opponent discard and every changed visible-tile key.
+                self._pending_job = job
         return self._payload("running", key, immediate)
+
+    def _collect_finished_locked(self) -> None:
+        future = self._active_future
+        if future is None or not future.done():
+            return
+        completed_key = self._active_key
+        self._active_future = None
+        self._active_key = ""
+        try:
+            self._remember_result_locked(completed_key, future.result())
+        except Exception:
+            # An estimate is optional; the immediate deterministic route list
+            # remains available even if a background trial fails.
+            pass
+        pending = self._pending_job
+        self._pending_job = None
+        if pending is not None and not self._closed:
+            self._submit_locked(pending)
+
+    def _submit_locked(self, job: tuple[str, list[str], list[str], int]) -> None:
+        key, hand, visible, open_melds = job
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mahjong-yakuman")
+        self._active_key = key
+        self._active_future = self._executor.submit(
+            monte_carlo_yakuman,
+            hand,
+            visible_tiles=visible,
+            open_melds=open_melds,
+            max_trials=self.max_trials,
+            time_budget_ms=self.time_budget_ms,
+            seed=None,
+        )
+
+    def _remember_result_locked(self, key: str, result: list[YakumanEstimate]) -> None:
+        if not key:
+            return
+        self._results[key] = result
+        self._results.move_to_end(key)
+        while len(self._results) > self.result_cache_size:
+            self._results.popitem(last=False)
+
+    def runtime_stats(self) -> dict[str, int | bool]:
+        with self._lock:
+            self._collect_finished_locked()
+            return {
+                "worker_started": self._executor is not None,
+                "active_jobs": int(self._active_future is not None),
+                "pending_jobs": int(self._pending_job is not None),
+                "cached_results": len(self._results),
+                "result_cache_size": self.result_cache_size,
+            }
 
     def _payload(self, status: str, key: str, routes: list[YakumanEstimate]) -> dict[str, Any]:
         return {
@@ -221,7 +291,19 @@ class YakumanEstimateService:
         }
 
     def close(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        with self._lock:
+            self._closed = True
+            self._pending_job = None
+            future = self._active_future
+            self._active_future = None
+            self._active_key = ""
+            self._results.clear()
+            executor = self._executor
+            self._executor = None
+        if future is not None:
+            future.cancel()
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
 
 def route_distance(route: str, hand_tiles: list[str], *, open_melds: int = 0) -> int:

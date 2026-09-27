@@ -34,6 +34,37 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 from main_logic.core import LLMSessionManager  # noqa: E402
 
 
+@pytest.mark.asyncio
+async def test_plugin_delivery_receipt_reports_host_acceptance(monkeypatch) -> None:
+    from app.main_server import character_runtime
+
+    published: list[dict] = []
+
+    async def publish(event: dict) -> bool:
+        published.append(event)
+        return True
+
+    monkeypatch.setattr(character_runtime, "publish_session_event", publish)
+
+    await character_runtime._publish_plugin_delivery_receipt(
+        {
+            "source_name": "mahjong_coach",
+            "metadata": {"delivery_id": "delivery-1"},
+        },
+        stage="host_received",
+    )
+
+    assert published == [
+        {
+            "event_type": "plugin_delivery_receipt",
+            "plugin_id": "mahjong_coach",
+            "delivery_id": "delivery-1",
+            "stage": "host_received",
+            "reason": "",
+        }
+    ]
+
+
 class _ClientState:
     """Stand-in for FastAPI's ``WebSocketState`` enum.
 

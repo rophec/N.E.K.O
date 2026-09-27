@@ -25,6 +25,14 @@ on:
         options:
           - 'true'
           - 'false'
+      windows_onnxruntime:
+        description: 'Windows inference runtime (DirectML default; CUDA requires NVIDIA CUDA 12.x + cuDNN 9)'
+        required: false
+        default: 'directml'
+        type: choice
+        options:
+          - 'directml'
+          - 'cuda'
 
 env:
   PYTHON_VERSION: '3.11'
@@ -120,6 +128,14 @@ jobs:
           # bundled OCR backend without the opencv/shapely dependency chain.
           uv sync --group galgame
           uv pip install --python .venv nuitka ordered-set zstandard
+
+      - name: Select optional Windows CUDA runtime
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.windows_onnxruntime == 'cuda'
+        shell: bash
+        run: |
+          uv run python scripts/configure_windows_onnxruntime.py \
+            --python .venv/Scripts/python.exe \
+            --provider cuda
 
       - name: Prepare filtered built-in plugins for Nuitka
         shell: bash

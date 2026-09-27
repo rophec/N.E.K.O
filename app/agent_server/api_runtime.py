@@ -275,6 +275,29 @@ def _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id
 
 async def _on_session_event(event: Dict[str, Any]) -> None:
     event_type = (event or {}).get("event_type")
+    if event_type == "plugin_delivery_receipt":
+        plugin_id = str((event or {}).get("plugin_id") or "")
+        delivery_id = str((event or {}).get("delivery_id") or "")
+        if plugin_id and delivery_id:
+            from plugin.server.messaging.plane_bridge import publish_record
+
+            publish_record(
+                store="events",
+                topic="all",
+                record={
+                    "type": "plugin_delivery_receipt",
+                    "plugin_id": plugin_id,
+                    "source": "main_server",
+                    "event_id": delivery_id,
+                    "timestamp": time.time(),
+                    "metadata": {
+                        "delivery_id": delivery_id,
+                        "stage": str((event or {}).get("stage") or "host_received"),
+                        "reason": str((event or {}).get("reason") or ""),
+                    },
+                },
+            )
+        return
     if event_type == "agent_intent_restore_signal":
         # First-real-client-session signal from main_server (sent on
         # ``greeting_check``). Restore persisted agent runtime intent now

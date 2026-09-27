@@ -82,6 +82,7 @@ async def refresh_plugins_endpoint(_: str = require_admin) -> dict[str, object]:
 @router.post("/plugin/{plugin_id}/reload")
 async def reload_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
+        await ensure_plugin_messaging_started()
         return await lifecycle_service.reload_plugin(plugin_id)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
@@ -96,6 +97,7 @@ async def reload_all_plugins_endpoint(_: str = require_admin) -> dict[str, objec
     用于前端全局重载按钮。
     """
     try:
+        await ensure_plugin_messaging_started()
         return await lifecycle_service.reload_all_plugins()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)

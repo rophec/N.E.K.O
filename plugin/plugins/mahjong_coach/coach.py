@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import time
 from collections import Counter
 from copy import deepcopy
@@ -21,10 +22,13 @@ from .perception.settlement_detector import (
     SettlementTransition,
     detect_settlement_path,
 )
-from .perception.table_context import TableContextResult, detect_table_context
+from .perception.table_context import (
+    TableContextResult,
+    detect_table_context,
+    reconcile_riichi_stick_count,
+)
 from .perception.yolo26_visible_tiles import Yolo26TableStateResult, detect_yolo26_table_state_path
 from .tile_labels import hand_signature, is_honor, is_simple, is_terminal, normalize_tile, tile_rank, tile_suit
-from .yakuman import assess_yakuman_routes
 
 
 CRITICAL_BUTTONS = {"chi", "pon", "kan", "ron", "tsumo", "riichi"}
@@ -39,6 +43,7 @@ TILE_TYPES = [f"{rank}{suit}" for suit in ("m", "p", "s") for rank in range(1, 1
 ORPHAN_TYPES = {"1m", "9m", "1p", "9p", "1s", "9s", "1z", "2z", "3z", "4z", "5z", "6z", "7z"}
 
 _RIICHI_SUIT_THRESHOLD = 7
+_RIICHI_HIGH_CONFIDENCE = 0.88
 _FAST_SUIT_THRESHOLD = 9
 _RIICHI_PAIR_THRESHOLD = 4
 _FAST_PAIR_THRESHOLD = 5
@@ -47,6 +52,8 @@ _FAST_SIMPLE_THRESHOLD = 8
 _ROUND_HISTORY_LIMIT = 2
 _RIVER_FULL_RESCAN_INTERVAL = 8
 _RIVER_CORRECTION_CONFIRM_FRAMES = 2
+_SELF_MELD_CONFIRM_FRAMES = 2
+_OPPONENT_MELD_CONFIRM_FRAMES = 2
 _RIVER_MATCH_MIN_IOU = 0.25
 _GAME_SCENE_CONFIRM_FRAMES = 2
 _SELF_CALL_CLAIM_MAX_AGE_SECONDS = 15.0
@@ -100,11 +107,16 @@ class RoundCoachEngine:
         self._last_game_scene_result: GameSceneResult | None = None
         self._last_table_context_result: TableContextResult | None = None
         self._table_context_scan_pending = True
+        # Match-scoped invariant; deliberately survives reset_round().
+        self._table_point_pool_total: int | None = None
         self._game_scene_confirmation_frames = 0
         self._game_scene_confirmed = False
         self._river_frames_since_full_scan = 0
         self._river_correction_candidates: dict[str, dict[str, Any]] = {}
+        self._self_meld_candidate: dict[str, Any] = {}
+        self._opponent_meld_candidates: dict[str, dict[str, Any]] = {}
         self._pending_self_call_claim: dict[str, Any] = {}
+        self._last_riichi_detection_meta: dict[str, Any] = {}
         self._new_round_candidate_frames = 0
         self._new_round_candidate_tiles: list[str] = []
         self._settlement_tracker = SettlementTracker(
@@ -119,8 +131,11 @@ class RoundCoachEngine:
         self._round_history: list[dict[str, Any]] = []
         self._round_archive_index = 0
         self._settlement_archived_for_round = False
+        self._companion_reference_tiles: list[str] = []
+        self._last_strategy_result: dict[str, Any] = {}
 
     def reset_round(self, round_id: str = "default") -> RoundCoachState:
+        self.release_transient_resources()
         self.state = RoundCoachState(
             round_id=round_id or "default",
             play_style=self.config.play_style,
@@ -137,14 +152,38 @@ class RoundCoachEngine:
         self._table_context_scan_pending = True
         self._river_frames_since_full_scan = 0
         self._river_correction_candidates = {}
+        self._self_meld_candidate = {}
+        self._opponent_meld_candidates = {}
         self._pending_self_call_claim = {}
+        self._last_riichi_detection_meta = {}
         self._clear_new_round_candidate()
         self._settlement_tracker.reset()
         self._clear_settlement_new_hand_candidate()
         self._pre_settlement_round_phase = ""
         self._pre_settlement_update_reason = ""
         self._settlement_archived_for_round = False
+        self._companion_reference_tiles = []
+        self._last_strategy_result = {}
         return self.state
+
+    def release_transient_resources(self) -> None:
+        """Release frame-sized caches without changing the strategic round state."""
+        scene = self._last_game_scene_result
+        surface = scene.table_surface if scene is not None else None
+        warped = surface.warped_image if surface is not None else None
+        if warped is not None:
+            with contextlib.suppress(Exception):
+                warped.close()
+        self._last_game_scene_path = None
+        self._last_game_scene_identity = None
+        self._last_game_scene_result = None
+        self._last_yolo26_path = None
+        self._last_yolo26_identity = None
+        self._last_yolo26_result = None
+        self._last_fingerprints = {}
+        self._self_meld_candidate = {}
+        self._opponent_meld_candidates = {}
+        self._last_riichi_detection_meta = {}
 
     def request_full_rescan(self) -> None:
         # 中文：遮挡恢复后的候选新手牌必须再完整识别一帧，不能被指纹快路径跳过。
@@ -157,6 +196,19 @@ class RoundCoachEngine:
     @property
     def round_history(self) -> list[dict[str, Any]]:
         return deepcopy(self._round_history)
+
+    def runtime_stats(self) -> dict[str, Any]:
+        return {
+            "fingerprint_entries": len(self._last_fingerprints),
+            "river_correction_candidates": len(self._river_correction_candidates),
+            "opponent_meld_candidates": len(self._opponent_meld_candidates),
+            "self_meld_candidate": bool(self._self_meld_candidate),
+            "yolo_frame_cached": self._last_yolo26_result is not None,
+            "game_scene_frame_cached": self._last_game_scene_result is not None,
+            "round_history_entries": len(self._round_history),
+            "river_discard_entries": _discard_count(self.state.last_discard_piles),
+            "strategy": strategy_runtime_stats(),
+        }
 
     @property
     def last_round_archive(self) -> dict[str, Any]:
@@ -308,6 +360,21 @@ class RoundCoachEngine:
         hand_result = self._detect_hand(path)
         meld_result = self._detect_melds(path, hand_result=hand_result)
         current_tiles = [normalize_tile(tile) for tile in hand_result.hand_tiles if normalize_tile(tile)]
+        if (
+            _expected_open_melds_from_closed_count(len(current_tiles)) == 0
+            and int(meld_result.open_meld_count or 0) > 0
+        ):
+            meld_result = MeldStateResult(
+                reason="self_meld_hand_count_mismatch",
+                elapsed_ms=meld_result.elapsed_ms,
+                raw_detections=list(meld_result.raw_detections),
+                analysis_hints={
+                    **meld_result.analysis_hints,
+                    "self_meld_rejected": True,
+                    "self_meld_closed_hand_count": len(current_tiles),
+                    "self_meld_expected_count": 0,
+                },
+            )
         plausible_opening = (
             hand_result.ok
             and 12 <= len(current_tiles) <= 14
@@ -523,12 +590,37 @@ class RoundCoachEngine:
         ):
             return self._last_game_scene_result
         result = detect_game_scene_path(path)
+        previous = self._last_game_scene_result
+        if previous is not result and previous is not None and previous.table_surface is not None:
+            warped = previous.table_surface.warped_image
+            if warped is not None:
+                with contextlib.suppress(Exception):
+                    warped.close()
         self._last_game_scene_path = path
         self._last_game_scene_identity = frame_identity
         self._last_game_scene_result = result
         return result
 
     def _observe_table_context(self, path: ImageSource | None) -> TableContextResult:
+        # The distributed companion only reacts to table events and never uses
+        # placement-aware strategy.  Score/counter OCR loads a separate model
+        # and used to run once per hand even though its result was discarded.
+        # Keep the legacy path available for offline/strategy callers, but do
+        # not put it on the companion runtime's capture loop.
+        if self.config.companion_only_runtime:
+            if (
+                not self._table_context_scan_pending
+                and self._last_table_context_result is not None
+                and self._last_table_context_result.reason == "disabled_companion_only"
+            ):
+                return self._last_table_context_result
+            self._table_context_scan_pending = False
+            self.state.table_context_reason = "disabled_companion_only"
+            self.state.table_context_pending_signature = ""
+            self.state.table_context_pending_frames = 0
+            result = TableContextResult(reason="disabled_companion_only")
+            self._last_table_context_result = result
+            return result
         if not self._table_context_scan_pending:
             return self._last_table_context_result or TableContextResult(reason="table_context_already_scanned")
         if path is None:
@@ -550,6 +642,33 @@ class RoundCoachEngine:
             path,
             table_surface_result=scene.table_surface,
         )
+        if result.ok:
+            raw_riichi_count = result.riichi_stick_count
+            resolved_count, point_pool_total, counter_source = reconcile_riichi_stick_count(
+                result.scores,
+                raw_riichi_count,
+                point_pool_total=self._table_point_pool_total,
+            )
+            if point_pool_total is not None:
+                self._table_point_pool_total = int(point_pool_total)
+            counter_reads = {
+                key: dict(value)
+                for key, value in result.counter_reads.items()
+            }
+            riichi_read = counter_reads.setdefault("riichi_stick_count", {})
+            riichi_read.update(
+                {
+                    "ocr_value": raw_riichi_count,
+                    "value": resolved_count,
+                    "source": counter_source,
+                    "point_pool_total": self._table_point_pool_total,
+                }
+            )
+            result = replace(
+                result,
+                riichi_stick_count=resolved_count,
+                counter_reads=counter_reads,
+            )
         self._last_table_context_result = result
         self.state.table_context_reason = result.reason
         if not result.ok:
@@ -564,6 +683,7 @@ class RoundCoachEngine:
         if result.riichi_stick_count is not None:
             self.state.table_riichi_stick_count = int(result.riichi_stick_count)
             self.state.last_riichi_stick_count = int(result.riichi_stick_count)
+            self.state.riichi_stick_baseline = int(result.riichi_stick_count)
         self.state.table_context_confidence = round(float(result.confidence), 4)
         self.state.table_context_reason = "table_context_confirmed"
         self.state.table_context_pending_signature = ""
@@ -571,17 +691,25 @@ class RoundCoachEngine:
         return result
 
     def _table_context_perception(self) -> dict[str, Any]:
+        scan_policy = (
+            "disabled_companion_only"
+            if self.config.companion_only_runtime
+            else "once_per_hand"
+        )
         if self._last_table_context_result is None:
             return {
                 "ok": False,
                 "reason": self.state.table_context_reason or "table_context_not_scanned",
                 "confirmed": bool(self.state.player_scores),
                 "round_scan_pending": self._table_context_scan_pending,
+                "scan_policy": scan_policy,
             }
         payload = self._last_table_context_result.to_dict()
         payload["confirmed"] = bool(self.state.player_scores)
         payload["confirmation_frames"] = self.state.table_context_pending_frames
         payload["round_scan_pending"] = self._table_context_scan_pending
+        payload["scan_policy"] = scan_policy
+        payload["scan_consumed"] = not self._table_context_scan_pending
         payload["committed_scores"] = dict(self.state.player_scores)
         payload["committed_ranks"] = dict(self.state.player_ranks)
         return payload
@@ -646,6 +774,7 @@ class RoundCoachEngine:
         require_game_scene: bool = False,
     ) -> CoachDecision:
         started = time.perf_counter()
+        self._last_riichi_detection_meta = {}
         path: ImageSource | None = image if image is not None else (Path(image_path) if image_path else None)
         riichi_players = [str(item) for item in (riichi_players or []) if str(item).strip()]
 
@@ -676,6 +805,8 @@ class RoundCoachEngine:
         if not self.state.opening_emitted:
             hand_result = self._detect_hand(path)
             meld_result = self._detect_melds(path, hand_result=hand_result)
+            meld_result = self._stabilize_self_melds(hand_result, meld_result)
+            hand_result = self._validate_hand_meld_consistency(hand_result, meld_result)
             self._detect_riichi_players(path)
             if meld_result.ok:
                 self._remember_melds(meld_result)
@@ -735,6 +866,7 @@ class RoundCoachEngine:
             and not fp["hand_changed"]
             and not fp.get("river_changed", True)
             and self._new_round_candidate_frames == 0
+            and not self.state.riichi_pending
         ):
             river_result = self._river_result_from_state("fingerprint_no_change")
             return self._observe_decision(
@@ -746,6 +878,7 @@ class RoundCoachEngine:
             )
 
         previous_hand_tiles = list(self.state.last_hand_tiles)
+        previous_open_meld_count = int(self.state.last_open_meld_count or 0)
         hand_result, meld_result = self._detect_and_remember(path)
         round_transition = self._maybe_confirm_yolo26_new_round(
             path=path,
@@ -756,12 +889,23 @@ class RoundCoachEngine:
         )
         if round_transition is not None:
             return round_transition
+        current_open_meld_count = int(
+            meld_result.open_meld_count
+            if meld_result is not None and meld_result.ok
+            else self.state.last_open_meld_count or 0
+        )
+        if hand_result.ok and current_open_meld_count == previous_open_meld_count:
+            self._observe_player_discard(previous_hand_tiles, hand_result.hand_tiles)
 
         call_buttons = [button for button in critical if button in CALL_BUTTONS]
         riichi_buttons = [button for button in critical if button == "riichi"]
         if self.config.critical_action_interrupts and (call_buttons or riichi_buttons):
             river_result = self._river_result_from_state("action_window_uses_cached_river")
-            if call_buttons and self._uses_live_river_tracking():
+            # A call prompt is itself a critical event. Refresh the river once
+            # even when normal tracking uses checkpoints; otherwise the default
+            # configuration cannot identify the just-discarded tile and can
+            # only produce vague conditional chi/pon advice.
+            if call_buttons:
                 river_result, claimed_tile = self._call_window_river(path, call_buttons)
                 if claimed_tile:
                     action_meta = {
@@ -781,11 +925,11 @@ class RoundCoachEngine:
         river_result = self._track_river_for_frame(path, "live_river_tracking") if self._uses_live_river_tracking() else None
 
         if riichi_players:
-            self.state.riichi_players = list(riichi_players)
+            self._commit_riichi_players(riichi_players)
         elif self.state.opening_emitted and self.state.update_count >= 2:
             riichi_players = self._detect_riichi_players(path)
             if riichi_players:
-                self.state.riichi_players = list(riichi_players)
+                self._commit_riichi_players(riichi_players)
 
         if riichi_players:
             if river_result is None:
@@ -820,13 +964,14 @@ class RoundCoachEngine:
         summary, detail, reason_codes = self._observe_message(hand_result)
         if hand_result.ok and hand_result.hand_tiles:
             self.state.last_hand_tiles = [normalize_tile(t) for t in hand_result.hand_tiles if normalize_tile(t)]
+        companion_only = self.config.companion_only_runtime
         return CoachDecision(
             decision_type="observe",
             priority=5,
             action_required=False,
             summary=summary,
             detail=detail,
-            suggestion=self.state.current_plan,
+            suggestion="" if companion_only else self.state.current_plan,
             hand_tiles=list(hand_result.hand_tiles),
             reason_codes=reason_codes,
             coach_state=self.state.to_dict(),
@@ -836,6 +981,7 @@ class RoundCoachEngine:
                 "action": action_meta,
                 "river": river_result.to_dict(),
                 "meld": meld_result.to_dict() if meld_result is not None else {},
+                "strategy": {} if companion_only else self._cached_strategy_for_hand(hand_result.hand_tiles),
             },
             engine_meta=self._meta(started, "observe"),
         )
@@ -904,12 +1050,241 @@ class RoundCoachEngine:
     def _detect_and_remember(self, path: Path | None) -> tuple[FastHandResult, MeldStateResult]:
         hand_result = self._detect_hand(path)
         meld_result = self._detect_melds(path, hand_result=hand_result)
+        meld_result = self._stabilize_self_melds(hand_result, meld_result)
+        hand_result = self._validate_hand_meld_consistency(hand_result, meld_result)
         if meld_result.ok:
             self._remember_melds(meld_result)
         hand_result = self._accept_plausible_open_hand(hand_result, meld_result)
         if hand_result.ok:
             self._remember_hand(hand_result)
         return hand_result, meld_result
+
+    def _stabilize_self_melds(
+        self,
+        hand_result: FastHandResult,
+        detected: MeldStateResult,
+    ) -> MeldStateResult:
+        """Accept a new self meld only after spatial/count evidence stays stable."""
+        previous_count = int(self.state.last_open_meld_count or 0)
+        detected_count = int(detected.open_meld_count or 0) if detected.ok else 0
+        closed_count = len(
+            [tile for tile in hand_result.hand_tiles if normalize_tile(tile)]
+        )
+        expected_count = _expected_open_melds_from_closed_count(closed_count)
+
+        if detected_count <= 0:
+            if expected_count and previous_count == 0:
+                signature = f"closed_hand_only:{closed_count}:{expected_count}"
+                previous = dict(self._self_meld_candidate)
+                confirmations = (
+                    int(previous.get("confirmations") or 0) + 1
+                    if previous.get("signature") == signature
+                    else 1
+                )
+                self._self_meld_candidate = {
+                    "signature": signature,
+                    "confirmations": confirmations,
+                    "detected_count": expected_count,
+                }
+                if confirmations >= _SELF_MELD_CONFIRM_FRAMES:
+                    self._self_meld_candidate = {}
+                    return MeldStateResult(
+                        ok=True,
+                        open_meld_count=expected_count,
+                        melds=[
+                            {
+                                "player": "self",
+                                "meld_index": index,
+                                "tiles": [],
+                                "source": "closed_hand_count_inference",
+                            }
+                            for index in range(1, expected_count + 1)
+                        ],
+                        confidence=round(float(hand_result.confidence) * 0.75, 4),
+                        reason="self_meld_inferred_from_stable_hand_count",
+                        elapsed_ms=detected.elapsed_ms,
+                        raw_detections=list(detected.raw_detections),
+                        analysis_hints={
+                            **detected.analysis_hints,
+                            "tile_identity_reliable": False,
+                            "self_meld_stable": True,
+                            "self_meld_inferred_from_closed_hand_count": True,
+                            "self_meld_closed_hand_count": closed_count,
+                            "self_meld_expected_count": expected_count,
+                            "self_meld_confirmation_frames": confirmations,
+                        },
+                    )
+                return self._cached_self_meld_result(
+                    detected,
+                    reason="self_meld_hand_count_pending_confirmation",
+                    hints={
+                        "self_meld_pending": True,
+                        "self_meld_inferred_from_closed_hand_count": True,
+                        "self_meld_confirmation_frames": confirmations,
+                        "self_meld_required_frames": _SELF_MELD_CONFIRM_FRAMES,
+                        "self_meld_closed_hand_count": closed_count,
+                        "self_meld_expected_count": expected_count,
+                    },
+                )
+            self._self_meld_candidate = {}
+            return self._cached_self_meld_result(
+                detected,
+                reason=detected.reason or "no_self_melds",
+            )
+
+        complete_groups = all(
+            len(_meld_payload_tiles(meld)) in {3, 4}
+            for meld in detected.melds
+            if isinstance(meld, dict)
+        ) and len(detected.melds) == detected_count
+        spatially_separated = _self_meld_spatially_separated(hand_result, detected)
+        count_consistent = expected_count is None or detected_count == expected_count
+        if (
+            not complete_groups
+            or spatially_separated is False
+            or not count_consistent
+            or detected_count < previous_count
+        ):
+            self._self_meld_candidate = {}
+            rejected_reason = (
+                "self_meld_incomplete_geometry"
+                if not complete_groups
+                else "self_meld_spatial_overlap"
+                if spatially_separated is False
+                else "self_meld_hand_count_mismatch"
+                if not count_consistent
+                else "self_meld_count_regression"
+            )
+            return self._cached_self_meld_result(
+                detected,
+                reason=rejected_reason,
+                hints={
+                    "self_meld_rejected": True,
+                    "self_meld_detected_count": detected_count,
+                    "self_meld_previous_count": previous_count,
+                    "self_meld_closed_hand_count": closed_count,
+                    "self_meld_expected_count": expected_count,
+                    "self_meld_spatially_separated": spatially_separated,
+                },
+            )
+
+        # An already confirmed count may refresh its tile identities immediately.
+        if detected_count == previous_count and previous_count > 0:
+            self._self_meld_candidate = {}
+            return replace(
+                detected,
+                analysis_hints={
+                    **detected.analysis_hints,
+                    "self_meld_stable": True,
+                    "self_meld_confirmation_frames": _SELF_MELD_CONFIRM_FRAMES,
+                },
+            )
+
+        signature = _self_meld_signature(detected)
+        previous = dict(self._self_meld_candidate)
+        confirmations = (
+            int(previous.get("confirmations") or 0) + 1
+            if previous.get("signature") == signature
+            else 1
+        )
+        self._self_meld_candidate = {
+            "signature": signature,
+            "confirmations": confirmations,
+            "detected_count": detected_count,
+        }
+        call_evidence = self._pending_self_call_is_current(
+            expected_new_count=detected_count,
+            previous_count=previous_count,
+        )
+        if confirmations < _SELF_MELD_CONFIRM_FRAMES and not call_evidence:
+            return self._cached_self_meld_result(
+                detected,
+                reason="self_meld_pending_confirmation",
+                hints={
+                    "self_meld_pending": True,
+                    "self_meld_confirmation_frames": confirmations,
+                    "self_meld_required_frames": _SELF_MELD_CONFIRM_FRAMES,
+                    "self_meld_detected_count": detected_count,
+                    "self_meld_closed_hand_count": closed_count,
+                    "self_meld_expected_count": expected_count,
+                    "self_meld_spatially_separated": spatially_separated,
+                },
+            )
+
+        self._self_meld_candidate = {}
+        return replace(
+            detected,
+            analysis_hints={
+                **detected.analysis_hints,
+                "self_meld_stable": True,
+                "self_meld_confirmation_frames": confirmations,
+                "self_meld_confirmed_by_call_window": call_evidence,
+                "self_meld_closed_hand_count": closed_count,
+                "self_meld_expected_count": expected_count,
+                "self_meld_spatially_separated": spatially_separated,
+            },
+        )
+
+    def _cached_self_meld_result(
+        self,
+        detected: MeldStateResult,
+        *,
+        reason: str,
+        hints: dict[str, Any] | None = None,
+    ) -> MeldStateResult:
+        count = int(self.state.last_open_meld_count or 0)
+        return MeldStateResult(
+            ok=count > 0,
+            open_meld_count=count,
+            melds=[deepcopy(item) for item in self.state.last_melds],
+            tiles=list(self.state.last_meld_tiles),
+            confidence=float(self.state.last_meld_confidence),
+            reason=reason,
+            elapsed_ms=detected.elapsed_ms,
+            raw_detections=list(detected.raw_detections),
+            analysis_hints={**detected.analysis_hints, **(hints or {})},
+        )
+
+    def _pending_self_call_is_current(
+        self,
+        *,
+        expected_new_count: int,
+        previous_count: int,
+    ) -> bool:
+        pending = self._pending_self_call_claim
+        observed_at = float(pending.get("observed_at") or 0.0)
+        return bool(
+            pending
+            and observed_at > 0.0
+            and time.monotonic() - observed_at <= _SELF_CALL_CLAIM_MAX_AGE_SECONDS
+            and expected_new_count == previous_count + 1
+            and int(pending.get("previous_open_meld_count") or 0) == previous_count
+        )
+
+    def _validate_hand_meld_consistency(
+        self,
+        hand_result: FastHandResult,
+        meld_result: MeldStateResult,
+    ) -> FastHandResult:
+        if not hand_result.ok:
+            return hand_result
+        closed_count = len(
+            [tile for tile in hand_result.hand_tiles if normalize_tile(tile)]
+        )
+        effective_count = closed_count + 3 * int(meld_result.open_meld_count or 0)
+        if 12 <= effective_count <= 14:
+            return hand_result
+        return replace(
+            hand_result,
+            ok=False,
+            reason="hand_meld_count_mismatch",
+            analysis_hints={
+                **hand_result.analysis_hints,
+                "closed_hand_count": closed_count,
+                "confirmed_open_meld_count": int(meld_result.open_meld_count or 0),
+                "effective_hand_count": effective_count,
+            },
+        )
 
     def _maybe_confirm_yolo26_new_round(
         self,
@@ -922,21 +1297,59 @@ class RoundCoachEngine:
     ) -> CoachDecision | None:
         # 中文：新局必须同时满足“旧牌河明显存在、当前牌河归零、新手牌稳定”，并连续两帧确认。
         # English: Confirm a new round for two frames using an old populated river, a reset river, and a stable new hand.
-        if not self._uses_yolo26_tiles() or path is None or not hand_result.ok:
+        if not self._uses_yolo26_tiles() or path is None:
             self._clear_new_round_candidate()
             return None
 
         previous_river_count = _discard_count(self.state.last_discard_piles)
-        current_tiles = [normalize_tile(tile) for tile in hand_result.hand_tiles if normalize_tile(tile)]
         yolo_result = self._detect_yolo26_table(path)
+        raw_hand_result = yolo_result.to_hand_result(min_hand_tiles=12)
+        raw_meld_result = yolo_result.to_meld_result()
         current_river_count = _discard_count(yolo_result.discard_piles)
         river_ok = yolo_result.ok if yolo_result.river_inference_ok is None else yolo_result.river_inference_ok
+        raw_hand_tiles = [
+            normalize_tile(tile)
+            for tile in yolo_result.hand_tiles
+            if normalize_tile(tile)
+        ]
+        raw_meld_tiles = [
+            normalize_tile(tile)
+            for tile in yolo_result.meld_tiles
+            if normalize_tile(tile)
+        ]
+        # Use the raw current-frame hand for boundary detection.  The normal
+        # meld stabilizer intentionally keeps confirmed calls monotonic inside
+        # one hand; if it still contains the previous hand's calls, its
+        # consistency guard can mark a genuine 13-tile new hand invalid before
+        # the round-boundary detector gets a chance to clear that cache.
+        current_tiles = list(raw_hand_tiles)
+        combined_self_tiles = [*raw_hand_tiles, *raw_meld_tiles]
+        # A previous hand's monotonic meld stabilizer can temporarily keep three
+        # old calls alive on the first frame of the next hand.  The detector can
+        # also partition bottom-row opening tiles into the adjacent self-meld
+        # shelf.  When the old river is populated and the raw river has reset,
+        # treat a stable 12-14 tile union as the new closed hand instead of
+        # requiring the stale/partitioned meld count to already be zero.
+        recovered_opening_partition = (
+            len(current_tiles) < 12
+            and 12 <= len(combined_self_tiles) <= 14
+            and bool(raw_meld_tiles)
+        )
+        if recovered_opening_partition:
+            current_tiles = combined_self_tiles
+        raw_open_meld_count = len(yolo_result.melds)
+        immediate_river_reset = current_river_count <= 2
+        late_round_river_reset = (
+            previous_river_count >= 12
+            and current_river_count <= 12
+            and current_river_count * 3 <= previous_river_count
+        )
         plausible_opening = (
             river_ok
             and 12 <= len(current_tiles) <= 14
-            and int(meld_result.open_meld_count or 0) == 0
+            and (raw_open_meld_count == 0 or recovered_opening_partition)
             and previous_river_count >= 4
-            and current_river_count <= 2
+            and (immediate_river_reset or late_round_river_reset)
         )
         if not plausible_opening:
             self._clear_new_round_candidate()
@@ -961,19 +1374,46 @@ class RoundCoachEngine:
             return None
 
         raw_river = yolo_result.to_river_result()
+        # Commit the raw current-frame partition after the boundary is
+        # confirmed.  Reusing the stabilized meld result here would copy the
+        # previous hand's monotonic meld cache into the new round.
+        opening_hand_result = raw_hand_result
+        opening_meld_result = raw_meld_result
+        if recovered_opening_partition:
+            opening_hand_result = replace(
+                raw_hand_result,
+                ok=True,
+                hand_tiles=list(current_tiles),
+                reason="new_round_recovered_closed_hand",
+                analysis_hints={
+                    **raw_hand_result.analysis_hints,
+                    "new_round_recovered_closed_hand": True,
+                    "recovered_hand_tile_count": len(current_tiles),
+                    "discarded_stale_meld_count": int(meld_result.open_meld_count or 0),
+                },
+            )
+            opening_meld_result = MeldStateResult(
+                ok=False,
+                open_meld_count=0,
+                reason="new_round_cleared_stale_melds",
+                analysis_hints={
+                    "new_round_recovered_closed_hand": True,
+                    "raw_partitioned_meld_count": raw_open_meld_count,
+                },
+            )
         self._auto_round_index += 1
         self.reset_round(f"auto-round-{self._auto_round_index}")
-        self._remember_hand(hand_result)
-        if meld_result.ok:
-            self._remember_melds(meld_result)
+        self._remember_hand(opening_hand_result)
+        if opening_meld_result.ok:
+            self._remember_melds(opening_meld_result)
         if raw_river.ok:
             self._remember_river(raw_river)
         decision = self._opening_decision(
-            hand_result,
+            opening_hand_result,
             raw_river,
             started,
             action_meta={"source": "auto_new_round_detection", "skipped": True},
-            meld_result=meld_result,
+            meld_result=opening_meld_result,
         )
         self.state.last_update_reason = "auto_new_round_detected"
         return replace(
@@ -986,6 +1426,8 @@ class RoundCoachEngine:
                 "previous_river_count": previous_river_count,
                 "current_river_count": current_river_count,
                 "confirmation_frames": 2,
+                "recovered_opening_partition": recovered_opening_partition,
+                "late_round_river_reset": late_round_river_reset,
             },
         )
 
@@ -1004,10 +1446,10 @@ class RoundCoachEngine:
             return hand_result
         count = len([tile for tile in hand_result.hand_tiles if normalize_tile(tile)])
         inferred_open_melds = _inferred_open_melds_from_closed_count(count)
-        if inferred_open_melds <= 0:
+        if inferred_open_melds <= 0 or meld_result is None or not meld_result.ok:
             return hand_result
-        if meld_result is not None and meld_result.ok:
-            inferred_open_melds = max(inferred_open_melds, int(meld_result.open_meld_count or 0))
+        if int(meld_result.open_meld_count or 0) != inferred_open_melds:
+            return hand_result
         self.state.last_open_meld_count = max(self.state.last_open_meld_count, inferred_open_melds)
         return replace(
             hand_result,
@@ -1100,6 +1542,16 @@ class RoundCoachEngine:
             if self._uses_live_river_tracking():
                 self._river_frames_since_full_scan = 0
                 self._river_correction_candidates = {}
+                stable_melds, meld_hints = self._stabilize_opponent_meld_snapshot(
+                    river_result.opponent_melds,
+                    confirm_new=True,
+                )
+                river_result = replace(
+                    river_result,
+                    opponent_melds=stable_melds,
+                    opponent_meld_tiles=_opponent_meld_tiles(stable_melds),
+                    analysis_hints={**river_result.analysis_hints, **meld_hints},
+                )
             self._remember_river(river_result)
             if river_result.reason:
                 return river_result
@@ -1128,9 +1580,13 @@ class RoundCoachEngine:
             player: [dict(item) for item in items]
             for player, items in self.state.last_discard_piles.items()
         }
+        stable_current_melds, meld_hints = self._stabilize_opponent_meld_snapshot(
+            delta_result.opponent_melds,
+            confirm_new=True,
+        )
         opponent_melds = _merge_opponent_meld_snapshots(
             self.state.last_opponent_melds,
-            delta_result.opponent_melds,
+            stable_current_melds,
         )
         opponent_meld_tiles = _opponent_meld_tiles(opponent_melds)
         appended: list[dict[str, Any]] = []
@@ -1166,6 +1622,7 @@ class RoundCoachEngine:
         ]
         hints = {
             **delta_result.analysis_hints,
+            **meld_hints,
             "incremental": True,
             "river_full_rescan": False,
             "river_corrected_count": 0,
@@ -1197,9 +1654,13 @@ class RoundCoachEngine:
             player: [dict(item) for item in items]
             for player, items in self.state.last_discard_piles.items()
         }
+        stable_current_melds, meld_hints = self._stabilize_opponent_meld_snapshot(
+            snapshot.opponent_melds,
+            confirm_new=confirm_new,
+        )
         opponent_melds = _merge_opponent_meld_snapshots(
             self.state.last_opponent_melds,
-            snapshot.opponent_melds,
+            stable_current_melds,
         )
         active_candidate_keys: set[str] = set()
         corrected: list[dict[str, Any]] = []
@@ -1287,6 +1748,7 @@ class RoundCoachEngine:
         ]
         hints = {
             **snapshot.analysis_hints,
+            **meld_hints,
             "incremental": False,
             "river_full_rescan": True,
             "river_corrected_count": len(corrected),
@@ -1311,6 +1773,51 @@ class RoundCoachEngine:
             raw_detections=snapshot.raw_detections,
             analysis_hints=hints,
         )
+
+    def _stabilize_opponent_meld_snapshot(
+        self,
+        current: dict[str, list[dict[str, Any]]],
+        *,
+        confirm_new: bool,
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+        """Keep a one-frame outer-shelf false positive out of public state."""
+        accepted: dict[str, list[dict[str, Any]]] = {}
+        active_keys: set[str] = set()
+        pending_count = 0
+        confirmed_count = 0
+        for owner, items in current.items():
+            cached_items = self.state.last_opponent_melds.get(owner, [])
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if _match_opponent_meld_index(cached_items, item, set()) is not None:
+                    accepted.setdefault(owner, []).append(deepcopy(item))
+                    continue
+                key = _opponent_meld_candidate_key(owner, item)
+                active_keys.add(key)
+                previous = self._opponent_meld_candidates.get(key, {})
+                confirmations = int(previous.get("confirmations") or 0) + 1
+                self._opponent_meld_candidates[key] = {
+                    "confirmations": confirmations,
+                    "item": deepcopy(item),
+                }
+                if confirm_new and confirmations < _OPPONENT_MELD_CONFIRM_FRAMES:
+                    pending_count += 1
+                    continue
+                confirmed = deepcopy(item)
+                confirmed["detection_confirmation_frames"] = confirmations
+                accepted.setdefault(owner, []).append(confirmed)
+                confirmed_count += 1
+                self._opponent_meld_candidates.pop(key, None)
+
+        for key in list(self._opponent_meld_candidates):
+            if key not in active_keys:
+                self._opponent_meld_candidates.pop(key, None)
+        return accepted, {
+            "opponent_meld_pending_count": pending_count,
+            "opponent_meld_confirmed_count": confirmed_count,
+            "opponent_meld_confirmation_frames": _OPPONENT_MELD_CONFIRM_FRAMES,
+        }
 
     def _advance_river_candidate(
         self,
@@ -1365,8 +1872,13 @@ class RoundCoachEngine:
         return str(getattr(self.config, "river_tracking_mode", "checkpoint") or "checkpoint").lower() == "live"
 
     def _detect_riichi_players(self, path: Path | None) -> list[str]:
+        started = time.perf_counter()
         if not self.config.opponent_riichi_recognition_enabled:
             self.state.riichi_pending = {}
+            self._last_riichi_detection_meta = {
+                "elapsed_ms": round(_elapsed_ms(started), 1),
+                "mode": "disabled",
+            }
             return []
         if path is None:
             return []
@@ -1376,11 +1888,21 @@ class RoundCoachEngine:
         # using it here invents a persistent ``unknown`` riichi player. Player
         # state must come from a seat-specific declaration tile in the river.
         detected: set[str] = set()
+        evidence: dict[str, dict[str, Any]] = {}
         if self._uses_yolo26_tiles():
             yolo_result = self._detect_yolo26_table(path)
             river_ok = yolo_result.ok if yolo_result.river_inference_ok is None else yolo_result.river_inference_ok
             if river_ok:
                 detected.update(player for player in yolo_result.riichi_players if _player_key(player))
+                hints = getattr(yolo_result, "analysis_hints", {})
+                if isinstance(hints, dict):
+                    raw_evidence = hints.get("yolo26_riichi_evidence")
+                    if isinstance(raw_evidence, dict):
+                        evidence = {
+                            str(player): dict(payload)
+                            for player, payload in raw_evidence.items()
+                            if isinstance(payload, dict)
+                        }
             # Drop stale ``unknown`` state produced by the old counter-based
             # path as soon as seat-aware recognition is active.
             self.state.riichi_players = [
@@ -1388,8 +1910,15 @@ class RoundCoachEngine:
             ]
 
         confirmed: list[str] = []
+        immediate: list[str] = []
         pending = dict(self.state.riichi_pending)
         for player in detected:
+            confidence = float(evidence.get(player, {}).get("confidence") or 0.0)
+            if confidence >= _RIICHI_HIGH_CONFIDENCE:
+                confirmed.append(player)
+                immediate.append(player)
+                pending.pop(player, None)
+                continue
             pending[player] = pending.get(player, 0) + 1
             if pending[player] >= 2:
                 confirmed.append(player)
@@ -1397,7 +1926,40 @@ class RoundCoachEngine:
             if player not in detected:
                 pending.pop(player, None)
         self.state.riichi_pending = pending
-        return sorted(set(confirmed) | set(self.state.riichi_players))
+        result = sorted(set(confirmed) | set(self.state.riichi_players))
+        self._last_riichi_detection_meta = {
+            "elapsed_ms": round(_elapsed_ms(started), 1),
+            "mode": "high_confidence_immediate" if immediate else "temporal_confirmation",
+            "detected_players": sorted(detected),
+            "confirmed_players": list(result),
+            "immediate_players": sorted(immediate),
+            "pending_players": dict(pending),
+            "high_confidence_threshold": _RIICHI_HIGH_CONFIDENCE,
+            "evidence": evidence,
+        }
+        return result
+
+    def _commit_riichi_players(self, players: list[str]) -> None:
+        """Remember seat-aware declarations and update the deposit count once."""
+        previous = {str(player) for player in self.state.riichi_players if _player_key(player)}
+        confirmed = {str(player) for player in players if _player_key(player)}
+        newly_confirmed = confirmed - previous
+        self.state.riichi_players = sorted(previous | confirmed)
+        if not newly_confirmed:
+            return
+        # Declarations discovered immediately after the opening scan may already
+        # be included in the HUD/score-pool baseline (for example when the plugin
+        # starts mid-hand). Later seat-specific confirmations are safe deltas.
+        if self.state.update_count <= 2:
+            return
+        current = int(
+            self.state.table_riichi_stick_count
+            if self.state.table_riichi_stick_count is not None
+            else self.state.riichi_stick_baseline or 0
+        )
+        updated = current + len(newly_confirmed)
+        self.state.table_riichi_stick_count = updated
+        self.state.last_riichi_stick_count = updated
 
     def _detect_melds(self, path: Path | None, *, hand_result: FastHandResult | None = None) -> MeldStateResult:
         if not self.config.meld_recognition_enabled:
@@ -1433,7 +1995,7 @@ class RoundCoachEngine:
         )
 
     def _uses_yolo26_tiles(self) -> bool:
-        return str(getattr(self.config, "tile_recognition_mode", "legacy") or "legacy").lower() == "yolo26"
+        return str(getattr(self.config, "tile_recognition_mode", "yolo26") or "yolo26").lower() == "yolo26"
 
     def _detect_yolo26_table(self, path: Path) -> Yolo26TableStateResult:
         frame_identity = _frame_identity(path)
@@ -1449,7 +2011,11 @@ class RoundCoachEngine:
         table_surface = None
         if self._cached_game_scene_matches(path, frame_identity=frame_identity):
             table_surface = self._last_game_scene_result.table_surface
-        result = detect_yolo26_table_state_path(path, table_surface_result=table_surface)
+        result = detect_yolo26_table_state_path(
+            path,
+            table_surface_result=table_surface,
+            inference_provider=self.config.inference_provider,
+        )
         self._last_yolo26_path = path
         self._last_yolo26_identity = frame_identity
         self._last_yolo26_result = result
@@ -1610,30 +2176,38 @@ class RoundCoachEngine:
         meld_result: MeldStateResult | None = None,
         river_result: RiverStateResult | None = None,
     ) -> CoachDecision:
+        companion_only = self.config.companion_only_runtime
         if any(button in WIN_BUTTONS for button in buttons):
-            summary = "和牌窗口"
-            suggestion = "看到荣和/自摸直接点，不需要等待策略分析。"
+            win_label = "自摸" if "tsumo" in buttons else "荣和" if "ron" in buttons else "和牌"
+            summary = f"{win_label}窗口"
+            suggestion = f"界面已出现{win_label}按钮；这里只记录和牌机会，不提供操作指令。"
             decision_type = "win_window"
             priority = 100
         elif any(button in CALL_BUTTONS for button in buttons):
             summary = "吃碰杠窗口"
-            suggestion = self._call_suggestion(
-                hand_result,
-                buttons,
-                river_result,
-                meld_result=meld_result,
-                claimed_tile=_claimed_tile_from_action(action_meta),
-            )
+            suggestion = ""
+            if not companion_only:
+                suggestion, call_recommendation = self._call_decision(
+                    hand_result,
+                    buttons,
+                    river_result,
+                    meld_result=meld_result,
+                    claimed_tile=_claimed_tile_from_action(action_meta),
+                )
+                action_meta = {
+                    **action_meta,
+                    "call_recommendation": call_recommendation,
+                }
             decision_type = "call_window"
             priority = 95
         elif "riichi" in buttons:
             summary = "立直窗口"
-            suggestion = self._riichi_suggestion(hand_result, river_result)
+            suggestion = "" if companion_only else self._riichi_suggestion(hand_result, river_result)
             decision_type = "riichi_window"
             priority = 90
         else:
             summary = "操作窗口"
-            suggestion = "先处理当前按钮，再回到局面策略。"
+            suggestion = "" if companion_only else "先处理当前按钮，再回到局面策略。"
             decision_type = "action_window"
             priority = 80
         self.state.round_phase = "action_window"
@@ -1642,9 +2216,13 @@ class RoundCoachEngine:
         return CoachDecision(
             decision_type=decision_type,
             priority=priority,
-            action_required=True,
+            action_required=not companion_only,
             summary=summary,
-            detail="动作窗口只使用当前策略与本地快判。",
+            detail=(
+                "检测到公开的牌桌操作窗口；伙伴只记录事件，不提供操作建议。"
+                if companion_only
+                else "动作窗口只使用当前策略与本地快判。"
+            ),
             suggestion=suggestion,
             buttons=list(buttons),
             hand_tiles=list(hand_result.hand_tiles) if hand_result else [],
@@ -1668,6 +2246,23 @@ class RoundCoachEngine:
         meld_result: MeldStateResult | None = None,
         claimed_tile: str = "",
     ) -> str:
+        suggestion, _recommendation = self._call_decision(
+            hand_result,
+            buttons,
+            river_result,
+            meld_result,
+            claimed_tile,
+        )
+        return suggestion
+
+    def _call_decision(
+        self,
+        hand_result: FastHandResult | None,
+        buttons: list[str] | None = None,
+        river_result: RiverStateResult | None = None,
+        meld_result: MeldStateResult | None = None,
+        claimed_tile: str = "",
+    ) -> tuple[str, dict[str, Any]]:
         plan = self.state.current_plan or self.state.opening_plan
         if not plan and hand_result is not None and hand_result.ok:
             built = build_round_plan(
@@ -1689,15 +2284,20 @@ class RoundCoachEngine:
                 claimed_tile=claimed_tile,
                 visible_tiles=_visible_tiles_for_plan(river_result),
                 open_melds=self._open_meld_count_for_plan(meld_result),
+                meld_tiles=self._meld_tiles_for_plan(meld_result),
             )
             call_policy = _call_policy(hand_result.hand_tiles, self.config, buttons or [])
-            call_detail = _call_analysis_text(call_analysis)
+            call_recommendation = _call_recommendation_payload(call_analysis, buttons or [])
+            call_detail = _call_analysis_text(call_analysis, recommendation=call_recommendation)
             if plan:
-                return f"{call_detail} {call_policy} 当前主线：{plan}"
-            return f"{call_detail} {call_policy}"
+                return f"{call_detail} {call_policy} 当前主线：{plan}", call_recommendation
+            return f"{call_detail} {call_policy}", call_recommendation
         if plan:
-            return f"默认跳过，除非鸣牌能明确推进当前主线：{plan}"
-        return "默认跳过；只有役牌对子、直接进听、明显加速主线或安全和牌时才吃碰杠。"
+            reason = f"手牌识别不稳定，无法可靠比较鸣牌前后牌效；当前主线：{plan}"
+        else:
+            reason = "手牌识别不稳定，无法可靠比较鸣牌前后牌效。"
+        recommendation = _unresolved_call_recommendation(buttons or [], reason=reason)
+        return f"{recommendation['primary_action']}。{reason}", recommendation
 
     def _riichi_suggestion(
         self,
@@ -1720,6 +2320,33 @@ class RoundCoachEngine:
         action_meta: dict[str, Any] | None = None,
         meld_result: MeldStateResult | None = None,
     ) -> CoachDecision:
+        if self.config.companion_only_runtime:
+            self.state.opening_emitted = True
+            self.state.round_phase = "companion_observation"
+            self.state.last_update_reason = "opening_observation"
+            self.state.update_count += 1
+            self._last_strategy_result = {}
+            self._companion_reference_tiles = []
+            return CoachDecision(
+                decision_type="observe",
+                priority=10,
+                action_required=False,
+                summary="牌局观察已开始",
+                detail="已确认新的公开牌局画面，等待立直、副露、和牌等事件。",
+                suggestion="",
+                hand_tiles=list(hand_result.hand_tiles),
+                reason_codes=["first_stable_hand", "companion_only"],
+                coach_state=self.state.to_dict(),
+                perception={
+                    "table_context": self._table_context_perception(),
+                    "hand": hand_result.to_dict(),
+                    "action": action_meta or {},
+                    "meld": meld_result.to_dict() if meld_result is not None else {},
+                    "river": river_result.to_dict(),
+                    "strategy": {},
+                },
+                engine_meta=self._meta(started, "opening_observation"),
+            )
         plan_started = time.perf_counter()
         plan = build_round_plan(
             hand_result.hand_tiles,
@@ -1731,6 +2358,12 @@ class RoundCoachEngine:
             player_ranks=self.state.player_ranks,
             honba_count=self.state.honba_count,
             riichi_stick_count=self.state.table_riichi_stick_count,
+        )
+        strategy = self._rank_local_plan(
+            hand_result,
+            river_result,
+            plan,
+            meld_result=meld_result,
         )
         strategy_elapsed_ms = _elapsed_ms(plan_started)
         self.state.opening_emitted = True
@@ -1753,6 +2386,7 @@ class RoundCoachEngine:
                 "action": action_meta or {},
                 "meld": meld_result.to_dict() if meld_result is not None else {},
                 "river": river_result.to_dict(),
+                "strategy": strategy,
             },
             engine_meta=self._meta(started, "opening_plan", strategy_elapsed_ms=strategy_elapsed_ms),
         )
@@ -1775,6 +2409,17 @@ class RoundCoachEngine:
         started: float,
         meld_result: MeldStateResult | None = None,
     ) -> CoachDecision:
+        if self.config.companion_only_runtime:
+            if turn_number is not None:
+                self.state.last_checkpoint_self_turn = turn_number
+            return self._observe_decision(
+                hand_result,
+                {},
+                river_result,
+                started,
+                phase="companion_checkpoint",
+                meld_result=meld_result,
+            )
         plan_started = time.perf_counter()
         plan = build_round_plan(
             hand_result.hand_tiles,
@@ -1786,6 +2431,12 @@ class RoundCoachEngine:
             player_ranks=self.state.player_ranks,
             honba_count=self.state.honba_count,
             riichi_stick_count=self.state.table_riichi_stick_count,
+        )
+        strategy = self._rank_local_plan(
+            hand_result,
+            river_result,
+            plan,
+            meld_result=meld_result,
         )
         strategy_elapsed_ms = _elapsed_ms(plan_started)
         changed = self._plan_materially_changed(plan)
@@ -1810,10 +2461,67 @@ class RoundCoachEngine:
                 "hand": hand_result.to_dict(),
                 "meld": meld_result.to_dict() if meld_result is not None else {},
                 "river": river_result.to_dict(),
+                "strategy": strategy,
             },
             engine_meta=self._meta(started, "coach_checkpoint", strategy_elapsed_ms=strategy_elapsed_ms),
             quiet=not changed,
         )
+
+    def _rank_local_plan(
+        self,
+        hand_result: FastHandResult,
+        river_result: RiverStateResult,
+        plan: dict[str, Any],
+        *,
+        meld_result: MeldStateResult | None = None,
+    ) -> dict[str, Any]:
+        """Expose the already-computed normal-play discard ranking.
+
+        Opening and checkpoint decisions used to retain only
+        ``discard_priority`` in private round state.  External strategy views
+        read structured candidates, so they could explain a direction without
+        ever naming the tile to discard.  Reuse the same plan here to avoid a
+        second shanten pass while making normal play and riichi defense follow
+        one candidate contract.
+        """
+        strategy = rank_discard_decisions(
+            list(hand_result.hand_tiles),
+            self.config,
+            list(self.state.riichi_players),
+            river_result,
+            open_melds=self._open_meld_count_for_plan(meld_result),
+            meld_tiles=self._meld_tiles_for_plan(meld_result),
+            previous_posture=self.state.defense_posture,
+            player_scores=self.state.player_scores,
+            player_ranks=self.state.player_ranks,
+            honba_count=self.state.honba_count,
+            riichi_stick_count=self.state.table_riichi_stick_count,
+            precomputed_plan=plan,
+        )
+        self._last_strategy_result = deepcopy(strategy)
+        return strategy
+
+    def _cached_strategy_for_hand(self, hand_tiles: list[str]) -> dict[str, Any]:
+        """Keep the latest recommendation visible without naming an absent tile."""
+        strategy = deepcopy(self._last_strategy_result)
+        if not strategy:
+            return {}
+        available = {
+            _canonical_tile(normalize_tile(tile))
+            for tile in hand_tiles
+            if _canonical_tile(normalize_tile(tile)) in TILE_TYPES
+        }
+        if not available:
+            return {}
+        candidates = [
+            item
+            for item in (strategy.get("candidates") or [])
+            if isinstance(item, dict)
+            and _canonical_tile(str(item.get("tile") or "")) in available
+        ]
+        strategy["candidates"] = candidates
+        strategy["top_candidates"] = candidates[:3]
+        return strategy if candidates else {}
 
     def _plan_materially_changed(self, plan: dict[str, Any]) -> bool:
         new_direction = str(plan.get("direction") or "").strip()
@@ -1846,10 +2554,68 @@ class RoundCoachEngine:
         self.state.local_direction = direction
         self.state.local_plan = summary
         self.state.local_detail = detail
+        self._remember_shape_status(plan.get("shape_status"))
         self.state.attack_defense_bias = str(plan.get("bias") or "neutral")
         self.state.target_shapes = targets
         self.state.caution_points = cautions
         self.state.prev_discard_priority = discard_priority
+        self._companion_reference_tiles = list(discard_priority)
+
+    def _remember_shape_status(self, raw_status: Any) -> None:
+        status = raw_status if isinstance(raw_status, dict) else {}
+        route = str(status.get("route") or "").strip()
+        shanten = status.get("shanten")
+        if route:
+            self.state.closest_shape_route = route
+        if shanten is not None:
+            self.state.current_shanten = int(shanten)
+        self.state.current_effective_count = max(0, int(status.get("effective_count") or 0))
+        self.state.current_effective_types = max(0, int(status.get("effective_types") or 0))
+
+    def _observe_player_discard(
+        self,
+        previous_hand_tiles: list[str],
+        current_hand_tiles: list[str],
+    ) -> None:
+        """React after an observed discard without exposing the internal ranking."""
+        previous = Counter(
+            tile for value in previous_hand_tiles if (tile := normalize_tile(value))
+        )
+        current = Counter(
+            tile for value in current_hand_tiles if (tile := normalize_tile(value))
+        )
+        if sum(previous.values()) != sum(current.values()) or sum(current.values()) < 12:
+            return
+        removed = list((previous - current).elements())
+        added = list((current - previous).elements())
+        if len(removed) != 1 or len(added) > 1:
+            return
+        tile = removed[0]
+        references = [
+            normalized
+            for value in self._companion_reference_tiles
+            if (normalized := normalize_tile(value))
+        ]
+        if not references:
+            return
+        if tile in references[:2]:
+            kind = "agree"
+            reaction = "哦对的对的，这一下跟我刚才想得差不多。"
+        elif tile in references:
+            kind = "mixed"
+            reaction = (
+                "哦对的对的……哎呀不对不对……对……对吗？"
+                "刚想点头，又觉得哪里不太对。"
+            )
+        else:
+            kind = "disagree"
+            reaction = (
+                "哦对的对的……哎呀不对不对……对……对吗？"
+                "顺着这一手想了两秒，怎么越想越不一样了。"
+            )
+        self.state.last_observed_discard = tile
+        self.state.companion_reaction = reaction
+        self.state.companion_reaction_kind = kind
 
     def _defense_decision(
         self,
@@ -1859,6 +2625,34 @@ class RoundCoachEngine:
         started: float,
         meld_result: MeldStateResult | None = None,
     ) -> CoachDecision:
+        if self.config.companion_only_runtime:
+            self._last_strategy_result = {}
+            self._companion_reference_tiles = []
+            self.state.round_phase = "riichi_observation"
+            self.state.attack_defense_bias = "observing"
+            self.state.defense_posture = ""
+            self.state.defense_risk_budget = 0.0
+            self.state.last_update_reason = "riichi_observation"
+            self.state.update_count += 1
+            return CoachDecision(
+                decision_type="defense_alert",
+                priority=85,
+                action_required=False,
+                summary="检测到立直",
+                detail=f"检测到 {', '.join(riichi_players)} 立直；伙伴只对事件作出反应。",
+                suggestion="",
+                hand_tiles=list(hand_result.hand_tiles),
+                reason_codes=["riichi_players_present", "companion_only"],
+                coach_state=self.state.to_dict(),
+                perception={
+                    "table_context": self._table_context_perception(),
+                    "hand": hand_result.to_dict(),
+                    "meld": meld_result.to_dict() if meld_result is not None else {},
+                    "river": river_result.to_dict(),
+                    "strategy": {},
+                },
+                engine_meta=self._meta(started, "riichi_observation"),
+            )
         strategy_started = time.perf_counter()
         ranking = rank_discard_decisions(
             list(hand_result.hand_tiles) if hand_result.ok else [],
@@ -1873,12 +2667,19 @@ class RoundCoachEngine:
             honba_count=self.state.honba_count,
             riichi_stick_count=self.state.table_riichi_stick_count,
         )
+        self._last_strategy_result = deepcopy(ranking)
         strategy_elapsed_ms = _elapsed_ms(strategy_started)
         self.state.round_phase = "defense_mode"
         posture = str(ranking.get("posture") or DefensePosture.FOLD.value)
         self.state.attack_defense_bias = str(ranking.get("legacy_mode") or "defense")
         self.state.defense_posture = posture
         self.state.defense_risk_budget = float(ranking.get("risk_budget") or 0.0)
+        self._remember_shape_status(ranking.get("shape_status"))
+        self._companion_reference_tiles = [
+            str(item.get("tile") or "")
+            for item in (ranking.get("top_candidates") or [])
+            if isinstance(item, dict) and str(item.get("tile") or "")
+        ]
         self.state.last_update_reason = "riichi_defense"
         self.state.update_count += 1
         return CoachDecision(
@@ -1915,6 +2716,9 @@ class RoundCoachEngine:
             )
         if strategy_elapsed_ms is not None:
             timings_ms["strategy"] = round(float(strategy_elapsed_ms), 1)
+        riichi_meta = dict(self._last_riichi_detection_meta)
+        if riichi_meta:
+            timings_ms["riichi_detection"] = round(float(riichi_meta.get("elapsed_ms") or 0.0), 1)
         return {
             "source": source,
             "elapsed_ms": timings_ms["total"],
@@ -1923,7 +2727,7 @@ class RoundCoachEngine:
             "per_turn_discard_prompt": self.config.per_turn_discard_prompt,
             "hand_recognition_backend": self.config.hand_recognition_backend,
             "onnx_hand_enabled": self.config.onnx_hand_enabled,
-            "tile_recognition_mode": getattr(self.config, "tile_recognition_mode", "legacy"),
+            "tile_recognition_mode": getattr(self.config, "tile_recognition_mode", "yolo26"),
             "river_recognition_enabled": self.config.river_recognition_enabled,
             "river_tracking_mode": getattr(self.config, "river_tracking_mode", "checkpoint"),
             "river_recognition_backend": "yolo26_lightweight" if self._uses_yolo26_tiles() else "onnx_discard_model",
@@ -1932,6 +2736,7 @@ class RoundCoachEngine:
             "opponent_riichi_recognition_enabled": self.config.opponent_riichi_recognition_enabled,
             "settlement_recognition_enabled": getattr(self.config, "settlement_recognition_enabled", True),
             "settlement_phase": self.state.settlement_phase,
+            "riichi_detection": riichi_meta,
         }
 
     def _open_meld_count_for_plan(self, meld_result: MeldStateResult | None) -> int | None:
@@ -2041,6 +2846,22 @@ def _merge_opponent_meld_snapshots(
             merged_items.sort(key=lambda item: int(item.get("meld_index") or 0))
             merged_by_owner[owner] = merged_items
     return merged_by_owner
+
+
+def _opponent_meld_candidate_key(owner: str, item: dict[str, Any]) -> str:
+    tiles = sorted(
+        normalize_tile(str(tile or ""))
+        for tile in item.get("tiles", [])
+        if normalize_tile(str(tile or ""))
+    )
+    return "|".join(
+        (
+            str(owner),
+            str(item.get("meld_index") or 0),
+            str(item.get("kind") or "unknown"),
+            ",".join(tiles),
+        )
+    )
 
 
 def _match_opponent_meld_index(
@@ -2546,6 +3367,11 @@ def build_round_plan(
     )
     profile = config.player_profile if config is not None else None
     if open_meld_count == 0 and getattr(profile, "goal_bias", "balanced") == "yakuman":
+        # Strategy analysis is not part of the companion runtime.  Import the
+        # optional estimator only for the retained offline strategy API so its
+        # executor/simulation code is absent from normal plugin startup.
+        from .yakuman import assess_yakuman_routes
+
         yakuman_routes = assess_yakuman_routes(tiles, visible_tiles=visible_tiles or [])
         viable = next(
             (
@@ -2563,6 +3389,7 @@ def build_round_plan(
             if key_text:
                 targets.insert(1, f"关键牌：{key_text}")
             summary = f"保留{viable.label}路线；牌效明显恶化或关键牌枯竭时回到普通和牌"
+    shape_status = _build_shape_status(direction, efficiency)
     cautions = _build_cautions(
         honor_count, terminal_count, best_suit_count, open_meld_count, route_text,
         efficiency, cleanup_tiles, discard_text, cleanup_text, primary_discard_text,
@@ -2615,7 +3442,41 @@ def build_round_plan(
         "cautions": cautions,
         "discard_priority": list(discard_tiles),
         "efficiency": efficiency,
+        "shape_status": shape_status,
         "table_context": table_context,
+    }
+
+
+def _build_shape_status(direction: str, efficiency: dict[str, Any]) -> dict[str, Any]:
+    """Build a short, non-prescriptive description of the nearest hand route."""
+    best_path = str(efficiency.get("best_path") or "standard")
+    direction_text = str(direction or "").strip()
+    if direction_text.startswith("役满候选："):
+        route = direction_text.removeprefix("役满候选：").strip() or "役满路线"
+    elif best_path == "seven_pairs" or "七对子" in direction_text:
+        route = "七对子"
+    elif best_path == "thirteen_orphans":
+        route = "国士无双"
+    elif direction_text.startswith("染手("):
+        suit = direction_text.removeprefix("染手(").removesuffix(")").strip()
+        route = f"混一色/清一色方向（{suit}）" if suit else "混一色/清一色方向"
+    elif "断幺九/平和" in direction_text:
+        route = "断幺九/平和"
+    elif "役牌" in direction_text:
+        route = "役牌面子手"
+    elif direction_text.startswith("围绕"):
+        suit = direction_text.removeprefix("围绕").strip()
+        route = f"普通面子手（{suit}结构较强）" if suit else "普通面子手"
+    elif "副露" in direction_text:
+        route = "副露面子手"
+    else:
+        route = "普通面子手"
+    return {
+        "route": route,
+        "path": best_path,
+        "shanten": int(efficiency.get("current_shanten", 8)),
+        "effective_count": max(0, int(efficiency.get("current_effective_count") or 0)),
+        "effective_types": max(0, int(efficiency.get("current_effective_types") or 0)),
     }
 
 
@@ -2933,12 +3794,13 @@ def rank_discard_decisions(
     player_ranks: dict[str, int] | None = None,
     honba_count: int | None = None,
     riichi_stick_count: int | None = None,
+    precomputed_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Combine tile efficiency and per-opponent danger into one discard ranking."""
     tiles = [normalize_tile(tile) for tile in hand_tiles if _canonical_tile(normalize_tile(tile)) in TILE_TYPES]
     piles = river_result.discard_piles if river_result is not None and river_result.ok else {}
     visible_tiles = _visible_tiles_for_plan(river_result)
-    plan = build_round_plan(
+    plan = precomputed_plan if isinstance(precomputed_plan, dict) else build_round_plan(
         tiles,
         config,
         visible_tiles=visible_tiles,
@@ -2951,6 +3813,7 @@ def rank_discard_decisions(
     )
     efficiency = plan.get("efficiency", {})
     current_shanten = int(efficiency.get("current_shanten", 8))
+    open_meld_count = _clamp_melds(int(efficiency.get("open_melds", open_melds or 0)))
     raw_options = efficiency.get("all_discard_options") or efficiency.get("discard_options") or []
     options = [dict(item) for item in raw_options if isinstance(item, dict)]
     if not options:
@@ -3001,7 +3864,7 @@ def rank_discard_decisions(
     )
 
     candidates: list[dict[str, Any]] = []
-    for option in options:
+    for efficiency_order, option in enumerate(options):
         tile = normalize_tile(str(option.get("tile") or ""))
         canonical = _canonical_tile(tile)
         if canonical not in TILE_TYPES:
@@ -3009,6 +3872,15 @@ def rank_discard_decisions(
         shanten = int(option.get("shanten", 8))
         effective_types = int(option.get("effective_types", 0))
         effective_count = int(option.get("effective_count", 0))
+        post_discard_tiles = [_canonical_tile(item) for item in tiles]
+        if canonical in post_discard_tiles:
+            post_discard_tiles.remove(canonical)
+        yaku = _yaku_viability(
+            post_discard_tiles,
+            open_melds=open_meld_count,
+            meld_tiles=meld_tiles or [],
+            value_honors=value_honors,
+        )
         attack_score = _attack_score(
             tile,
             shanten,
@@ -3062,6 +3934,10 @@ def rank_discard_decisions(
         candidates.append(
             {
                 "tile": tile,
+                # Internal, weight-free tie breaker.  The efficiency pass has
+                # already ordered exact ties with the opening cleanup rules;
+                # keep that order instead of falling back to m/p/s/z sorting.
+                "_efficiency_order": efficiency_order,
                 "total_score": total_score,
                 "attack_score": round(attack_score, 2),
                 "defense_risk": round(defense_risk, 2),
@@ -3086,6 +3962,11 @@ def rank_discard_decisions(
                 "effective_count_delta": effective_count - reference_effective_count,
                 "effective_tiles": list(option.get("effective_tiles") or []),
                 "shape_loss": max(0, shanten - current_shanten),
+                "yaku_viable": bool(yaku["viable"]),
+                "yaku_status": str(yaku["status"]),
+                "yaku_label": str(yaku["label"]),
+                "yaku_reason": str(yaku["reason"]),
+                "yaku_routes": list(yaku["routes"]),
                 "estimated_value": _estimated_hand_value(
                     tiles,
                     dora_tiles=dora_tiles,
@@ -3215,15 +4096,24 @@ def rank_discard_decisions(
         candidates.sort(
             key=lambda item: (
                 bool(simple_policy_active and float(item["defense_risk"]) > risk_budget),
+                # Yaku is a feasibility gate, not another score.  It only
+                # separates exact normal-play branches after the hand is open;
+                # riichi-defense ordering remains untouched.
+                bool(open_meld_count and not opponents and not item.get("yaku_viable")),
                 -float(item["attack_score"]),
                 int(item["shanten"]),
                 float(item["defense_risk"]),
                 -int(item["effective_count"]),
+                # Only normal opening/play without an active riichi threat
+                # inherits the efficiency tie order.  Defensive ordering and
+                # every numeric weight above remain unchanged.
+                int(item.get("_efficiency_order", 0)) if not opponents else 0,
                 _tile_sort_key(str(item["tile"])),
             )
         )
     for index, candidate in enumerate(candidates, start=1):
         candidate["rank"] = index
+        candidate.pop("_efficiency_order", None)
     best = candidates[0] if candidates else {}
     legacy_mode = {
         DefensePosture.PUSH.value: "attack",
@@ -3249,6 +4139,7 @@ def rank_discard_decisions(
         "table_context": table_context,
         "safe_shape_candidates": len(safety_candidates),
         "win_potential": win_potential,
+        "shape_status": dict(plan.get("shape_status") or {}),
         "preserve_win_chance": posture != DefensePosture.FOLD.value and win_potential != "weak",
         "turn_number": inferred_turn,
         "profile": profile.to_dict() if profile is not None else {},
@@ -4018,6 +4909,17 @@ def _efficiency_analysis(
 
     open_meld_count = _clamp_melds(open_melds)
     current = _best_hand_shanten(canonical_tiles, open_melds=open_meld_count)
+    current_effective_tiles: list[str] = []
+    current_effective_count = 0
+    if len(canonical_tiles) % 3 == 1:
+        hand_counts = Counter(canonical_tiles)
+        for draw in TILE_TYPES:
+            available = max(0, 4 - hand_counts.get(draw, 0) - visible_counts.get(draw, 0))
+            if available <= 0:
+                continue
+            if _best_hand_shanten([*canonical_tiles, draw], open_melds=open_meld_count)["shanten"] < current["shanten"]:
+                current_effective_tiles.append(draw)
+                current_effective_count += available
     candidates = _efficiency_discard_candidates(tiles, initial_discards, counts, best_suit, value_honors, dora_tiles)
     options: list[dict[str, Any]] = []
     visible_total = sum(visible_counts.values())
@@ -4072,9 +4974,24 @@ def _efficiency_analysis(
         }
         for item in options
     ]
+    if serialized_options:
+        best_option_shanten = min(int(item["shanten"]) for item in serialized_options)
+        best_options = [
+            item
+            for item in serialized_options
+            if int(item["shanten"]) == best_option_shanten
+        ]
+        best_effective_option = max(
+            best_options,
+            key=lambda item: int(item["effective_count"]),
+        )
+        current_effective_count = int(best_effective_option["effective_count"])
+        current_effective_tiles = list(best_effective_option["effective_tiles"])
     return {
         "current_shanten": current["shanten"],
         "best_path": current["path"],
+        "current_effective_types": len(current_effective_tiles),
+        "current_effective_count": current_effective_count,
         "open_melds": open_meld_count,
         "closed_tile_count": len(canonical_tiles),
         "discard_options": serialized_options[:5],
@@ -4131,7 +5048,7 @@ def _visible_counts(tiles: list[str]) -> Counter[str]:
     return Counter(_canonical_tile(tile) for tile in tiles if _canonical_tile(tile) in TILE_TYPES)
 
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=1024)
 def _standard_shanten(counts_tuple: tuple[int, ...], open_melds: int = 0) -> int:
     open_meld_count = _clamp_melds(open_melds)
 
@@ -4189,6 +5106,21 @@ def _standard_shanten(counts_tuple: tuple[int, ...], open_melds: int = 0) -> int
         return best
 
     return walk(counts_tuple, open_meld_count, 0, 0)
+
+
+def release_strategy_runtime_caches() -> None:
+    """Release bounded strategy memoization while the coach is idle."""
+    _standard_shanten.cache_clear()
+
+
+def strategy_runtime_stats() -> dict[str, int]:
+    info = _standard_shanten.cache_info()
+    return {
+        "shanten_cache_entries": int(info.currsize),
+        "shanten_cache_hits": int(info.hits),
+        "shanten_cache_misses": int(info.misses),
+        "shanten_cache_limit": int(info.maxsize or 0),
+    }
 
 
 def _seven_pairs_shanten(counts: list[int]) -> int:
@@ -4364,6 +5296,9 @@ def _play_style(config: MahjongCoachConfig | None) -> str:
     if config is None:
         return "riichi"
     profile = getattr(config, "player_profile", None)
+    # TODO(overlay-style-precedence): remember whether the current session's
+    # play_style was selected explicitly in the external panel. That explicit
+    # choice should eventually take precedence over profile-derived fast play.
     if profile is not None and (
         getattr(profile, "risk_tolerance", "balanced") == "aggressive"
         or getattr(profile, "goal_bias", "balanced") == "speed"
@@ -4394,6 +5329,93 @@ def _shared_tile_count(left: list[str], right: list[str]) -> int:
     left_counts = Counter(normalize_tile(tile) for tile in left if normalize_tile(tile))
     right_counts = Counter(normalize_tile(tile) for tile in right if normalize_tile(tile))
     return sum((left_counts & right_counts).values())
+
+
+def _meld_payload_tiles(meld: dict[str, Any]) -> list[str]:
+    tiles: list[str] = []
+    for value in meld.get("tiles", []):
+        raw = value.get("tile") if isinstance(value, dict) else value
+        tile = normalize_tile(str(raw or ""))
+        if tile:
+            tiles.append(tile)
+    return tiles
+
+
+def _self_meld_signature(result: MeldStateResult) -> str:
+    groups = [
+        ",".join(_meld_payload_tiles(meld))
+        for meld in result.melds
+        if isinstance(meld, dict)
+    ]
+    return f"{int(result.open_meld_count or 0)}|{'/'.join(groups)}"
+
+
+def _detection_bbox(item: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    raw = item.get("bbox") or item.get("box")
+    if not isinstance(raw, (list, tuple, dict)):
+        return None
+    if isinstance(raw, dict):
+        try:
+            left = float(raw.get("left") or 0.0)
+            top = float(raw.get("top") or 0.0)
+            right = left + float(raw.get("width") or 0.0)
+            bottom = top + float(raw.get("height") or 0.0)
+        except (TypeError, ValueError):
+            return None
+    else:
+        if len(raw) < 4:
+            return None
+        try:
+            left, top, right, bottom = (float(value) for value in raw[:4])
+        except (TypeError, ValueError):
+            return None
+    if right <= left or bottom <= top:
+        return None
+    return left, top, right, bottom
+
+
+def _self_meld_spatially_separated(
+    hand_result: FastHandResult,
+    meld_result: MeldStateResult,
+) -> bool | None:
+    hand_boxes = [
+        box
+        for item in hand_result.raw_detections
+        if isinstance(item, dict)
+        and (item.get("area_kind") == "hand" or item.get("accepted") is True)
+        and (box := _detection_bbox(item)) is not None
+    ]
+    meld_boxes = [
+        box
+        for item in meld_result.raw_detections
+        if isinstance(item, dict)
+        and (item.get("area_kind") == "self_meld" or item.get("accepted") is True)
+        and (box := _detection_bbox(item)) is not None
+    ]
+    if not hand_boxes or not meld_boxes:
+        return None
+    hand_right = max(box[2] for box in hand_boxes)
+    meld_left = min(box[0] for box in meld_boxes)
+    hand_widths = sorted(box[2] - box[0] for box in hand_boxes)
+    median_width = hand_widths[len(hand_widths) // 2]
+    # A called group lives on the right shelf. Slight visual overlap is allowed
+    # for turned tiles, but it must not sit inside the concealed-hand row.
+    return meld_left >= hand_right - median_width * 0.20
+
+
+def _expected_open_melds_from_closed_count(closed_tile_count: int) -> int | None:
+    count = max(0, int(closed_tile_count or 0))
+    if count in (12, 13, 14):
+        return 0
+    if count in (10, 11):
+        return 1
+    if count in (7, 8):
+        return 2
+    if count in (4, 5):
+        return 3
+    if count in (1, 2):
+        return 4
+    return None
 
 
 def _inferred_open_melds(closed_tile_count: int) -> int:
@@ -4468,6 +5490,83 @@ def _open_yaku_notes(
     if not targets:
         cautions.append("确认役种：没有役牌、断幺或染手时，副露手可能没役。")
     return targets, cautions
+
+
+def _yaku_viability(
+    concealed_tiles: list[str],
+    *,
+    open_melds: int,
+    meld_tiles: list[str],
+    value_honors: set[str] | None = None,
+) -> dict[str, Any]:
+    """Classify whether the known branch retains a legal winning-yaku route.
+
+    This is intentionally separate from tile-efficiency scoring.  A closed hand
+    may rely on riichi; once the hand is open, only routes supported by the
+    currently known tiles count.  Missing meld evidence fails to ``unknown``
+    instead of inventing a yaku.
+    """
+    open_meld_count = _clamp_melds(open_melds)
+    closed = [
+        _canonical_tile(tile)
+        for tile in concealed_tiles
+        if _canonical_tile(tile) in TILE_TYPES
+    ]
+    if open_meld_count <= 0:
+        return {
+            "viable": True,
+            "status": "menzen_riichi",
+            "label": "门清，可依赖立直",
+            "reason": "当前仍为门清，进入听牌后可以用立直满足一役。",
+            "routes": ["立直"],
+        }
+
+    melds = [
+        _canonical_tile(tile)
+        for tile in meld_tiles
+        if _canonical_tile(tile) in TILE_TYPES
+    ]
+    known_value_honors = set(value_honors or {"5z", "6z", "7z"})
+    routes: list[str] = []
+    shape_counts = Counter([*closed, *melds])
+    value_sets = [tile for tile in known_value_honors if shape_counts[tile] >= 3]
+    if value_sets:
+        routes.extend(f"役牌{_tile_name(tile)}" for tile in value_sets)
+
+    meld_evidence_complete = len(melds) >= open_meld_count * 3
+    shape = [*closed, *melds]
+    if meld_evidence_complete and shape:
+        if all(is_simple(tile) for tile in shape):
+            routes.append("断幺九")
+        suits = {tile_suit(tile) for tile in shape if tile_suit(tile) in {"m", "p", "s"}}
+        if len(suits) == 1:
+            suit_name = SUIT_NAMES.get(next(iter(suits)), "同色")
+            routes.append(f"{'混一色' if any(is_honor(tile) for tile in shape) else '清一色'}({suit_name}子)")
+
+    routes = list(dict.fromkeys(routes))
+    if routes:
+        return {
+            "viable": True,
+            "status": "open_yaku_route",
+            "label": f"有役路线：{'、'.join(routes)}",
+            "reason": f"副露后仍保留明确役路线：{'、'.join(routes)}。",
+            "routes": routes,
+        }
+    if not meld_evidence_complete:
+        return {
+            "viable": False,
+            "status": "unknown",
+            "label": "役未确认",
+            "reason": "副露组合识别不完整，暂时不能确认和牌所需的一役。",
+            "routes": [],
+        }
+    return {
+        "viable": False,
+        "status": "no_yaku",
+        "label": "当前没有确认役",
+        "reason": "已副露且当前没有识别到役牌、断幺九或染手路线，不能把进听直接当成可和牌。",
+        "routes": [],
+    }
 
 
 def _open_hand_direction(open_melds: int, efficiency: dict[str, Any]) -> str:
@@ -4577,6 +5676,7 @@ def analyze_call_options(
     claimed_tile: str = "",
     visible_tiles: list[str] | None = None,
     open_melds: int | None = None,
+    meld_tiles: list[str] | None = None,
 ) -> dict[str, Any]:
     """Evaluate every legal chi/pon/kan branch from the currently known hand.
 
@@ -4627,6 +5727,11 @@ def analyze_call_options(
                     raw_options.append({"action": "chi", "claimed_tile": tile, "consume": consume, "sequence": sequence})
 
     options: list[dict[str, Any]] = []
+    existing_meld_tiles = [
+        _canonical_tile(tile)
+        for tile in (meld_tiles or [])
+        if _canonical_tile(tile) in TILE_TYPES
+    ]
     seen: set[tuple[str, str, tuple[str, ...]]] = set()
     for raw in raw_options:
         key = (str(raw["action"]), str(raw["claimed_tile"]), tuple(sorted(raw["consume"])))
@@ -4649,19 +5754,50 @@ def analyze_call_options(
             options.append(option)
             continue
 
+        proposed_meld = list(raw.get("sequence") or [str(raw["claimed_tile"])] * 3)
+        branch_meld_tiles = [*existing_meld_tiles, *proposed_meld]
+
         after_call = build_round_plan(
             remaining,
             config,
             visible_tiles=visible_tiles,
             open_melds=current_open_melds + 1,
+            meld_tiles=branch_meld_tiles,
         )
         efficiency = after_call["efficiency"]
-        best = _best_efficiency_discard(efficiency)
-        if best:
-            best_option = next(
-                (item for item in efficiency["discard_options"] if item.get("tile") == best),
-                {},
+        discard_options = [
+            item
+            for item in (efficiency.get("all_discard_options") or efficiency.get("discard_options") or [])
+            if isinstance(item, dict) and _canonical_tile(str(item.get("tile") or "")) in TILE_TYPES
+        ]
+        evaluated_discards: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for discard_option in discard_options:
+            discard_tile = _canonical_tile(str(discard_option.get("tile") or ""))
+            post_discard_tiles = list(remaining)
+            if discard_tile in post_discard_tiles:
+                post_discard_tiles.remove(discard_tile)
+            evaluated_discards.append(
+                (
+                    discard_option,
+                    _yaku_viability(
+                        post_discard_tiles,
+                        open_melds=current_open_melds + 1,
+                        meld_tiles=branch_meld_tiles,
+                        value_honors=_value_honor_tiles(config),
+                    ),
+                )
             )
+        selected = next((item for item in evaluated_discards if item[1]["viable"]), None)
+        if selected is None and evaluated_discards:
+            selected = evaluated_discards[0]
+        best_option, yaku = selected if selected is not None else ({}, _yaku_viability(
+            remaining,
+            open_melds=current_open_melds + 1,
+            meld_tiles=branch_meld_tiles,
+            value_honors=_value_honor_tiles(config),
+        ))
+        best = str(best_option.get("tile") or "")
+        if best:
             post_shanten = int(best_option.get("shanten", efficiency["current_shanten"]))
             effective_count = int(best_option.get("effective_count", 0))
             effective_types = int(best_option.get("effective_types", 0))
@@ -4672,9 +5808,9 @@ def analyze_call_options(
         improvement = baseline - post_shanten
         value_honor = str(raw["claimed_tile"]) in _value_honor_tiles(config)
         recommendation = "skip"
-        if improvement > 0 or post_shanten == 0:
+        if yaku["viable"] and (improvement > 0 or post_shanten == 0):
             recommendation = "call"
-        elif action == "pon" and value_honor and post_shanten <= baseline and effective_count > 0:
+        elif yaku["viable"] and action == "pon" and value_honor and post_shanten <= baseline and effective_count > 0:
             recommendation = "consider"
         option.update(
             {
@@ -4685,6 +5821,11 @@ def analyze_call_options(
                 "effective_count": effective_count,
                 "shanten_change": improvement,
                 "value_honor": value_honor,
+                "yaku_viable": bool(yaku["viable"]),
+                "yaku_status": str(yaku["status"]),
+                "yaku_label": str(yaku["label"]),
+                "yaku_reason": str(yaku["reason"]),
+                "yaku_routes": list(yaku["routes"]),
                 "recommendation": recommendation,
             }
         )
@@ -4718,34 +5859,230 @@ def _remove_canonical_tiles(tiles: list[str], to_remove: list[str]) -> list[str]
     return remaining
 
 
-def _call_analysis_text(analysis: dict[str, Any]) -> str:
-    options = [item for item in analysis.get("options", []) if isinstance(item, dict)]
-    if not options:
-        return "本次没有算出合法的吃/碰/杠分支，默认跳过。"
-    evaluated = [item for item in options if item.get("status") == "evaluated"]
-    best = next((item for item in evaluated if item.get("recommendation") == "call"), None)
-    if best is None:
-        best = next((item for item in evaluated if item.get("recommendation") == "consider"), None)
-    if best is None and evaluated:
-        best = evaluated[0]
-    if best is None:
-        return "存在可杠牌，但杠后必须考虑岭上摸牌和手牌价值；当前不做自动推荐。"
+def _call_recommendation_payload(
+    analysis: dict[str, Any],
+    buttons: list[str],
+) -> dict[str, Any]:
+    """Turn evaluated call branches into one explicit, explainable decision.
 
-    action_names = {"chi": "吃", "pon": "碰", "kan": "杠"}
-    action = action_names.get(str(best.get("action")), str(best.get("action")))
-    claimed = _tile_name(str(best.get("claimed_tile") or ""))
-    discard = _tile_name(str(best.get("discard") or "")) or "再选弃牌"
-    result = (
-        f"分支牌效：若来牌是{claimed}，{action}后建议打{discard}，"
-        f"向听{best.get('post_shanten', '?')}，有效牌{best.get('effective_count', 0)}枚。"
-    )
-    if not analysis.get("claimed_tile_known"):
-        return "尚未识别本次被弃牌，不能直接替你鸣牌。" + result
-    if best.get("recommendation") == "call":
-        return "建议鸣牌。" + result
-    if best.get("recommendation") == "consider":
-        return "可以考虑鸣牌。" + result
-    return "默认跳过。" + result
+    A known river tile selects its exact branch.  If the river tile is still
+    unavailable, a direct call is emitted only when the visible button and the
+    legal hand branches identify one tile, or every possible branch agrees on
+    the same call.  Ambiguous mixed branches fail closed to ``skip`` instead of
+    pretending to know which tile was discarded.
+    """
+    options = [item for item in analysis.get("options", []) if isinstance(item, dict)]
+    evaluated = [item for item in options if item.get("status") == "evaluated"]
+    normalized_buttons = [button for button in _normalize_buttons(buttons) if button in CALL_BUTTONS]
+    available_labels = [_CALL_ACTION_NAMES.get(button, button) for button in normalized_buttons]
+    claimed_tile = _canonical_tile(str(analysis.get("claimed_tile") or ""))
+    claimed_tile_known = bool(analysis.get("claimed_tile_known") and claimed_tile in TILE_TYPES)
+    inferred_from_legal_options = False
+    agreed_without_tile = False
+
+    if claimed_tile_known:
+        candidates = [item for item in evaluated if _canonical_tile(str(item.get("claimed_tile") or "")) == claimed_tile]
+    else:
+        candidates = list(evaluated)
+        legal_tiles = {
+            _canonical_tile(str(item.get("claimed_tile") or ""))
+            for item in candidates
+            if _canonical_tile(str(item.get("claimed_tile") or "")) in TILE_TYPES
+        }
+        if len(legal_tiles) == 1:
+            claimed_tile = next(iter(legal_tiles))
+            candidates = [
+                item
+                for item in candidates
+                if _canonical_tile(str(item.get("claimed_tile") or "")) == claimed_tile
+            ]
+            inferred_from_legal_options = True
+        elif candidates:
+            best_by_tile: dict[str, dict[str, Any]] = {}
+            for item in candidates:
+                tile = _canonical_tile(str(item.get("claimed_tile") or ""))
+                if tile not in TILE_TYPES or tile in best_by_tile:
+                    continue
+                best_by_tile[tile] = item
+            branch_actions = {str(item.get("action") or "") for item in best_by_tile.values()}
+            all_call = bool(best_by_tile) and all(
+                str(item.get("recommendation") or "") in {"call", "consider"}
+                for item in best_by_tile.values()
+            )
+            if all_call and len(branch_actions) == 1:
+                candidates = list(best_by_tile.values())
+                agreed_without_tile = True
+            else:
+                candidates = []
+
+    best = next((item for item in candidates if item.get("recommendation") == "call"), None)
+    if best is None:
+        best = next((item for item in candidates if item.get("recommendation") == "consider"), None)
+    if best is None and candidates:
+        best = candidates[0]
+
+    if best is None:
+        if not options:
+            reason = "没有算出合法鸣牌分支，保持门清结构。"
+        elif evaluated:
+            reason = "被弃牌尚未稳定识别，而且不同可能分支的收益不一致，不冒险猜鸣牌。"
+        else:
+            reason = "当前只有杠的候选，但岭上摸牌与打点变化尚未完成评估。"
+        return _skip_call_recommendation(
+            normalized_buttons,
+            reason=reason,
+            claimed_tile=claimed_tile if claimed_tile_known else "",
+            available_labels=available_labels,
+        )
+
+    action = str(best.get("action") or "")
+    recommendation = str(best.get("recommendation") or "skip")
+    action_label = _CALL_ACTION_NAMES.get(action, action or "鸣牌")
+    selected_tile = _canonical_tile(str(best.get("claimed_tile") or claimed_tile or ""))
+    selected_tile_label = _tile_name(selected_tile) if selected_tile in TILE_TYPES else ""
+    post_discard = _canonical_tile(str(best.get("discard") or ""))
+    post_discard_label = _tile_name(post_discard) if post_discard in TILE_TYPES else ""
+    baseline_shanten = int(best.get("baseline_shanten", analysis.get("baseline_shanten", 8)))
+    post_shanten = int(best.get("post_shanten", baseline_shanten))
+    effective_count = int(best.get("effective_count") or 0)
+    improvement = int(best.get("shanten_change") or 0)
+    yaku_viable = bool(best.get("yaku_viable"))
+    yaku_label = str(best.get("yaku_label") or "役未确认")
+    yaku_reason = str(best.get("yaku_reason") or "")
+    yaku_routes = [str(item) for item in (best.get("yaku_routes") or []) if str(item).strip()]
+
+    should_call = recommendation in {"call", "consider"}
+    if should_call:
+        target = f"{action_label}{selected_tile_label}" if selected_tile_label and not agreed_without_tile else action_label
+        primary_action = f"主建议：{target}"
+        if post_shanten == 0:
+            reason = f"{action_label}后可以进入听牌"
+        elif improvement > 0:
+            reason = f"{action_label}后向听从{baseline_shanten}降到{post_shanten}"
+        elif bool(best.get("value_honor")):
+            reason = f"{selected_tile_label or '这张'}是役牌，{action_label}后能保留明确和牌役"
+        else:
+            reason = f"{action_label}后主线牌效不退"
+        if effective_count > 0:
+            reason += f"，预计有效牌约{effective_count}枚"
+        if post_discard_label:
+            reason += f"；鸣牌后优先打{post_discard_label}"
+        if yaku_label:
+            reason += f"；{yaku_label}"
+        reason += "。"
+        decision = "call"
+    else:
+        if not yaku_viable:
+            speed_note = (
+                f"虽然向听从{baseline_shanten}降到{post_shanten}，"
+                if improvement > 0
+                else f"向听为{baseline_shanten}→{post_shanten}，"
+            )
+            reason = f"{action_label}后{speed_note}{yaku_reason or '但没有确认和牌所需的一役。'}"
+        else:
+            reason = (
+                f"{action_label}后向听没有改善"
+                f"（{baseline_shanten}→{post_shanten}），不足以补偿门清与牌型损失。"
+            )
+        skip = _skip_call_recommendation(
+            normalized_buttons,
+            reason=reason,
+            claimed_tile=selected_tile,
+            available_labels=available_labels,
+        )
+        skip.update(
+            {
+                "post_discard": post_discard,
+                "post_discard_label": post_discard_label,
+                "baseline_shanten": baseline_shanten,
+                "post_shanten": post_shanten,
+                "effective_count": effective_count,
+                "yaku_viable": yaku_viable,
+                "yaku_status": str(best.get("yaku_status") or "unknown"),
+                "yaku_label": yaku_label,
+                "yaku_reason": yaku_reason,
+                "yaku_routes": yaku_routes,
+            }
+        )
+        return skip
+
+    return {
+        "version": 1,
+        "decision": decision,
+        "action": action,
+        "action_label": action_label,
+        "primary_action": primary_action,
+        "reason": reason,
+        "claimed_tile": selected_tile,
+        "claimed_tile_label": selected_tile_label,
+        "claimed_tile_known": claimed_tile_known,
+        "claimed_tile_inferred": inferred_from_legal_options,
+        "branch_agreement_without_tile": agreed_without_tile,
+        "post_discard": post_discard,
+        "post_discard_label": post_discard_label,
+        "baseline_shanten": baseline_shanten,
+        "post_shanten": post_shanten,
+        "effective_count": effective_count,
+        "yaku_viable": yaku_viable,
+        "yaku_status": str(best.get("yaku_status") or "unknown"),
+        "yaku_label": yaku_label,
+        "yaku_reason": yaku_reason,
+        "yaku_routes": yaku_routes,
+        "available_actions": normalized_buttons,
+        "available_action_labels": available_labels,
+    }
+
+
+_CALL_ACTION_NAMES = {"chi": "吃", "pon": "碰", "kan": "杠"}
+
+
+def _skip_call_recommendation(
+    buttons: list[str],
+    *,
+    reason: str,
+    claimed_tile: str = "",
+    available_labels: list[str] | None = None,
+) -> dict[str, Any]:
+    labels = list(available_labels or [_CALL_ACTION_NAMES.get(button, button) for button in buttons])
+    rejected = "、".join(labels)
+    primary_action = f"主建议：不{rejected}，选择跳过" if len(labels) == 1 else "主建议：不鸣，选择跳过"
+    tile = _canonical_tile(claimed_tile)
+    return {
+        "version": 1,
+        "decision": "skip",
+        "action": "skip",
+        "action_label": "跳过",
+        "primary_action": primary_action,
+        "reason": reason,
+        "claimed_tile": tile if tile in TILE_TYPES else "",
+        "claimed_tile_label": _tile_name(tile) if tile in TILE_TYPES else "",
+        "claimed_tile_known": bool(tile in TILE_TYPES),
+        "claimed_tile_inferred": False,
+        "branch_agreement_without_tile": False,
+        "post_discard": "",
+        "post_discard_label": "",
+        "baseline_shanten": 8,
+        "post_shanten": 8,
+        "effective_count": 0,
+        "available_actions": list(buttons),
+        "available_action_labels": labels,
+    }
+
+
+def _unresolved_call_recommendation(buttons: list[str], *, reason: str) -> dict[str, Any]:
+    normalized = [button for button in _normalize_buttons(buttons) if button in CALL_BUTTONS]
+    return _skip_call_recommendation(normalized, reason=reason)
+
+
+def _call_analysis_text(
+    analysis: dict[str, Any],
+    *,
+    recommendation: dict[str, Any] | None = None,
+) -> str:
+    recommendation = recommendation or _call_recommendation_payload(analysis, [])
+    primary_action = str(recommendation.get("primary_action") or "主建议：不鸣，选择跳过")
+    reason = str(recommendation.get("reason") or "当前鸣牌收益不明确。")
+    return f"{primary_action}。{reason}"
 
 
 def _riichi_advice(
@@ -4929,7 +6266,7 @@ def _discard_score(
     keep_set: set[str],
     value_honors: set[str],
     dora_tiles: set[str],
-) -> tuple[int, int, str]:
+) -> tuple[int, int, int, str]:
     suit = tile_suit(tile)
     rank = tile_rank(tile)
     rank_value = int(rank) if rank.isdigit() else 0
@@ -4938,7 +6275,16 @@ def _discard_score(
     dora_penalty = 35 if _is_dora(tile, dora_tiles) else 0
     value_penalty = 8 if tile in value_honors else 0
     if suit == "z":
-        return (pair_penalty + keep_penalty + dora_penalty + value_penalty, rank_value, tile)
+        # The score itself is unchanged.  Honor-first is only an exact-tie
+        # category for a genuinely disposable singleton.  Pairs, kept tiles,
+        # dora and value honors retain their previous ordering completely.
+        disposable_singleton = not any((pair_penalty, keep_penalty, dora_penalty, value_penalty))
+        return (
+            pair_penalty + keep_penalty + dora_penalty + value_penalty,
+            0 if disposable_singleton else 1,
+            rank_value,
+            tile,
+        )
 
     connected = _has_neighbor(tile, counts, distance=1)
     near = _has_neighbor(tile, counts, distance=2)
@@ -4954,7 +6300,7 @@ def _discard_score(
         base -= 1
     if best_suit and suit == best_suit:
         base += 2
-    return (pair_penalty + keep_penalty + dora_penalty + base, rank_value, tile)
+    return (pair_penalty + keep_penalty + dora_penalty + base, 1, rank_value, tile)
 
 
 def _has_neighbor(tile: str, counts: Counter[str], *, distance: int) -> bool:

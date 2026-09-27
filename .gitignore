@@ -222,3 +222,12 @@ tests/testbench/docs/dev_note.txt
 # Plugin runtime and local live-screen artifacts
 /plugin/plugins/*/plugin.toml.lock
 /.codex-live-screen.png
+
+# Mahjong Coach local-development runtime state. The plugin can be junctioned
+# directly into the N.E.K.O plugin directory, so keep user state and captures
+# out of the source tree while preserving bundled models/calibration data.
+/plugin/plugins/mahjong_coach/data/coach_preferences.json
+/plugin/plugins/mahjong_coach/data/overlay_prefs.json
+/plugin/plugins/mahjong_coach/data/player_profile_cache.json
+/plugin/plugins/mahjong_coach/data/live_frames/
+/plugin/plugins/mahjong_coach/data/hand_crops/

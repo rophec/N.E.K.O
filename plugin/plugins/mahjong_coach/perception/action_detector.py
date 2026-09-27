@@ -22,6 +22,8 @@ RGB_MATCH_WEIGHT = 0.55
 HSV_MATCH_WEIGHT = 0.45
 CONTEXTUAL_SKIP_THRESHOLD = 0.44
 STRONG_NEIGHBOR_THRESHOLD = 0.72
+CONTEXTUAL_WIN_THRESHOLD = 0.50
+CONTEXTUAL_WIN_MARGIN = 0.05
 
 
 def detect_action_buttons_fast(image_path: ImageSource) -> tuple[list[str], dict[str, Any]]:
@@ -138,6 +140,7 @@ def _detect_template_buttons(image: Image.Image) -> tuple[list[str], dict[str, A
         )
 
     _recover_contextual_skip(matches)
+    _recover_contextual_win(matches)
     _suppress_overlapping_matches(matches)
     detected = [item["button_type"] for item in matches if item["accepted"]]
     return detected, {
@@ -263,6 +266,80 @@ def _recover_contextual_skip(matches: list[dict[str, Any]]) -> None:
     }
 
 
+def _recover_contextual_win(matches: list[dict[str, Any]]) -> None:
+    """Recover a visually changed ron/tsumo button beside a confirmed skip.
+
+    Mahjong Soul occasionally changes the glow and background treatment of the
+    win buttons without changing their glyph or slot.  A single strict template
+    threshold then misses the most time-sensitive event.  We only accept the
+    lower score when all of the surrounding UI evidence agrees: a confirmed
+    skip button is immediately to its right, the best win label has a clear
+    margin over the other win label, and the candidate occupies a distinct
+    action slot rather than overlapping an already confirmed non-win button.
+    """
+    skip = next((item for item in matches if item.get("button_type") == "skip"), None)
+    if (
+        skip is None
+        or not skip.get("box")
+        or not skip.get("above_threshold")
+    ):
+        return
+    candidates = sorted(
+        (
+            item
+            for item in matches
+            if item.get("button_type") in WIN_BUTTONS
+            and item.get("box")
+            and not item.get("above_threshold")
+            and float(item.get("score") or 0.0) >= CONTEXTUAL_WIN_THRESHOLD
+        ),
+        key=lambda item: -float(item.get("score") or 0.0),
+    )
+    if not candidates:
+        return
+    candidate = candidates[0]
+    runner_up = next(
+        (
+            item
+            for item in matches
+            if item.get("button_type") in WIN_BUTTONS
+            and item is not candidate
+        ),
+        None,
+    )
+    if runner_up is not None and (
+        float(candidate.get("score") or 0.0) - float(runner_up.get("score") or 0.0)
+    ) < CONTEXTUAL_WIN_MARGIN:
+        return
+    if not _is_right_aligned_neighbor(candidate["box"], skip["box"]):
+        return
+    confirmed_non_win = [
+        item
+        for item in matches
+        if item.get("button_type") not in WIN_BUTTONS | {"skip"}
+        and item.get("box")
+        and item.get("above_threshold")
+    ]
+    if any(
+        _box_iou(candidate["box"], item["box"]) >= MATCH_NMS_IOU_THRESHOLD
+        for item in confirmed_non_win
+    ):
+        return
+    candidate["above_threshold"] = True
+    candidate["contextual_recovery"] = {
+        "reason": "confirmed_skip_and_distinct_win_slot",
+        "neighbor": "skip",
+        "minimum_score": CONTEXTUAL_WIN_THRESHOLD,
+        "label_margin": round(
+            float(candidate.get("score") or 0.0)
+            - float(runner_up.get("score") or 0.0)
+            if runner_up is not None
+            else float(candidate.get("score") or 0.0),
+            4,
+        ),
+    }
+
+
 def _is_right_aligned_neighbor(action_box: list[int], skip_box: list[int]) -> bool:
     action_center_x = (action_box[0] + action_box[2]) / 2.0
     action_center_y = (action_box[1] + action_box[3]) / 2.0
@@ -292,9 +369,11 @@ def _filter_plausible_buttons(buttons: list[str]) -> tuple[list[str], dict[str, 
     conflicts: list[str] = []
     if "ron" in unique and "tsumo" in unique:
         conflicts.append("ron_with_tsumo")
-    if "tsumo" in unique and any(button in unique for button in CALL_BUTTONS):
+    # A self draw can legally offer an ankan together with tsumo, and an ankan
+    # can also appear beside riichi. Chi/pon are the incompatible call types.
+    if "tsumo" in unique and any(button in unique for button in {"chi", "pon"}):
         conflicts.append("tsumo_with_call")
-    if "riichi" in unique and any(button in unique for button in CALL_BUTTONS):
+    if "riichi" in unique and any(button in unique for button in {"chi", "pon"}):
         conflicts.append("riichi_with_call")
     if len([button for button in unique if button != "skip"]) > 4:
         conflicts.append("too_many_action_buttons")

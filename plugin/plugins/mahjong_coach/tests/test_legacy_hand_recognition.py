@@ -356,6 +356,69 @@ def test_action_detector_recovers_only_aligned_skip_beside_strong_action() -> No
     assert isolated_skip[0]["above_threshold"] is False
 
 
+def test_action_detector_recovers_distinct_tsumo_slot_beside_confirmed_skip() -> None:
+    matches = [
+        {
+            "button_type": "kan",
+            "score": 0.9162,
+            "threshold": 0.58,
+            "above_threshold": True,
+            "accepted": False,
+            "box": [554, 802, 848, 933],
+        },
+        {
+            "button_type": "skip",
+            "score": 0.6630,
+            "threshold": 0.58,
+            "above_threshold": True,
+            "accepted": False,
+            "box": [1097, 802, 1472, 933],
+        },
+        {
+            "button_type": "tsumo",
+            "score": 0.5270,
+            "threshold": 0.66,
+            "above_threshold": False,
+            "accepted": False,
+            "box": [855, 790, 1100, 921],
+        },
+        {
+            "button_type": "ron",
+            "score": 0.4578,
+            "threshold": 0.66,
+            "above_threshold": False,
+            "accepted": False,
+            "box": [850, 825, 1119, 933],
+        },
+    ]
+
+    action_detector._recover_contextual_win(matches)
+
+    assert matches[2]["above_threshold"] is True
+    assert matches[2]["contextual_recovery"]["reason"] == "confirmed_skip_and_distinct_win_slot"
+
+    ambiguous = [dict(item) for item in matches]
+    ambiguous[2] = dict(ambiguous[2], above_threshold=False, score=0.5270)
+    ambiguous[2].pop("contextual_recovery", None)
+    ambiguous[3] = dict(ambiguous[3], score=0.5000)
+    action_detector._recover_contextual_win(ambiguous)
+    assert ambiguous[2]["above_threshold"] is False
+
+
+def test_action_detector_accepts_ankan_beside_tsumo_or_riichi() -> None:
+    tsumo_buttons, tsumo_meta = action_detector._filter_plausible_buttons(
+        ["kan", "tsumo", "skip"]
+    )
+    riichi_buttons, riichi_meta = action_detector._filter_plausible_buttons(
+        ["kan", "riichi", "skip"]
+    )
+
+    assert tsumo_buttons == ["tsumo", "kan", "skip"]
+    assert riichi_buttons == ["riichi", "kan", "skip"]
+    assert tsumo_meta["rejected"] is False
+    assert riichi_meta["rejected"] is False
+
+
 def test_action_detector_rejects_conflicting_button_sets(tmp_path: Path, monkeypatch) -> None:
     image = Image.new("RGB", (1920, 1080), (40, 120, 210))
     frame_path = tmp_path / "desktop_like.png"

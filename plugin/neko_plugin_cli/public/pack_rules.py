@@ -34,6 +34,7 @@ class PackRuleSet(BaseModel):
     exclude: list[str] = Field(default_factory=list)
     exclude_dirs: list[str] = Field(default_factory=list)
     exclude_files: list[str] = Field(default_factory=list)
+    include_default_profile: bool = True
 
     @field_validator("include", "exclude", "exclude_dirs", "exclude_files", mode="before")
     @classmethod

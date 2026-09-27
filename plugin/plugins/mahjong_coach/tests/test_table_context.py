@@ -7,6 +7,7 @@ from plugin.plugins.mahjong_coach.perception.table_context import (
     _parse_score,
     _score_ranks,
     detect_table_context,
+    reconcile_riichi_stick_count,
 )
 from plugin.plugins.mahjong_coach.perception.table_surface import TableSurfaceResult
 
@@ -51,6 +52,16 @@ def test_table_context_requires_all_four_scores_and_reads_both_counters() -> Non
     assert result.riichi_stick_count == 2
     assert result.honba_count == 3
     assert result.confidence == 0.89
+    assert result.to_dict()["seat_mapping"] == {
+        "self": "bottom",
+        "right_opponent": "right",
+        "top_opponent": "top",
+        "left_opponent": "left",
+    }
+    assert result.score_reads["self"]["rotation"] == 0
+    assert result.score_reads["right_opponent"]["rotation"] == 270
+    assert result.score_reads["top_opponent"]["rotation"] == 180
+    assert result.score_reads["left_opponent"]["rotation"] == 90
 
 
 def test_table_context_rejects_partial_or_low_confidence_score_set() -> None:
@@ -109,3 +120,41 @@ def test_score_ranks_use_shared_rank_for_ties() -> None:
         "left_opponent": 2,
         "top_opponent": 1,
     }
+
+
+def test_riichi_stick_count_prefers_point_conservation_over_counter_ocr() -> None:
+    count, pool, source = reconcile_riichi_stick_count(
+        {
+            "self": 24000,
+            "right_opponent": 25000,
+            "top_opponent": 25000,
+            "left_opponent": 25000,
+        },
+        0,
+    )
+    assert (count, pool, source) == (1, 100000, "common_point_pool")
+
+    count, pool, source = reconcile_riichi_stick_count(
+        {
+            "self": 23000,
+            "right_opponent": 25000,
+            "top_opponent": 25000,
+            "left_opponent": 25000,
+        },
+        7,
+        point_pool_total=100000,
+    )
+    assert (count, pool, source) == (2, 100000, "score_pool_conservation")
+
+
+def test_riichi_stick_count_keeps_ocr_as_custom_room_fallback() -> None:
+    count, pool, source = reconcile_riichi_stick_count(
+        {
+            "self": 30000,
+            "right_opponent": 25000,
+            "top_opponent": 25000,
+            "left_opponent": 25000,
+        },
+        3,
+    )
+    assert (count, pool, source) == (3, 108000, "counter_ocr_baseline")

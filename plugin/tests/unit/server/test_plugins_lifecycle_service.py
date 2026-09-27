@@ -2125,6 +2125,30 @@ async def test_delete_plugin_stops_running_host_before_removing(
 
 
 @pytest.mark.plugin_unit
+def test_delete_plugin_quarantines_directory_when_native_file_cleanup_is_locked(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "native_plugin"
+    plugin_dir.mkdir()
+    locked_file = plugin_dir / "native.pyd"
+    locked_file.write_bytes(b"mapped")
+
+    def locked_cleanup(path: Path) -> None:
+        assert path.parent == tmp_path / ".delete-pending"
+        raise PermissionError("native module is still mapped")
+
+    monkeypatch.setattr(module.shutil, "rmtree", locked_cleanup)
+
+    result = module._delete_plugin_directory_sync(plugin_dir)
+
+    assert result.deleted_from_disk is True
+    assert plugin_dir.exists() is False
+    assert result.cleanup_pending_path is not None
+    assert (result.cleanup_pending_path / "native.pyd").read_bytes() == b"mapped"
+
+
+@pytest.mark.plugin_unit
 @pytest.mark.asyncio
 async def test_delete_plugin_clears_runtime_override(
     monkeypatch: pytest.MonkeyPatch,

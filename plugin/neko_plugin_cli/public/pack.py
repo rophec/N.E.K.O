@@ -183,7 +183,11 @@ class PluginPacker:
             plugin_payload_dir,
             rules=pack_rules,
         )
-        profile_files = write_default_profile(source, paths.profiles_dir)
+        profile_files = (
+            write_default_profile(source, paths.profiles_dir)
+            if pack_rules.include_default_profile
+            else []
+        )
         payload_hash = self.compute_payload_hash(paths.payload_dir)
 
         return PayloadBuildResult(

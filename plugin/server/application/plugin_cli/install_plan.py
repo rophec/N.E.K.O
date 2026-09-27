@@ -98,8 +98,32 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
     target_dir = plugins_root / directory_name
     matching = installed.get(plugin_id, [])
     if target_dir.exists():
-        target_manifest = _read_manifest(target_dir / "plugin.toml")
-        if _plugin_text(target_manifest, "id") != plugin_id:
+        target_manifest_path = target_dir / "plugin.toml"
+        try:
+            target_manifest = _read_manifest(target_manifest_path)
+        except (OSError, tomllib.TOMLDecodeError):
+            target_manifest = {}
+        target_plugin_id = _plugin_text(target_manifest, "id")
+        if not target_plugin_id:
+            # Older Windows hosts could stop a plugin and then partially
+            # delete its directory before a locked native extension (for
+            # example cv2.pyd) made shutil.rmtree fail.  Treat that exact
+            # identity-less state as recoverable: the install service moves
+            # the remainder aside before promotion, so no user files are
+            # overwritten and the canonical target path becomes usable.
+            return PluginInstallPlan(
+                action="install",
+                package_type="plugin",
+                package_id=inspected.package_id,
+                plugin_id=plugin_id,
+                directory_name=directory_name,
+                current_version="",
+                target_version=target_version,
+                confirmation_token="",
+                reason="orphaned_target",
+                legacy_plugin_ids=(),
+            )
+        if target_plugin_id != plugin_id:
             return _blocked(
                 inspected.package_id,
                 plugin_id,

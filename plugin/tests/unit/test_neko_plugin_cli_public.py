@@ -220,6 +220,43 @@ def test_build_plugin_writes_expected_profile_and_skips_runtime_artifacts(tmp_pa
         assert 'vendor_path = "plugins/demo_plugin/vendor"' in dependency_text
 
 
+def test_profileless_plugin_installs_with_preexisting_user_profile(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    pyproject_path = plugin_dir / "pyproject.toml"
+    pyproject_path.write_text(
+        pyproject_path.read_text(encoding="utf-8").replace(
+            "[tool.neko.build]\n",
+            "[tool.neko.build]\ninclude_default_profile = false\n",
+        ),
+        encoding="utf-8",
+    )
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+
+    build_plugin(plugin_dir, package_path)
+
+    inspected = inspect_package(package_path)
+    assert inspected.profile_count == 0
+    with zipfile.ZipFile(package_path) as archive:
+        assert not any(name.startswith("payload/profiles/") for name in archive.namelist())
+
+    profiles_root = tmp_path / "profiles"
+    existing_profile = profiles_root / "demo_plugin"
+    existing_profile.mkdir(parents=True)
+    existing_text = "auto_start = false\n"
+    (existing_profile / "default.toml").write_text(existing_text, encoding="utf-8")
+
+    result = install_package(
+        package_path,
+        plugins_root=tmp_path / "installed-plugins",
+        profiles_root=profiles_root,
+        on_conflict="fail",
+    )
+
+    assert result.profile_dir is None
+    assert (existing_profile / "default.toml").read_text(encoding="utf-8") == existing_text
+    assert (tmp_path / "installed-plugins" / "demo_plugin" / "plugin.toml").is_file()
+
+
 def test_build_plugin_rejects_pyproject_dependencies_without_vendor(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     shutil.rmtree(plugin_dir / "vendor")

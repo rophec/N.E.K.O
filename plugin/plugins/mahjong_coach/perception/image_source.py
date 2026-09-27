@@ -25,7 +25,10 @@ def source_exists(source: ImageSource | None) -> bool:
 @contextmanager
 def open_rgb(source: ImageSource) -> Iterator[Image.Image]:
     if isinstance(source, Image.Image):
-        image = source.convert("RGB")
+        # Live capture already supplies RGB frames. Reuse that immutable input
+        # instead of allocating another full-resolution PIL buffer in every
+        # detector participating in the same analysis pass.
+        image = source if source.mode == "RGB" else source.convert("RGB")
         try:
             yield image
         finally:
@@ -49,9 +52,14 @@ def source_stem(source: ImageSource) -> str:
 def source_identity(source: ImageSource | None) -> tuple[str, int, int, str] | None:
     if isinstance(source, Image.Image):
         frame_id = int(getattr(source, "_neko_frame_id", id(source)))
-        thumb = source.convert("RGB").resize((32, 18), Image.Resampling.BILINEAR)
-        digest = hashlib.blake2s(thumb.tobytes(), digest_size=12).hexdigest()
-        thumb.close()
+        rgb = source if source.mode == "RGB" else source.convert("RGB")
+        thumb = rgb.resize((32, 18), Image.Resampling.BILINEAR)
+        try:
+            digest = hashlib.blake2s(thumb.tobytes(), digest_size=12).hexdigest()
+        finally:
+            thumb.close()
+            if rgb is not source:
+                rgb.close()
         return "memory", int(source.width * source.height * 3), frame_id, digest
     if source is None:
         return None

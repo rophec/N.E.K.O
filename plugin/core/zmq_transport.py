@@ -35,6 +35,25 @@ CH_COMM = "comm"
 CH_RESP = "resp"
 
 _LINGER_MS = 1000
+_PLUGIN_TRANSPORT_MIN_PORT = 49152
+_PLUGIN_TRANSPORT_MAX_PORT = 65535
+
+
+def _bind_plugin_transport_socket(sock: Any) -> str:
+    """Bind plugin IPC outside the fixed message-plane/server port range.
+
+    Binding to ``tcp://127.0.0.1:*`` lets the OS recycle 38865-38867 after the
+    message plane stops.  A later plugin push can then send ormsgpack into a
+    control socket that expects pickle, producing misleading unpickling errors.
+    """
+
+    port = sock.bind_to_random_port(
+        "tcp://127.0.0.1",
+        min_port=_PLUGIN_TRANSPORT_MIN_PORT,
+        max_port=_PLUGIN_TRANSPORT_MAX_PORT,
+        max_tries=200,
+    )
+    return f"tcp://127.0.0.1:{int(port)}"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -58,15 +77,13 @@ class HostTransport:
         self._dl_sock = self._ctx.socket(zmq.PUSH)
         self._dl_sock.setsockopt(zmq.LINGER, _LINGER_MS)
         self._dl_sock.setsockopt(zmq.SNDHWM, 5000)
-        self._dl_sock.bind("tcp://127.0.0.1:*")
-        self.downlink_endpoint: str = self._dl_sock.getsockopt(zmq.LAST_ENDPOINT).decode()
+        self.downlink_endpoint = _bind_plugin_transport_socket(self._dl_sock)
 
         # Uplink: child → host (PUSH/PULL)
         self._ul_sock = self._ctx.socket(zmq.PULL)
         self._ul_sock.setsockopt(zmq.LINGER, 0)
         self._ul_sock.setsockopt(zmq.RCVHWM, 5000)
-        self._ul_sock.bind("tcp://127.0.0.1:*")
-        self.uplink_endpoint: str = self._ul_sock.getsockopt(zmq.LAST_ENDPOINT).decode()
+        self.uplink_endpoint = _bind_plugin_transport_socket(self._ul_sock)
 
         self._closed = False
 

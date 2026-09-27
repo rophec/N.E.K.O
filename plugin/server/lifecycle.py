@@ -4,6 +4,7 @@ from __future__ import annotations
 import atexit
 import asyncio
 import os
+import threading
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -45,6 +46,7 @@ class _ShutdownResult:
 class ServerLifecycleService:
     def __init__(self) -> None:
         self._message_plane_runner: MessagePlaneRunner | None = None
+        self._message_plane_lock = threading.RLock()
         self._plugin_registry_service = PluginRegistryService()
         self._plugin_lifecycle_service = PluginLifecycleService()
 
@@ -105,18 +107,47 @@ class ServerLifecycleService:
         with state.acquire_event_handlers_write_lock():
             state.event_handlers.clear()
 
+    def _ensure_message_plane_started_sync(self) -> MessagePlaneRunner:
+        """Return a healthy runner, recreating infrastructure stopped by a hot reload.
+
+        Plugin start/reload routes remain available while the embedded plugin
+        lifecycle is disabled.  A plain ZMQ PUSH still reports a successful
+        local send in that state, so callers used to mistake a dead transport
+        for a delivered proactive message.  Keep the runner behind a process-
+        wide lock and make this operation safe to call before every manual
+        start/reload.
+        """
+
+        with self._message_plane_lock:
+            runner = self._message_plane_runner
+            if runner is not None:
+                try:
+                    if runner.health_check(timeout_s=0.2):
+                        return runner
+                except (RuntimeError, ValueError, TypeError, OSError, AttributeError):
+                    pass
+                try:
+                    runner.stop()
+                except (RuntimeError, ValueError, TypeError, OSError, AttributeError):
+                    pass
+                self._message_plane_runner = None
+
+            runner = build_message_plane_runner()
+            runner.start()
+            self._message_plane_runner = runner
+            return runner
+
     async def _start_message_plane(self) -> None:
-        self._message_plane_runner = build_message_plane_runner()
-        self._message_plane_runner.start()
+        runner = await asyncio.to_thread(self._ensure_message_plane_started_sync)
         try:
-            health_check_async = getattr(self._message_plane_runner, "health_check_async", None)
+            health_check_async = getattr(runner, "health_check_async", None)
             if health_check_async is not None and asyncio.iscoroutinefunction(health_check_async):
                 healthy = await health_check_async(timeout_s=1.0)
             else:
                 # Fallback: runner only exposes the sync API — offload to a worker thread so we
                 # never block the event loop on the ~1s TCP probe + RPC round-trip.
                 healthy = await asyncio.to_thread(
-                    self._message_plane_runner.health_check, timeout_s=1.0
+                    runner.health_check, timeout_s=1.0
                 )
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
             logger.warning(
@@ -127,6 +158,45 @@ class ServerLifecycleService:
             return
         if not healthy:
             logger.warning("message_plane health check returned false; it may still be starting")
+
+    async def ensure_messaging_started(self) -> None:
+        """Ensure every transport needed by plugin requests and proactive chat."""
+
+        try:
+            _ = state.plugin_response_map
+        except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
+            logger.warning(
+                "failed to initialize plugin response map early: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+
+        await plugin_router.start()
+        logger.debug("plugin router started")
+
+        try:
+            await self._start_message_plane()
+        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError, TimeoutError) as exc:
+            logger.warning(
+                "message_plane start failed: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            return
+
+        for start_fn, label in (
+            (start_bridge, "message bridge"),
+            (start_proactive_bridge, "proactive bridge"),
+        ):
+            try:
+                start_fn()
+            except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
+                logger.warning(
+                    "failed to start {}: err_type={}, err={}",
+                    label,
+                    type(exc).__name__,
+                    str(exc),
+                )
 
     async def _refresh_registry_and_start_autostart_plugins(self) -> None:
         try:
@@ -171,40 +241,12 @@ class ServerLifecycleService:
 
         self._clear_runtime_state()
 
-        await ensure_plugin_messaging_started()
-
-        try:
-            await self._start_message_plane()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError, TimeoutError) as exc:
-            logger.warning(
-                "message_plane start failed: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
-            self._message_plane_runner = None
+        await self.ensure_messaging_started()
 
         await self._refresh_registry_and_start_autostart_plugins()
 
         await bus_subscription_manager.start()
         logger.debug("bus subscription manager started")
-
-        try:
-            start_bridge()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
-            logger.warning(
-                "failed to start message bridge: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
-
-        try:
-            start_proactive_bridge()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
-            logger.warning(
-                "failed to start proactive bridge: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
 
         def _get_hosts() -> dict[str, object]:
             return self._get_plugin_hosts_snapshot()
@@ -385,18 +427,9 @@ class ServerLifecycleService:
 
 
 async def ensure_plugin_messaging_started() -> None:
-    """Start plugin request messaging without running full plugin lifecycle."""
-    try:
-        _ = state.plugin_response_map
-    except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
-        logger.warning(
-            "failed to initialize plugin response map early: err_type={}, err={}",
-            type(exc).__name__,
-            str(exc),
-        )
+    """Restore request, message-plane and proactive transports when needed."""
 
-    await plugin_router.start()
-    logger.debug("plugin router started")
+    await _service.ensure_messaging_started()
 
 
 _service = ServerLifecycleService()

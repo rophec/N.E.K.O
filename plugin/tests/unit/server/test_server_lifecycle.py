@@ -10,6 +10,37 @@ from plugin.server import lifecycle as module
 pytestmark = pytest.mark.plugin_unit
 
 
+def test_message_plane_runner_is_recreated_when_previous_runner_is_unhealthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class _Runner:
+        def __init__(self, name: str, healthy: bool) -> None:
+            self.name = name
+            self.healthy = healthy
+
+        def health_check(self, *, timeout_s: float = 1.0) -> bool:
+            calls.append(f"health:{self.name}:{timeout_s}")
+            return self.healthy
+
+        def start(self) -> None:
+            calls.append(f"start:{self.name}")
+
+        def stop(self) -> None:
+            calls.append(f"stop:{self.name}")
+
+    service = module.ServerLifecycleService()
+    stale = _Runner("stale", False)
+    fresh = _Runner("fresh", True)
+    service._message_plane_runner = stale
+    monkeypatch.setattr(module, "build_message_plane_runner", lambda: fresh)
+
+    assert service._ensure_message_plane_started_sync() is fresh
+    assert service._message_plane_runner is fresh
+    assert calls == ["health:stale:0.2", "stop:stale", "start:fresh"]
+
+
 @pytest.mark.asyncio
 async def test_ensure_plugin_messaging_started_initializes_response_map_and_router(
     monkeypatch: pytest.MonkeyPatch,
@@ -25,15 +56,27 @@ async def test_ensure_plugin_messaging_started_initializes_response_map_and_rout
     async def _start_router() -> None:
         calls.append("router_start")
 
+    async def _start_plane() -> None:
+        calls.append("message_plane_start")
+
     monkeypatch.setattr(module, "state", _State())
     monkeypatch.setattr(module.plugin_router, "start", _start_router)
+    monkeypatch.setattr(module._service, "_start_message_plane", _start_plane)
+    monkeypatch.setattr(module, "start_bridge", lambda: calls.append("bridge_start"))
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: calls.append("proactive_bridge_start"))
 
     ensure = getattr(module, "ensure_plugin_messaging_started", None)
     assert callable(ensure)
 
     await ensure()
 
-    assert calls == ["response_map", "router_start"]
+    assert calls == [
+        "response_map",
+        "router_start",
+        "message_plane_start",
+        "bridge_start",
+        "proactive_bridge_start",
+    ]
 
 
 @pytest.mark.asyncio
@@ -51,6 +94,9 @@ async def test_ensure_plugin_messaging_started_starts_router_when_response_map_i
     async def _start_router() -> None:
         calls.append("router_start")
 
+    async def _start_plane() -> None:
+        calls.append("message_plane_start")
+
     warnings: list[tuple[str, str, str]] = []
 
     class _Logger:
@@ -62,11 +108,20 @@ async def test_ensure_plugin_messaging_started_starts_router_when_response_map_i
 
     monkeypatch.setattr(module, "state", _State())
     monkeypatch.setattr(module.plugin_router, "start", _start_router)
+    monkeypatch.setattr(module._service, "_start_message_plane", _start_plane)
+    monkeypatch.setattr(module, "start_bridge", lambda: calls.append("bridge_start"))
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: calls.append("proactive_bridge_start"))
     monkeypatch.setattr(module, "logger", _Logger())
 
     await module.ensure_plugin_messaging_started()
 
-    assert calls == ["response_map", "router_start"]
+    assert calls == [
+        "response_map",
+        "router_start",
+        "message_plane_start",
+        "bridge_start",
+        "proactive_bridge_start",
+    ]
     assert warnings == [
         (
             "failed to initialize plugin response map early: err_type={}, err={}",

@@ -1,6 +1,6 @@
 [project]
 name = "mahjong-coach-plugin"
-version = "0.3.0"
+version = "0.3.31"
 requires-python = ">=3.11,<3.12"
 dependencies = [
   "numpy==1.26.4",
@@ -8,7 +8,27 @@ dependencies = [
 ]
 
 [tool.neko.build]
+include_default_profile = false
 exclude_dirs = [
   "docs",
+  "live_frames",
   "tests",
+]
+exclude_files = [
+  ".overlay-preview.json",
+  "coach_preferences.json",
+  "overlay_prefs.json",
+]
+
+[tool.neko.pack]
+include_default_profile = false
+exclude_dirs = [
+  "docs",
+  "live_frames",
+  "tests",
+]
+exclude_files = [
+  ".overlay-preview.json",
+  "coach_preferences.json",
+  "overlay_prefs.json",
 ]

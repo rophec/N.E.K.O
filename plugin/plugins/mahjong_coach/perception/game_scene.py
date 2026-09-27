@@ -53,13 +53,12 @@ def detect_game_scene_path(image_path: ImageSource) -> GameSceneResult:
         )
     try:
         with open_rgb(image_path) as opened:
-            image = opened.copy()
+            return detect_game_scene_image(opened, started=started)
     except Exception:
         return GameSceneResult(
             reason="image_unreadable",
             elapsed_ms=(time.perf_counter() - started) * 1000.0,
         )
-    return detect_game_scene_image(image, started=started)
 
 
 def detect_game_scene_image(
@@ -68,7 +67,7 @@ def detect_game_scene_image(
     started: float | None = None,
 ) -> GameSceneResult:
     started = time.perf_counter() if started is None else started
-    rgb = image.convert("RGB")
+    rgb = image if image.mode == "RGB" else image.convert("RGB")
     width, height = rgb.size
     if width < 320 or height < 180:
         return GameSceneResult(

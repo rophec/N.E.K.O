@@ -249,6 +249,105 @@ def _rewrite_package_manifest_id(package_path: Path, package_id: str) -> None:
             dst.writestr(info, data)
 
 
+def test_staged_install_reuses_existing_user_profile(tmp_path: Path) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    package_path = tmp_path / "demo-2.0.0.neko-plugin"
+    build_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    existing_profile = profiles_root / "demo"
+    existing_profile.mkdir(parents=True)
+    existing_text = "auto_start = false\nuser_choice = true\n"
+    (existing_profile / "default.toml").write_text(existing_text, encoding="utf-8")
+
+    result = PluginCliService()._install_via_staging_sync(
+        package=package_path,
+        plugins_root=plugins_root,
+        profiles_root=profiles_root,
+        on_conflict="fail",
+    )
+
+    assert result.profile_dir == existing_profile.resolve()
+    assert (existing_profile / "default.toml").read_text(encoding="utf-8") == existing_text
+    assert (plugins_root / "demo" / "plugin.toml").is_file()
+
+
+@pytest.mark.asyncio
+async def test_service_recovers_identity_less_partial_delete_before_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo-2.0.0.neko-plugin"
+    build_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    orphaned_target = plugins_root / "demo"
+    orphaned_target.mkdir(parents=True)
+    (orphaned_target / "locked-native.pyd").write_bytes(b"old")
+    profiles_root = tmp_path / "profiles"
+
+    import plugin.settings as plugin_settings
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+
+    service = PluginCliService()
+    plan = await service.plan_install(package=str(package_path))
+
+    assert plan["action"] == "install"
+    assert plan["reason"] == "orphaned_target"
+
+    result = await service.install(package=str(package_path))
+
+    assert result["orphaned_target_recovered"] is True
+    assert result["orphaned_target_cleanup_pending"] is True
+    recovery_path = Path(str(result["orphaned_target_recovery_path"]))
+    assert (recovery_path / "locked-native.pyd").read_bytes() == b"old"
+    assert 'id = "demo"' in (plugins_root / "demo" / "plugin.toml").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_service_restores_identity_less_target_when_recovery_install_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo-2.0.0.neko-plugin"
+    build_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    orphaned_target = plugins_root / "demo"
+    orphaned_target.mkdir(parents=True)
+    (orphaned_target / "old-data.bin").write_bytes(b"keep")
+    profiles_root = tmp_path / "profiles"
+
+    import plugin.settings as plugin_settings
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+
+    service = PluginCliService()
+
+    def fail_install(**_kwargs: object) -> dict[str, object]:
+        raise RuntimeError("install failed")
+
+    monkeypatch.setattr(service, "_install_sync", fail_install)
+
+    with pytest.raises(RuntimeError, match="install failed"):
+        await service.install(package=str(package_path))
+
+    assert (orphaned_target / "old-data.bin").read_bytes() == b"keep"
+    recovery_root = plugins_root / ".install-recovery"
+    assert not recovery_root.exists() or not list(recovery_root.iterdir())
+
+
 @pytest.mark.asyncio
 async def test_service_rejects_changed_target_before_stopping(
     tmp_path: Path,

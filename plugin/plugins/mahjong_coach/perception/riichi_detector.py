@@ -38,8 +38,7 @@ def detect_riichi_sticks(image_path: ImageSource) -> RiichiDetectResult:
     if not source_exists(image_path):
         return RiichiDetectResult()
     with open_rgb(image_path) as opened:
-        image = opened.copy()
-    counter = _detect_riichi_stick_counter(image)
+        counter = _detect_riichi_stick_counter(opened)
     return RiichiDetectResult(
         detections=[counter],
         stick_count=_int_or_none(counter.get("count")),

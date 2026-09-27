@@ -223,7 +223,11 @@ class PluginBuilder:
             plugin_payload_dir,
             rules=build_rules,
         )
-        profile_files = write_default_profile(source, paths.profiles_dir)
+        profile_files = (
+            write_default_profile(source, paths.profiles_dir)
+            if build_rules.include_default_profile
+            else []
+        )
         write_dependency_manifest([source], paths.payload_dir)
         validate_payload_dependency_layout(paths.payload_dir, [source.plugin_id])
         payload_hash = self.compute_payload_hash(paths.payload_dir)

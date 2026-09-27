@@ -6,6 +6,7 @@ import math
 import re
 import shutil
 import time as time_module
+import uuid
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
@@ -65,6 +66,12 @@ logger = get_logger("server.application.plugins.lifecycle")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
 plugin_registry_service = PluginRegistryService()
+
+
+@dataclass(frozen=True, slots=True)
+class _PluginDirectoryDeleteResult:
+    deleted_from_disk: bool
+    cleanup_pending_path: Path | None = None
 
 
 def _persist_user_runtime_intent(
@@ -359,11 +366,38 @@ def _remove_plugin_metadata_sync(plugin_id: str) -> bool:
     return removed
 
 
-def _delete_plugin_directory_sync(plugin_dir: Path) -> bool:
+def _delete_plugin_directory_sync(plugin_dir: Path) -> _PluginDirectoryDeleteResult:
     if not plugin_dir.exists():
-        return False
-    shutil.rmtree(plugin_dir)
-    return True
+        return _PluginDirectoryDeleteResult(deleted_from_disk=False)
+
+    # Do not let a locked native extension leave a half-deleted canonical
+    # plugin directory.  Renaming within the same parent is atomic on the
+    # supported filesystems and releases the install target immediately.
+    # Cleanup is best-effort because Windows can keep .pyd files mapped in
+    # the host process even after the plugin child has stopped.
+    pending_root = plugin_dir.parent / ".delete-pending"
+    pending_root.mkdir(parents=True, exist_ok=True)
+    pending_path = pending_root / f"{plugin_dir.name}.{uuid.uuid4().hex}"
+    plugin_dir.rename(pending_path)
+    try:
+        shutil.rmtree(pending_path)
+    except OSError as exc:
+        logger.warning(
+            "plugin directory cleanup deferred path={} err_type={} err={}",
+            pending_path,
+            type(exc).__name__,
+            str(exc),
+        )
+        return _PluginDirectoryDeleteResult(
+            deleted_from_disk=True,
+            cleanup_pending_path=pending_path,
+        )
+
+    try:
+        pending_root.rmdir()
+    except OSError:
+        pass
+    return _PluginDirectoryDeleteResult(deleted_from_disk=True)
 
 
 def _register_or_replace_host_sync(plugin_id: str, host: PluginHostContract) -> int:
@@ -1259,7 +1293,7 @@ class PluginLifecycleService:
             await self.stop_plugin(plugin_id)
 
         try:
-            deleted_from_disk = await asyncio.to_thread(_delete_plugin_directory_sync, plugin_dir)
+            delete_result = await asyncio.to_thread(_delete_plugin_directory_sync, plugin_dir)
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
             await asyncio.to_thread(_remove_plugin_metadata_sync, plugin_id)
@@ -1288,16 +1322,20 @@ class PluginLifecycleService:
             plugin_id=plugin_id,
             data={
                 "plugin_dir": str(plugin_dir),
-                "deleted_from_disk": deleted_from_disk,
+                "deleted_from_disk": delete_result.deleted_from_disk,
+                "cleanup_pending": delete_result.cleanup_pending_path is not None,
             },
         )
         response: dict[str, object] = {
             "success": True,
             "plugin_id": plugin_id,
             "plugin_dir": str(plugin_dir),
-            "deleted_from_disk": deleted_from_disk,
+            "deleted_from_disk": delete_result.deleted_from_disk,
+            "cleanup_pending": delete_result.cleanup_pending_path is not None,
             "message": "Plugin deleted successfully",
         }
+        if delete_result.cleanup_pending_path is not None:
+            response["cleanup_pending_path"] = str(delete_result.cleanup_pending_path)
         return response
 
     async def _safe_stop_for_reload(self, plugin_id: str) -> _ReloadOutcome:

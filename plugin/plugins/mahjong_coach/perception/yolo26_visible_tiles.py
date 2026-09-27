@@ -13,6 +13,18 @@ from PIL import Image, ImageDraw
 
 from .fast_hand_path import FastHandResult
 from .image_source import ImageSource, open_rgb, source_exists, source_stem
+from .onnx_runtime import create_inference_session
+
+
+_YOLO_RUNTIME_STATE: dict[str, Any] = {
+    "session_loaded": False,
+    "configured_mode": "speed",
+    "requested_providers": [],
+    "actual_providers": [],
+    "available_providers": [],
+    "fallback_reason": "",
+    "updated_at": 0.0,
+}
 from .meld_state import MeldStateResult
 from .river_state import RiverStateResult
 from .table_surface import TableSurfaceResult, detect_table_surface
@@ -169,6 +181,7 @@ def detect_yolo26_table_state_path(
     min_confidence: float = DEFAULT_CONFIDENCE,
     diagnostics_dir: Path | None = None,
     table_surface_result: TableSurfaceResult | None = None,
+    inference_provider: str = "speed",
 ) -> Yolo26TableStateResult:
     started = time.perf_counter()
     if not source_exists(image_path):
@@ -180,7 +193,7 @@ def detect_yolo26_table_state_path(
             diagnostics_dir=diagnostics_dir,
             diagnostics_stem=source_stem(image_path),
         )
-        backend = load_yolo26_backend(selected_model_dir)
+        backend = load_yolo26_backend(selected_model_dir, inference_provider=inference_provider)
         if not backend.available:
             return Yolo26TableStateResult(
                 reason=backend.reason,
@@ -317,6 +330,7 @@ def detect_yolo26_table_state_path(
             "yolo26_river_tile_count": len(grouped["visible_tiles"]),
             "yolo26_excluded_visible_count": grouped["excluded_visible_count"],
             "yolo26_riichi_players": list(grouped["riichi_players"]),
+            "yolo26_riichi_evidence": dict(grouped["riichi_evidence"]),
         },
         original_inference_ok=original_ok,
         river_inference_ok=river_ok,
@@ -434,7 +448,8 @@ def postprocess_yolo26_detections(
         for tile in meld.get("tiles", [])
         if str(tile).strip()
     ]
-    riichi_players = _detect_riichi_declarations(discard_piles)
+    riichi_evidence = _detect_riichi_declaration_evidence(discard_piles)
+    riichi_players = sorted(riichi_evidence)
     confidences = [item.confidence for item in enriched]
     opponent_meld_count = sum(len(items) for items in opponent_melds.values())
     excluded_visible_count = sum(item.area_kind != "river" for item in enriched_river)
@@ -451,6 +466,7 @@ def postprocess_yolo26_detections(
         "discard_piles": discard_piles,
         "visible_tiles": [item.tile for item in river],
         "riichi_players": riichi_players,
+        "riichi_evidence": riichi_evidence,
         "original_recovered_count": original_recovered_count,
         "hand_recovered_count": hand_recovered_count,
         "meld_recovered_count": meld_recovered_count,
@@ -472,7 +488,7 @@ class _Backend:
         return []
 
 
-def load_yolo26_backend(model_dir: Path) -> _Backend:
+def load_yolo26_backend(model_dir: Path, *, inference_provider: str = "speed") -> _Backend:
     if not model_dir.exists():
         return _Backend(False, "yolo26_model_dir_missing", "none")
     metadata_path = model_dir / "metadata.json"
@@ -517,6 +533,7 @@ def load_yolo26_backend(model_dir: Path) -> _Backend:
         model_identity=model_identity,
         labels=labels,
         input_size=input_size,
+        inference_provider=inference_provider,
     )
 
 
@@ -577,6 +594,7 @@ class _OnnxYolo26Backend(_Backend):
     model_path: Path = Path()
     model_identity: tuple[str, int, int, str] = ("", 0, 0, "")
     input_size: tuple[int, int] = (800, 800)
+    inference_provider: str = "speed"
 
     def __init__(
         self,
@@ -585,6 +603,7 @@ class _OnnxYolo26Backend(_Backend):
         model_identity: tuple[str, int, int, str],
         labels: list[str],
         input_size: tuple[int, int],
+        inference_provider: str,
     ) -> None:
         object.__setattr__(self, "available", True)
         object.__setattr__(self, "reason", "")
@@ -593,13 +612,18 @@ class _OnnxYolo26Backend(_Backend):
         object.__setattr__(self, "model_path", model_path)
         object.__setattr__(self, "model_identity", model_identity)
         object.__setattr__(self, "input_size", input_size)
+        object.__setattr__(
+            self,
+            "inference_provider",
+            "speed" if str(inference_provider).strip().lower() == "speed" else "memory",
+        )
 
     def detect(self, image: Image.Image, *, min_confidence: float) -> list[YoloTileDetection]:
         # 中文：这里执行 ONNX 推理，并解码 YOLO26 的端到端检测输出。
         # English: This runs ONNX inference and decodes YOLO26 end-to-end detections.
         # 中文：插件仅加载导出的轻量模型，不导入训练框架。
         # English: The plugin loads only the lightweight export and never imports the training framework.
-        session = _load_onnx_session(*self.model_identity)
+        session = _load_onnx_session(*self.model_identity, self.inference_provider)
         tensor, scale, pad_x, pad_y = _prepare_onnx_input(image, input_size=self.input_size)
         outputs = session.run(None, {session.get_inputs()[0].name: tensor})
         if not outputs:
@@ -615,29 +639,183 @@ class _OnnxYolo26Backend(_Backend):
         )
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=1)
 def _load_onnx_session(
     model_path: str,
     _model_size: int,
     _model_mtime_ns: int,
     _model_content_digest: str,
+    inference_provider: str = "speed",
 ) -> Any:
     import onnxruntime as ort  # type: ignore[import-not-found]
 
+    low_memory = str(inference_provider).strip().lower() != "speed"
     available = set(ort.get_available_providers())
-    providers = [
-        provider
-        for provider in ("CUDAExecutionProvider", "DmlExecutionProvider", "CPUExecutionProvider")
-        if provider in available
-    ]
-    if not providers:
-        providers = ["CPUExecutionProvider"]
-    try:
-        return ort.InferenceSession(model_path, providers=providers)
-    except Exception:
-        if providers == ["CPUExecutionProvider"]:
+    providers = ["CPUExecutionProvider"]
+    if not low_memory:
+        providers = [
+            provider
+            for provider in ("CUDAExecutionProvider", "DmlExecutionProvider", "CPUExecutionProvider")
+            if provider in available
+        ] or ["CPUExecutionProvider"]
+    fallback_reason = ""
+    preload_warning = ""
+    if "CUDAExecutionProvider" in providers and hasattr(ort, "preload_dlls"):
+        try:
+            # ONNX Runtime 1.21+ can discover CUDA/cuDNN beside PyTorch or in
+            # NVIDIA site-packages before the first CUDA session is created.
+            ort.preload_dlls()
+        except Exception as exc:
+            preload_warning = f"cuda_dll_preload_failed:{type(exc).__name__}"
+    provider_attempts = [["CPUExecutionProvider"]]
+    if not low_memory:
+        provider_attempts = []
+        if "CUDAExecutionProvider" in available:
+            provider_attempts.append(["CUDAExecutionProvider", "CPUExecutionProvider"])
+        if "DmlExecutionProvider" in available:
+            provider_attempts.append(["DmlExecutionProvider", "CPUExecutionProvider"])
+        provider_attempts.append(["CPUExecutionProvider"])
+
+    session = None
+    selected_providers = provider_attempts[-1]
+    failed_accelerators: list[str] = []
+    for requested in provider_attempts:
+        requested_accelerator = next(
+            (provider for provider in requested if provider != "CPUExecutionProvider"),
+            "",
+        )
+        try:
+            candidate = create_inference_session(
+                ort,
+                model_path,
+                requested,
+                low_memory=not requested_accelerator,
+            )
+        except Exception as exc:
+            if requested_accelerator:
+                failed_accelerators.append(
+                    f"{requested_accelerator}:{type(exc).__name__}"
+                )
+                continue
+            fallback_reason = f"session_create_failed:{type(exc).__name__}"
+            _update_yolo_runtime_state(
+                configured_mode=inference_provider,
+                requested_providers=requested,
+                available_providers=sorted(available),
+                actual_providers=[],
+                fallback_reason=fallback_reason,
+                session_loaded=False,
+            )
             raise
-        return ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        candidate_providers = (
+            list(candidate.get_providers()) if hasattr(candidate, "get_providers") else []
+        )
+        if requested_accelerator and requested_accelerator not in candidate_providers:
+            failed_accelerators.append(f"{requested_accelerator}:provider_not_active")
+            continue
+        session = candidate
+        selected_providers = requested
+        break
+
+    if session is None:  # Defensive guard; the CPU attempt either succeeds or raises.
+        raise RuntimeError("onnx_session_unavailable")
+    actual_providers = list(session.get_providers()) if hasattr(session, "get_providers") else []
+    accelerated = any(
+        provider in {"CUDAExecutionProvider", "DmlExecutionProvider"}
+        for provider in actual_providers
+    )
+    if accelerated:
+        fallback_reason = ";".join(failed_accelerators)
+    elif not low_memory and not fallback_reason:
+        fallback_reason = ";".join(failed_accelerators) or preload_warning or "accelerator_provider_unavailable"
+    _update_yolo_runtime_state(
+        configured_mode=inference_provider,
+        requested_providers=selected_providers,
+        available_providers=sorted(available),
+        actual_providers=actual_providers,
+        fallback_reason=fallback_reason,
+        session_loaded=True,
+    )
+    return session
+
+
+def _update_yolo_runtime_state(
+    *,
+    configured_mode: str,
+    requested_providers: list[str],
+    available_providers: list[str],
+    actual_providers: list[str],
+    fallback_reason: str,
+    session_loaded: bool,
+) -> None:
+    _YOLO_RUNTIME_STATE.update(
+        {
+            "session_loaded": bool(session_loaded),
+            "configured_mode": (
+                "speed" if str(configured_mode).strip().lower() == "speed" else "memory"
+            ),
+            "requested_providers": list(requested_providers),
+            "actual_providers": list(actual_providers),
+            "available_providers": list(available_providers),
+            "fallback_reason": str(fallback_reason or ""),
+            "updated_at": time.time(),
+        }
+    )
+
+
+def release_yolo26_runtime_cache() -> None:
+    """Drop native ONNX sessions after live capture stops."""
+    _load_onnx_session.cache_clear()
+    _validate_model_artifact.cache_clear()
+    _YOLO_RUNTIME_STATE["session_loaded"] = False
+    _YOLO_RUNTIME_STATE["updated_at"] = time.time()
+
+
+def yolo26_runtime_stats() -> dict[str, Any]:
+    session_info = _load_onnx_session.cache_info()
+    artifact_info = _validate_model_artifact.cache_info()
+    return {
+        "yolo_sessions": int(session_info.currsize),
+        "yolo_session_hits": int(session_info.hits),
+        "yolo_session_misses": int(session_info.misses),
+        "yolo_artifact_entries": int(artifact_info.currsize),
+        "yolo_runtime": dict(_YOLO_RUNTIME_STATE),
+    }
+
+
+def warmup_yolo26_runtime(
+    *,
+    inference_provider: str = "speed",
+    model_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Create and exercise the cached YOLO session before the first live frame."""
+
+    started = time.perf_counter()
+    backend = load_yolo26_backend(
+        model_dir or DEFAULT_MODEL_DIR,
+        inference_provider=inference_provider,
+    )
+    if not backend.available or not isinstance(backend, _OnnxYolo26Backend):
+        return {
+            "status": "unavailable",
+            "reason": backend.reason or "yolo26_backend_unavailable",
+            "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            "providers": [],
+        }
+    session = _load_onnx_session(*backend.model_identity, backend.inference_provider)
+    probe = Image.new("RGB", backend.input_size, "black")
+    try:
+        backend.detect(probe, min_confidence=1.0)
+    finally:
+        probe.close()
+    providers = list(session.get_providers()) if hasattr(session, "get_providers") else []
+    return {
+        "status": "ready",
+        "reason": "",
+        "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
+        "providers": providers,
+        "inference_provider": backend.inference_provider,
+    }
 
 
 def _prepare_onnx_input(
@@ -648,7 +826,7 @@ def _prepare_onnx_input(
     import numpy as np  # type: ignore[import-not-found]
 
     input_width, input_height = input_size
-    source = image.convert("RGB")
+    source = image if image.mode == "RGB" else image.convert("RGB")
     source_width, source_height = source.size
     scale = min(input_width / max(1, source_width), input_height / max(1, source_height))
     resized_width = max(1, int(round(source_width * scale)))
@@ -658,8 +836,14 @@ def _prepare_onnx_input(
     pad_y = float((input_height - resized_height) // 2)
     letterboxed = Image.new("RGB", (input_width, input_height), (114, 114, 114))
     letterboxed.paste(resized, (int(pad_x), int(pad_y)))
-    tensor = np.asarray(letterboxed, dtype=np.float32).transpose(2, 0, 1)[None] / 255.0
-    return np.ascontiguousarray(tensor), float(scale), pad_x, pad_y
+    try:
+        tensor = np.asarray(letterboxed, dtype=np.float32).transpose(2, 0, 1)[None] / 255.0
+        return np.ascontiguousarray(tensor), float(scale), pad_x, pad_y
+    finally:
+        letterboxed.close()
+        resized.close()
+        if source is not image:
+            source.close()
 
 
 def _decode_end2end_output(
@@ -1437,7 +1621,13 @@ def _clamp_float(value: float, minimum: float, maximum: float) -> float:
 
 
 def _detect_riichi_declarations(discard_piles: dict[str, list[dict[str, Any]]]) -> list[str]:
-    detected: list[str] = []
+    return sorted(_detect_riichi_declaration_evidence(discard_piles))
+
+
+def _detect_riichi_declaration_evidence(
+    discard_piles: dict[str, list[dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    evidence: dict[str, dict[str, Any]] = {}
     for owner, pile in discard_piles.items():
         if owner == "self" or len(pile) < 4:
             continue
@@ -1447,13 +1637,43 @@ def _detect_riichi_declarations(discard_piles: dict[str, list[dict[str, Any]]]) 
             ratios.append((right - left) / max(1e-6, bottom - top))
         if owner in {"left_opponent", "right_opponent"}:
             normal_count = sum(ratio >= 1.05 for ratio in ratios)
-            has_declaration = any(ratio <= 0.90 for ratio in ratios)
+            declaration_indices = [
+                index for index, ratio in enumerate(ratios) if ratio <= 0.90
+            ]
+            orientation_strength = max(
+                (min(1.0, max(0.0, (0.98 - ratios[index]) / 0.48)) for index in declaration_indices),
+                default=0.0,
+            )
         else:
             normal_count = sum(ratio <= 0.95 for ratio in ratios)
-            has_declaration = any(ratio >= 1.10 for ratio in ratios)
-        if normal_count >= max(3, len(ratios) - 2) and has_declaration:
-            detected.append(owner)
-    return sorted(detected)
+            declaration_indices = [
+                index for index, ratio in enumerate(ratios) if ratio >= 1.10
+            ]
+            orientation_strength = max(
+                (min(1.0, max(0.0, (ratios[index] - 1.02) / 0.78)) for index in declaration_indices),
+                default=0.0,
+            )
+        required_normal = max(3, len(ratios) - 2)
+        if normal_count < required_normal or not declaration_indices:
+            continue
+        declared_confidence = max(
+            float(pile[index].get("confidence") or 0.0)
+            for index in declaration_indices
+        )
+        support = min(1.0, normal_count / max(1, required_normal))
+        confidence = min(
+            1.0,
+            0.65 * declared_confidence + 0.20 * support + 0.15 * orientation_strength,
+        )
+        evidence[owner] = {
+            "confidence": round(confidence, 4),
+            "declared_tile_confidence": round(declared_confidence, 4),
+            "orientation_strength": round(orientation_strength, 4),
+            "normal_tile_count": normal_count,
+            "required_normal_tile_count": required_normal,
+            "declaration_indices": declaration_indices,
+        }
+    return evidence
 
 
 def _split_bottom_hand_and_meld(
@@ -1527,7 +1747,7 @@ def _group_self_melds(items: list[YoloTileDetection]) -> list[dict[str, Any]]:
     groups = _split_self_meld_groups(ordered)
     melds: list[dict[str, Any]] = []
     for group in groups:
-        if not group:
+        if len(group) not in {3, 4}:
             continue
         melds.append(
             {
