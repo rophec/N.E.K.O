@@ -42,6 +42,8 @@ from main_logic.tts_client import (
     get_tts_worker,
     dummy_tts_worker,
     TTS_PROVIDER_REGISTRY,
+    QWEN3_TTS_GGUF_DEFAULT_BASE_URL,
+    QWEN3_TTS_GGUF_DEFAULT_MODEL,
     VLLM_OMNI_DEFAULT_BASE_URL,
     VLLM_OMNI_DEFAULT_MODEL,
 )
@@ -2042,6 +2044,17 @@ class LLMSessionManager:
         if not text:
             return
         self.tts_request_queue.put((speech_id, text))
+        _preview = str(text).replace("\r", "\\r").replace("\n", "\\n")
+        if len(_preview) > 160:
+            _preview = _preview[:160] + "..."
+        print(
+            (
+                f"[NEKO TTS][core.enqueue_text] sid={speech_id} "
+                f"chars={len(text)} normalize={self._tts_normalize_enabled} "
+                f"text='{_preview}'"
+            ),
+            flush=True,
+        )
         self._remember_pending_ai_voice_echo(speech_id, text)
 
     def _reset_tts_stream_normalizer(self) -> None:
@@ -2081,9 +2094,23 @@ class LLMSessionManager:
         self._tts_bracket_stripper.flush()
         if flushed and self._tts_norm_speech_id is not None:
             self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
+            _preview = str(flushed).replace("\r", "\\r").replace("\n", "\\n")
+            if len(_preview) > 160:
+                _preview = _preview[:160] + "..."
+            print(
+                (
+                    f"[NEKO TTS][core.enqueue_flush_text] sid={self._tts_norm_speech_id} "
+                    f"chars={len(flushed)} text='{_preview}'"
+                ),
+                flush=True,
+            )
             self._remember_pending_ai_voice_echo(self._tts_norm_speech_id, flushed)
 
         self.tts_request_queue.put((None, None))
+        print(
+            f"[NEKO TTS][core.enqueue_done] sid={self._tts_norm_speech_id}",
+            flush=True,
+        )
         self._tts_done_queued_for_turn = True
         self._tts_done_pending_until_ready = False
         return "queued"
@@ -2237,25 +2264,39 @@ class LLMSessionManager:
 
     @staticmethod
     def resolve_tts_api_key(provider_key: str | None, api_key_override: str | None, tts_config: dict) -> str:
-        if provider_key == 'vllm_omni':
+        if provider_key in ('qwen3_tts_gguf', 'vllm_omni'):
             return api_key_override or ''
         return api_key_override or tts_config.get('api_key', '')
 
     @staticmethod
-    def _is_vllm_omni_tts_enabled(core_config: dict) -> bool:
+    def _is_qwen3_tts_gguf_enabled(core_config: dict) -> bool:
         return _as_bool(core_config.get('ENABLE_CUSTOM_API'), False) and (
-            str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
+            str(core_config.get('ttsModelProvider') or '').strip() == 'qwen3_tts_gguf'
+        )
+
+    @classmethod
+    def _is_vllm_omni_tts_enabled(cls, core_config: dict) -> bool:
+        return cls._is_qwen3_tts_gguf_enabled(core_config) or (
+            _as_bool(core_config.get('ENABLE_CUSTOM_API'), False)
+            and str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
         )
 
     @classmethod
     def _resolve_vllm_omni_runtime_config(cls, core_config: dict) -> tuple[str, str, str]:
         if not cls._is_vllm_omni_tts_enabled(core_config):
             return ('', '', '')
+        provider = str(core_config.get('ttsModelProvider') or '').strip()
+        if provider == 'qwen3_tts_gguf':
+            default_url = QWEN3_TTS_GGUF_DEFAULT_BASE_URL
+            default_model = QWEN3_TTS_GGUF_DEFAULT_MODEL
+        else:
+            default_url = VLLM_OMNI_DEFAULT_BASE_URL
+            default_model = VLLM_OMNI_DEFAULT_MODEL
         return (
             str(core_config.get('ttsModelUrl') or '').strip()
-            or VLLM_OMNI_DEFAULT_BASE_URL,
+            or default_url,
             str(core_config.get('ttsModelId') or '').strip()
-            or VLLM_OMNI_DEFAULT_MODEL,
+            or default_model,
             str(core_config.get('ttsVoiceId') or '').strip()
             or 'default',
         )
@@ -5113,6 +5154,16 @@ class LLMSessionManager:
         # 因为 free 国外模式走 Gemini 后端，需要 CJK 空格清理。
         meta = TTS_PROVIDER_REGISTRY.get(provider_key) if provider_key else None
         self._tts_normalize_enabled = not meta or meta.category != "ws_bistream"
+        _worker_target = getattr(tts_worker, "func", tts_worker)
+        _worker_name = getattr(_worker_target, "__name__", type(_worker_target).__name__)
+        print(
+            (
+                f"[NEKO TTS][core.start_worker] provider={provider_key} "
+                f"core={self.core_api_type} voice_id={self.voice_id or ''} "
+                f"normalize={self._tts_normalize_enabled} worker={_worker_name}"
+            ),
+            flush=True,
+        )
 
         self.tts_request_queue = Queue()
         self.tts_response_queue = Queue()
@@ -5401,8 +5452,11 @@ class LLMSessionManager:
         if self._is_livestream_active():
             logger.info(f"{log_prefix}🎙️ livestream 模式：使用服务端原生语音，跳过外部 TTS")
             return False
+        if self._is_qwen3_tts_gguf_enabled(core_config_snapshot):
+            logger.info(f"{log_prefix}🔊 语音模式：检测到 Qwen3-TTS-GGUF provider，将使用外部 TTS")
+            return True
         if self._is_vllm_omni_tts_enabled(core_config_snapshot):
-            logger.info(f"{log_prefix}🔊 语音模式：检测到 vLLM-Omni TTS provider，将使用外部 TTS")
+            logger.info(f"{log_prefix}🔊 语音模式：检测到 legacy vLLM-Omni TTS provider，将使用外部 TTS")
             return True
         base_url = realtime_config.get('base_url', '')
         _, uses_provider_native_voice = resolve_native_voice_for_routing(
@@ -10324,6 +10378,13 @@ class LLMSessionManager:
                     "speech_id": effective_speech_id
                 })
                 await self.websocket.send_bytes(tts_audio)
+                print(
+                    (
+                        f"[NEKO TTS][core.send_speech] sent bytes={len(tts_audio)} "
+                        f"speech_id={effective_speech_id}"
+                    ),
+                    flush=True,
+                )
                 logger.debug(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={effective_speech_id}")
                 self._speech_output_total += 1
                 self._last_speech_output_time = time.time()
@@ -10332,6 +10393,13 @@ class LLMSessionManager:
                 return True
             else:
                 ws_state = getattr(self.websocket, 'client_state', None) if self.websocket else None
+                print(
+                    (
+                        f"[NEKO TTS][core.send_speech] skipped "
+                        f"has_ws={self.websocket is not None} state={ws_state}"
+                    ),
+                    flush=True,
+                )
                 logger.warning(f"⚠️ send_speech skipped: ws={self.websocket is not None}, state={ws_state}")
                 return False
         except WebSocketDisconnect:
@@ -10361,6 +10429,10 @@ class LLMSessionManager:
                 if isinstance(data, tuple) and len(data) == 2:
                     if data[0] == "__ready__":
                         ready_flag = bool(data[1])
+                        print(
+                            f"[NEKO TTS][core.worker_ready] ready={ready_flag}",
+                            flush=True,
+                        )
                         async with self.tts_cache_lock:
                             self.tts_ready = ready_flag
                         if ready_flag:
@@ -10507,6 +10579,13 @@ class LLMSessionManager:
                         continue
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":
                     _, speech_id, audio_payload = data
+                    print(
+                        (
+                            f"[NEKO TTS][core.audio_from_worker] sid={speech_id} "
+                            f"bytes={len(audio_payload) if audio_payload else 0} tuple_audio=True"
+                        ),
+                        flush=True,
+                    )
                     if await self.send_speech(audio_payload, speech_id=speech_id):
                         self._confirm_pending_ai_voice_echo(speech_id)
                         # Telemetry：音频成功投递 = 用户听到了角色的声音。配合
@@ -10524,6 +10603,10 @@ class LLMSessionManager:
                     continue
 
                 size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
+                print(
+                    f"[NEKO TTS][core.audio_from_worker] bytes={size} tuple_audio=False",
+                    flush=True,
+                )
                 logger.debug(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
                 await self.send_speech(data)
                 self._discard_pending_ai_voice_echo()

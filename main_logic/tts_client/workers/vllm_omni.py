@@ -12,13 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""vLLM-Omni TTS worker."""
+"""Qwen3-TTS-GGUF WebSocket TTS worker.
+
+The module filename is kept as a legacy compatibility shim for older configs
+that stored ``vllm_omni`` as the provider key. The active provider name for the
+GGUF + ONNX Runtime route is ``qwen3_tts_gguf``.
+"""
 
 import numpy as np
 import soxr
 import json
 import websockets
 import asyncio
+import time
 
 from functools import partial
 from urllib.parse import urlparse, urlunparse
@@ -32,8 +38,30 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
+QWEN3_TTS_GGUF_PROVIDER_KEY = "qwen3_tts_gguf"
+QWEN3_TTS_GGUF_LEGACY_PROVIDER_KEY = "vllm_omni"
+QWEN3_TTS_GGUF_PROVIDER_KEYS = {
+    QWEN3_TTS_GGUF_PROVIDER_KEY,
+    QWEN3_TTS_GGUF_LEGACY_PROVIDER_KEY,
+}
+QWEN3_TTS_GGUF_DEFAULT_BASE_URL = "ws://127.0.0.1:8091/v1"
+QWEN3_TTS_GGUF_DEFAULT_MODEL = "Qwen3-TTS-Base"
+QWEN3_TTS_GGUF_DEFAULT_VOICE = "default"
+
+# Backward-compatible aliases. New code should import the Qwen3 names above.
 VLLM_OMNI_DEFAULT_BASE_URL = "ws://localhost:8091/v1"
 VLLM_OMNI_DEFAULT_MODEL = "Qwen3-TTS"
+
+
+def _debug_print(stage: str, message: str = "") -> None:
+    print(f"[NEKO TTS][qwen3_tts_gguf.{stage}] {message}", flush=True)
+
+
+def _preview_text(text: str, limit: int = 160) -> str:
+    preview = str(text or "").replace("\r", "\\r").replace("\n", "\\n")
+    if len(preview) > limit:
+        return preview[:limit] + "..."
+    return preview
 
 
 def _vllm_omni_normalize_ws_endpoint(base_url: str) -> str:
@@ -87,7 +115,10 @@ def _vllm_omni_normalize_ws_endpoint(base_url: str) -> str:
 
 
 def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
-                          base_url='', model='', voice='', ref_audio='', ref_text=''):
+                          base_url='', model='', voice='', ref_audio='', ref_text='',
+                          voice_name='',
+                          provider_key=QWEN3_TTS_GGUF_PROVIDER_KEY,
+                          prefer_bound_voice=False):
     """vLLM-Omni TTS worker — full-duplex WebSocket streaming synthesis.
 
     Protocol: ``ws://{base_url}/v1/audio/speech/stream``
@@ -116,13 +147,16 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         ref_text:  The transcript of the reference audio, forwarded as
                    ``session.config.ref_text`` when set. ⚠ field name ``ref_text``
                    (NOT ``prompt_text``).
+        voice_name: User-facing clone name from the Voice Clone page. The stable
+                    ``voice`` id and this display name are both sent to the local
+                    server so clone sessions are observable and listable.
     """
     raw_base_url = (base_url or '').strip().rstrip('/')
     if not raw_base_url:
         logger.error("[vLLM-Omni TTS] 未配置 base_url（TTS_MODEL_URL 为空）")
         _enqueue_error(response_queue, {
             "code": "TTS_CONFIG_INVALID",
-            "provider": "vllm_omni",
+            "provider": provider_key,
             "message": "vLLM-Omni TTS 未配置 URL",
         })
         response_queue.put(("__ready__", False))
@@ -132,7 +166,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
     # 共用 _vllm_omni_normalize_ws_endpoint（见函数 docstring）。
     ws_endpoint = _vllm_omni_normalize_ws_endpoint(raw_base_url)
 
-    effective_model = (model or '').strip() or 'Qwen3-TTS'
+    effective_model = (model or '').strip() or QWEN3_TTS_GGUF_DEFAULT_MODEL
     # 克隆模式（内联参考音频，对偶 MiMo 的 clone_voice）：ref_audio 为 data URI、ref_text
     # 为参考音频原文，二者非空时透传进 session.config。⚠ 字段名严格 ref_audio/ref_text，
     # vllm-omni 用错（prompt_audio/prompt_text）会 500。
@@ -141,18 +175,26 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
     is_clone = bool(effective_ref_audio)
 
     # voice 解析：
-    # 1. 克隆模式（ref_audio 非空）：忽略 voice_id（N.E.K.O. 内部存储标识如
-    #    vllm-omni-clone-ch-xxx，不是 vLLM-Omni 服务端认识的预制音色名），
-    #    只使用 voice 参数（clone resolve 传入 'default'）。
+    # 1. 克隆模式（ref_audio 非空）：voice 是 N.E.K.O. 克隆音色的稳定 ID，
+    #    voice_name 是 Voice Clone 页面的显示名。Base 推理由 ref_audio 决定音色，
+    #    但服务端仍需要这两个身份字段来记录当前选择并列出已有克隆音色。
     # 2. voice_id 看起来像克隆 ID 但 ref_audio 为空：这是异常状态（resolve 应该
     #    走 clone 分支带 ref_audio，但可能因 voice_meta 缓存/时序问题漏传）。
     #    强制回退到 default voice + 发 warning，避免把克隆 ID 发给服务端导致
     #    Invalid Voice / 服务端崩溃（vLLM-Omni 会把该 ID 解析为 speaker name 并
     #    期望 ref_audio，缺失则 ValueError 崩溃）。
     # 3. 正常 preset：voice_id 优先（对偶其他 worker 的 voice_id→voice 回落）。
-    _voice_id_is_clone_id = bool(voice_id and str(voice_id).startswith('vllm-omni-clone-'))
+    _voice_id_is_clone_id = bool(
+        voice_id and str(voice_id).startswith(('qwen3-tts-gguf-clone-', 'vllm-omni-clone-'))
+    )
     if is_clone:
-        effective_voice = (voice or '').strip() or 'default'
+        effective_voice = (voice or '').strip() or (voice_id or '').strip() or 'default'
+    elif prefer_bound_voice:
+        effective_voice = (
+            (voice or '').strip()
+            or (voice_id or '').strip()
+            or QWEN3_TTS_GGUF_DEFAULT_VOICE
+        )
     elif _voice_id_is_clone_id:
         logger.warning(
             "[vLLM-Omni TTS] voice_id='%s' 是克隆音色 ID 但 ref_audio 为空，"
@@ -162,10 +204,19 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         effective_voice = (voice or '').strip() or 'default'
     else:
         effective_voice = (voice_id or '').strip() or (voice or '').strip() or 'default'
+    effective_voice_name = (voice_name or '').strip() or effective_voice
 
     logger.info(
         "[vLLM-Omni TTS] ws=%s model=%s voice=%s clone=%s",
         redact_url_for_log(ws_endpoint), effective_model, effective_voice, is_clone,
+    )
+    _debug_print(
+        "worker_start",
+        (
+            f"ws={redact_url_for_log(ws_endpoint)} model={effective_model} "
+            f"voice={effective_voice} voice_name={effective_voice_name!r} clone={is_clone} "
+            f"ref_audio={bool(effective_ref_audio)} ref_text_len={len(effective_ref_text)}"
+        ),
     )
 
     async def async_worker():
@@ -191,7 +242,9 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
             field so deployments behind reverse proxies / auth layers are covered.
             """
             nonlocal ws
-            ws_kwargs = {"max_size": None}
+            # Session events already provide liveness. Protocol pings can time
+            # out during local GGUF inference and orphan an in-flight request.
+            ws_kwargs = {"max_size": None, "ping_interval": None}
             key_for_auth = (audio_api_key or "").strip() if audio_api_key else ""
             if key_for_auth:
                 # websockets >= 12: additional_headers；< 12: extra_headers
@@ -199,13 +252,23 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     ("Authorization", f"Bearer {key_for_auth}"),
                 ]
             try:
+                _debug_print(
+                    "ws_connect",
+                    f"connecting endpoint={redact_url_for_log(ws_endpoint)} auth={bool(key_for_auth)}",
+                )
                 ws = await websockets.connect(ws_endpoint, **ws_kwargs)
+                _debug_print("ws_connect", "connected")
             except TypeError:
                 # 兼容旧版本 websockets：参数名退化为 extra_headers
                 if "additional_headers" in ws_kwargs:
                     ws_kwargs["extra_headers"] = ws_kwargs.pop("additional_headers")
                 try:
+                    _debug_print(
+                        "ws_connect",
+                        f"retrying endpoint={redact_url_for_log(ws_endpoint)}",
+                    )
                     ws = await websockets.connect(ws_endpoint, **ws_kwargs)
+                    _debug_print("ws_connect", "connected")
                 except Exception as e:
                     logger.error(f"[vLLM-Omni TTS] WS 连接失败(兼容旧版): {e}")
                     return False
@@ -230,12 +293,21 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 # speaker name 后期望 ref_audio，缺失则报错）。
                 if effective_ref_audio:
                     config["ref_audio"] = effective_ref_audio
+                    config["voice_name"] = effective_voice_name
                     if effective_ref_text:
                         config["ref_text"] = effective_ref_text
                 # session 层鉴权（部分自建服务端从 config 读 api_key）
                 if key_for_auth:
                     config["api_key"] = key_for_auth
                 await ws.send(json.dumps(config))
+                _debug_print(
+                    "session_config_sent",
+                    (
+                        f"model={effective_model} voice={effective_voice} "
+                        f"response_format=pcm ref_audio={bool(effective_ref_audio)} "
+                        f"api_key={bool(key_for_auth)}"
+                    ),
+                )
                 return True
             except Exception as e:
                 logger.error(f"[vLLM-Omni TTS] 发送 session.config 失败: {e}")
@@ -248,12 +320,31 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
 
         async def _receive_loop():
             """Receive WS messages: JSON events plus binary PCM frames."""
+            stats = {
+                "chunks": 0,
+                "bytes": 0,
+                "started_at": time.perf_counter(),
+                "first_audio_at": None,
+            }
             try:
                 async for message in ws:
                     if isinstance(message, bytes):
                         # 二进制 PCM 帧：24kHz/16bit/mono → 重采样 48kHz
                         if len(message) < 2:
                             continue
+                        stats["chunks"] += 1
+                        stats["bytes"] += len(message)
+                        now = time.perf_counter()
+                        if stats["first_audio_at"] is None:
+                            stats["first_audio_at"] = now
+                            _debug_print(
+                                "audio_first_chunk",
+                                f"after={now - stats['started_at']:.3f}s bytes={len(message)}",
+                            )
+                        _debug_print(
+                            "audio_chunk",
+                            f"bytes={len(message)} chunks={stats['chunks']} total_bytes={stats['bytes']}",
+                        )
                         audio_array = np.frombuffer(message, dtype=np.int16)
                         response_queue.put(
                             _resample_audio(audio_array, 24000, 48000, resampler)
@@ -262,9 +353,27 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                         try:
                             event = json.loads(message)
                         except json.JSONDecodeError:
+                            _debug_print("event", f"non_json_text len={len(message)}")
                             continue
                         event_type = event.get("type", "")
+                        if event_type:
+                            _debug_print(
+                                "event",
+                                (
+                                    f"type={event_type} sentence_index={event.get('sentence_index')} "
+                                    f"total_sentences={event.get('total_sentences')}"
+                                ),
+                            )
                         if event_type == "session.done":
+                            elapsed = time.perf_counter() - stats["started_at"]
+                            _debug_print(
+                                "session_done",
+                                (
+                                    f"total_sentences={event.get('total_sentences', '?')} "
+                                    f"audio_chunks={stats['chunks']} audio_bytes={stats['bytes']} "
+                                    f"elapsed={elapsed:.3f}s"
+                                ),
+                            )
                             logger.debug(
                                 "[vLLM-Omni TTS] session.done: total_sentences=%s",
                                 event.get("total_sentences", "?"),
@@ -287,6 +396,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                         elif event_type == "audio.done":
                             pass  # 静默
                         elif event_type == "error":
+                            _debug_print("event_error", json.dumps(event, ensure_ascii=False, default=str))
                             _enqueue_error(response_queue, event)
                             # 修复 PR #1764 review 第六轮：服务端 error 事件后会话已不可用，
                             # 标记 session 失效，主循环下次 input 前会主动重建（与 session.done 处理对齐）
@@ -296,6 +406,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                             response_queue.put(("__ready__", False))
             except websockets.exceptions.ConnectionClosed:
                 was_awaiting_done = bool(session_state.get("awaiting_done"))
+                _debug_print("ws_closed", f"awaiting_done={was_awaiting_done}")
                 # 修复 PR #1764 review 第六轮：WS 关闭后必须同步本地状态，
                 # 否则主循环会试图往已死连接发送，依赖 send 异常才触发重建（噪声+延迟）
                 session_state["active"] = False
@@ -304,7 +415,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 if was_awaiting_done:
                     _enqueue_error(response_queue, {
                         "code": "TTS_CONNECTION_FAILED",
-                        "provider": "vllm_omni",
+                        "provider": provider_key,
                         "message": "vLLM-Omni TTS 连接在 session.done 前关闭",
                     })
                     response_queue.put(("__ready__", False))
@@ -317,16 +428,17 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 if was_awaiting_done:
                     _enqueue_error(response_queue, {
                         "code": "TTS_CONNECTION_FAILED",
-                        "provider": "vllm_omni",
+                        "provider": provider_key,
                         "message": "vLLM-Omni TTS 接收异常，session.done 未完成",
                     })
                     response_queue.put(("__ready__", False))
 
         # 首次连接 + 就绪信号
         if not await _connect_and_config():
+            _debug_print("ready", "false initial_connect_failed")
             _enqueue_error(response_queue, {
                 "code": "TTS_CONNECTION_FAILED",
-                "provider": "vllm_omni",
+                "provider": provider_key,
                 "message": "vLLM-Omni TTS 初始连接失败",
             })
             response_queue.put(("__ready__", False))
@@ -335,6 +447,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         session_state["active"] = True  # 修复 PR #1764 review #3
         receive_task = asyncio.create_task(_receive_loop())
         response_queue.put(("__ready__", True))
+        _debug_print("ready", "true")
         logger.info("[vLLM-Omni TTS] 已就绪")
 
         async def _rebuild_session() -> bool:
@@ -400,7 +513,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
             session_state["speech_id"] = None
             _enqueue_error(response_queue, {
                 "code": "TTS_CONNECTION_FAILED",
-                "provider": "vllm_omni",
+                "provider": provider_key,
                 "message": message,
             })
             response_queue.put(("__ready__", False))
@@ -414,9 +527,11 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 break
 
             if sid == TTS_SHUTDOWN_SENTINEL:
+                _debug_print("queue", "shutdown")
                 break
 
             if sid == "__interrupt__":
+                _debug_print("queue", "interrupt")
                 # 修复 PR #1764 review 第二轮 #3：打断时只销毁当前连接、把 session 标记失效，
                 # 不立刻重连——避免上游短暂不可用时一次失败就把整个 worker 退出。
                 # 实际重连延迟到下一条输入到来时由活跃性检查（while 循环下方）处理。
@@ -450,6 +565,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
 
             if sid is None:
                 if not pending_text:
+                    _debug_print("input_done", "skip no_pending_text")
                     continue
                 if not session_state["active"] or ws is None:
                     logger.info("[vLLM-Omni TTS] 会话已结束/失效，重建连接以发送 flush")
@@ -462,6 +578,10 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                         break
                 if ws is not None:
                     try:
+                        _debug_print(
+                            "input_done",
+                            f"send sid={pending_text_sid} pending_chars={sum(len(part) for part in pending_text)}",
+                        )
                         await ws.send(json.dumps({"type": "input.done"}))
                         pending_text.clear()
                         pending_text_sid = None
@@ -510,7 +630,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     logger.error("[vLLM-Omni TTS] 重建会话失败，标记 worker 未就绪")
                     _enqueue_error(response_queue, {
                         "code": "TTS_CONNECTION_FAILED",
-                        "provider": "vllm_omni",
+                        "provider": provider_key,
                         "message": "vLLM-Omni TTS 重连失败",
                     })
                     response_queue.put(("__ready__", False))
@@ -535,7 +655,12 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     "text": tts_text,
                 })
                 try:
+                    _debug_print(
+                        "input_text",
+                        f"send sid={sid} chars={len(tts_text)} text='{_preview_text(tts_text)}'",
+                    )
                     await ws.send(payload)
+                    _debug_print("input_text", f"sent sid={sid}")
                     _record_tts_telemetry(effective_model, len(tts_text))
                     pending_text.append(tts_text)
                     pending_text_sid = sid
@@ -562,7 +687,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                             session_state["active"] = False
                             _enqueue_error(response_queue, {
                                 "code": "TTS_CONNECTION_FAILED",
-                                "provider": "vllm_omni",
+                                "provider": provider_key,
                                 "message": "vLLM-Omni TTS 发送失败",
                             })
                             response_queue.put(("__ready__", False))
@@ -570,7 +695,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     else:
                         _enqueue_error(response_queue, {
                             "code": "TTS_CONNECTION_FAILED",
-                            "provider": "vllm_omni",
+                            "provider": provider_key,
                             "message": "vLLM-Omni TTS 重连失败",
                         })
                         response_queue.put(("__ready__", False))
@@ -603,8 +728,19 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
 #      'vllm_omni'），对偶 MiMo 的克隆路由。vLLM-Omni 克隆没有远端 voice_id：参考音频存在本地
 #      voice_meta（clone_sample_b64），dispatch 时读出来内联进 session.config 的 ref_audio。
 
+def _qwen3_tts_gguf_provider_from_config(raw: dict) -> str:
+    provider = str((raw or {}).get('ttsModelProvider') or '').strip()
+    if provider in QWEN3_TTS_GGUF_PROVIDER_KEYS:
+        return provider
+    return ''
+
+
+def _qwen3_tts_gguf_voice_meta_is_clone(vm) -> bool:
+    return bool(vm and vm.get('provider') in QWEN3_TTS_GGUF_PROVIDER_KEYS)
+
+
 def _vllm_omni_voice_meta_is_clone(vm) -> bool:
-    return bool(vm and vm.get('provider') == 'vllm_omni')
+    return bool(vm and vm.get('provider') == QWEN3_TTS_GGUF_LEGACY_PROVIDER_KEY)
 
 def _build_vllm_omni_clone_data_uri(voice_meta) -> str | None:
     """Build the ``data:`` reference-audio URI for a vLLM-Omni clone from its
@@ -621,7 +757,7 @@ def _build_vllm_omni_clone_data_uri(voice_meta) -> str | None:
     mime = str((voice_meta or {}).get('clone_sample_mime') or '').strip() or 'audio/wav'
     return f"data:{mime};base64,{b64}"
 
-def _vllm_omni_is_selected(ctx) -> bool:
+def _qwen3_tts_gguf_is_selected(ctx) -> bool:
     # 配置选中（preset）优先判定，且**必须先于任何 ctx.voice_meta 访问**——voice_meta 是惰性的，
     # 显式选中 vllm_omni（下拉默认）时不能触发 voice_meta 加载，否则违反
     # test_get_tts_worker_routes_explicit_vllm_before_cloned_voice 的短路契约（对偶 _mimo_is_selected
@@ -632,11 +768,30 @@ def _vllm_omni_is_selected(ctx) -> bool:
             raw = cm.load_json_config('core_config.json', {})
         except Exception:
             raw = {}
-        if (raw.get('ttsModelProvider') or '').strip() == 'vllm_omni':
+        if _qwen3_tts_gguf_provider_from_config(raw) == QWEN3_TTS_GGUF_PROVIDER_KEY:
             return True
     # 克隆音色选中：按所选音色的 voice_meta.provider 路由（惰性，命中前面 config-selected
     # provider / 本 provider 的 config 分支时不会触发 voice_meta 加载）。
+    return bool(ctx.voice_meta and ctx.voice_meta.get('provider') == QWEN3_TTS_GGUF_PROVIDER_KEY)
+
+
+def _vllm_omni_is_selected(ctx) -> bool:
+    # Legacy compatibility only. New Qwen3-TTS-GGUF configs route through
+    # _qwen3_tts_gguf_is_selected above.
+    core_config, cm = ctx.core_config, ctx.cm
+    if _as_bool(core_config.get('ENABLE_CUSTOM_API'), False):
+        try:
+            raw = cm.load_json_config('core_config.json', {})
+        except Exception:
+            raw = {}
+        if _qwen3_tts_gguf_provider_from_config(raw) == QWEN3_TTS_GGUF_LEGACY_PROVIDER_KEY:
+            return True
     return _vllm_omni_voice_meta_is_clone(ctx.voice_meta)
+
+
+def _qwen3_tts_gguf_clone_is_selected(ctx) -> bool:
+    """Clone-only selection predicate for Qwen3-TTS-GGUF voices."""
+    return bool(ctx.voice_meta and ctx.voice_meta.get('provider') == QWEN3_TTS_GGUF_PROVIDER_KEY)
 
 def _vllm_omni_clone_is_selected(ctx) -> bool:
     """Clone-only selection predicate (for symmetry with _mimo dispatch / tests)."""
@@ -666,11 +821,21 @@ def _vllm_omni_clone_resolve(ctx):
     # base_url：优先用 voice_meta 存的 vllm_omni_base_url（对偶 mimo_base_url），缺省回落
     # 当前 core_config 配置的端点，再缺省走默认。
     vllm_url = (
-        str(vm.get('vllm_omni_base_url') or '').strip()
+        str(vm.get('qwen3_tts_gguf_base_url') or '').strip()
+        or str(vm.get('vllm_omni_base_url') or '').strip()
         or (raw.get('ttsModelUrl') or '').strip()
-        or VLLM_OMNI_DEFAULT_BASE_URL
+        or QWEN3_TTS_GGUF_DEFAULT_BASE_URL
     )
-    vllm_model = (raw.get('ttsModelId') or '').strip() or VLLM_OMNI_DEFAULT_MODEL
+    default_clone_model = (
+        QWEN3_TTS_GGUF_DEFAULT_MODEL
+        if vm.get('provider') == QWEN3_TTS_GGUF_PROVIDER_KEY
+        else VLLM_OMNI_DEFAULT_MODEL
+    )
+    vllm_model = (
+        str(vm.get('qwen3_tts_gguf_model_id') or '').strip()
+        or (raw.get('ttsModelId') or '').strip()
+        or default_clone_model
+    )
     clone_ref_text = str(vm.get('clone_ref_text') or '').strip()
     if not clone_ref_text:
         # ref_text 与参考音频严格对应是 vLLM-Omni 克隆音质的前提；前端注册入口已强制必填
@@ -680,8 +845,10 @@ def _vllm_omni_clone_resolve(ctx):
             "vLLM-Omni 克隆音色 %s 缺少 ref_text，克隆音质可能下降", ctx.voice_id)
     worker = partial(
         vllm_omni_tts_worker,
-        base_url=vllm_url, model=vllm_model, voice='default',
+        base_url=vllm_url, model=vllm_model, voice=ctx.voice_id,
+        voice_name=str(vm.get('prefix') or ctx.voice_id).strip(),
         ref_audio=clone_uri, ref_text=clone_ref_text,
+        provider_key=QWEN3_TTS_GGUF_LEGACY_PROVIDER_KEY,
     )
     # 凭证防泄漏：与 preset 路径一致，读 ttsModelApiKey；无 key 返回空串，禁止 fallback
     # 到别家 provider 的 key（见 _vllm_omni_resolve L713 同源逻辑）。
@@ -716,5 +883,33 @@ def _vllm_omni_resolve(ctx):
     worker = partial(
         vllm_omni_tts_worker,
         base_url=vllm_url, model=vllm_model, voice=vllm_voice,
+        provider_key=QWEN3_TTS_GGUF_LEGACY_PROVIDER_KEY,
     )
     return worker, vllm_key, 'vllm_omni'
+
+
+def _qwen3_tts_gguf_clone_resolve(ctx):
+    worker, api_key, _provider = _vllm_omni_clone_resolve(ctx)
+    if getattr(worker, "func", None) is vllm_omni_tts_worker:
+        existing = dict(getattr(worker, "keywords", {}) or {})
+        existing["provider_key"] = QWEN3_TTS_GGUF_PROVIDER_KEY
+        worker = partial(vllm_omni_tts_worker, **existing)
+    return worker, api_key, QWEN3_TTS_GGUF_PROVIDER_KEY
+
+
+def _qwen3_tts_gguf_resolve(ctx):
+    if _qwen3_tts_gguf_voice_meta_is_clone(ctx.voice_meta):
+        return _qwen3_tts_gguf_clone_resolve(ctx)
+
+    logger.warning(
+        "Qwen3-TTS Base 没有内置音色；请先注册并为角色选择一个克隆音色"
+    )
+    return dummy_tts_worker, None, QWEN3_TTS_GGUF_PROVIDER_KEY
+
+
+qwen3_tts_gguf_tts_worker = partial(
+    vllm_omni_tts_worker,
+    provider_key=QWEN3_TTS_GGUF_PROVIDER_KEY,
+    prefer_bound_voice=True,
+)
+_qwen3_tts_gguf_normalize_ws_endpoint = _vllm_omni_normalize_ws_endpoint

@@ -13,6 +13,7 @@ VOICE_CLONE_API_PROVIDERS_RESPONSE = {
         "minimax_intl": {"config_field": "assistApiKeyMinimaxIntl", "restricted": True},
         "elevenlabs": {"config_field": "assistApiKeyElevenlabs", "restricted": True},
         "mimo": {"config_field": "assistApiKeyMimo", "restricted": False},
+        "qwen3_tts_gguf": {"config_field": "", "restricted": False},
     },
 }
 
@@ -83,6 +84,24 @@ def test_voice_clone_page_load(mock_page: Page, running_server: str):
 
 
 @pytest.mark.frontend
+def test_voice_clone_exposes_qwen3_gguf_clone_provider(mock_page: Page, running_server: str):
+    route_voice_clone_region_dependencies(
+        mock_page,
+        {"success": True, "is_mainland_china": True, "ip_country": "CN"},
+    )
+    mock_page.goto(f"{running_server}/voice_clone")
+    mock_page.wait_for_load_state("domcontentloaded")
+
+    provider = mock_page.locator("#voiceProvider")
+    expect(provider.locator("option[value='qwen3_tts_gguf']")).to_have_count(1)
+    expect(provider.locator("option[value='vllm_omni']")).to_have_count(0)
+
+    provider.select_option("qwen3_tts_gguf")
+    expect(mock_page.locator("#vllmRefTextRow")).to_be_visible()
+    expect(mock_page.locator("#btnDirectLinkClone")).to_be_disabled()
+
+
+@pytest.mark.frontend
 def test_voice_clone_form_validation(mock_page: Page, running_server: str):
     """Test that the voice clone form validates inputs before submission."""
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
@@ -128,7 +147,7 @@ def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_indeterm
             const visibleValues = Array.from(select.options)
                 .filter(option => !option.hidden && option.style.display !== 'none')
                 .map(option => option.value);
-            return visibleValues.join(',') === 'cosyvoice,minimax,mimo';
+            return visibleValues.join(',') === 'cosyvoice,minimax,mimo,qwen3_tts_gguf';
         }"""
     )
 
@@ -136,7 +155,7 @@ def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_indeterm
     values = mock_page.locator("#voiceProvider-menu .api-provider-dropdown-option").evaluate_all(
         "(nodes) => nodes.map(node => node.dataset.value)"
     )
-    assert values == ["cosyvoice", "minimax", "mimo"]
+    assert values == ["cosyvoice", "minimax", "mimo", "qwen3_tts_gguf"]
 
 
 @pytest.mark.frontend
@@ -157,7 +176,7 @@ def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_request_
             const visibleValues = Array.from(select.options)
                 .filter(option => !option.hidden && option.style.display !== 'none')
                 .map(option => option.value);
-            return visibleValues.join(',') === 'cosyvoice,minimax,mimo';
+            return visibleValues.join(',') === 'cosyvoice,minimax,mimo,qwen3_tts_gguf';
         }"""
     )
 

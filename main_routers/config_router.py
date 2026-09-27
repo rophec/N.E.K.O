@@ -1396,7 +1396,8 @@ class ConnectivityTestRequest(BaseModel):
     model: Optional[str] = ""
     provider_type: Optional[str] = "openai_compatible"
     # Sub-type used to dispatch to a non-Realtime probe when provider_type=='websocket'.
-    # Currently the only recognized value is 'vllm_omni_tts'; vLLM-Omni's WebSocket
+    # Recognized values include 'qwen3_tts_gguf' and legacy 'vllm_omni_tts';
+    # this Qwen-style TTS WebSocket endpoint
     # speech endpoint does NOT speak the OpenAI Realtime protocol (no session.update),
     # so it requires a handshake-only probe instead of _test_websocket. (#1764 review 第六轮)
     sub_type: Optional[str] = ""
@@ -1780,7 +1781,7 @@ async def _test_connectivity_candidates(
 ) -> dict:
     """Probe the candidate URLs concurrently; return the first that succeeds.
 
-    When sub_type='vllm_omni_tts' the OpenAI Realtime session.update probe in
+    When sub_type is 'qwen3_tts_gguf' or legacy 'vllm_omni_tts', the OpenAI Realtime session.update probe in
     _test_websocket is bypassed in favour of a lightweight handshake-and-close
     probe, because vLLM-Omni's /v1/audio/speech/stream does not understand
     Realtime protocol frames — sending session.update would trigger an early
@@ -1791,7 +1792,7 @@ async def _test_connectivity_candidates(
 
     async def _run_one(candidate_url: str) -> tuple[str, dict]:
         if provider_type == "websocket":
-            if sub_type == "vllm_omni_tts":
+            if sub_type in {"qwen3_tts_gguf", "vllm_omni_tts"}:
                 result = await _test_vllm_omni_ws_handshake(candidate_url, api_key)
             else:
                 result = await _test_websocket(candidate_url, api_key, model=model)

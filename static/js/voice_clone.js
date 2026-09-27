@@ -14,6 +14,7 @@ const VOICE_CLONE_PROVIDER_REGISTRY_KEYS = Object.freeze({
     minimax_intl: 'minimax_intl',
     elevenlabs: 'elevenlabs',
     mimo: 'mimo',
+    qwen3_tts_gguf: 'qwen3_tts_gguf',
     vllm_omni: 'vllm_omni',
 });
 const VOICE_CLONE_RESTRICTED_REGISTRY_KEYS = new Set([
@@ -459,6 +460,10 @@ function isMiniMaxProvider(provider) {
     return provider === 'minimax' || provider === 'minimax_intl';
 }
 
+function isQwen3TtsGgufCloneProvider(provider) {
+    return provider === 'qwen3_tts_gguf' || provider === 'vllm_omni';
+}
+
 function getVoiceCloneProviderKeyField(provider) {
     const entry = VOICE_CLONE_PROVIDER_KEY_FIELDS.find(([providerKey]) => providerKey === provider);
     return entry ? entry[1] : '';
@@ -534,7 +539,7 @@ async function ensureVoiceCloneApiConfigState(options = {}) {
 }
 
 function hasVoiceCloneProviderApi(provider) {
-    if (provider === 'vllm_omni') return true;
+    if (isQwen3TtsGgufCloneProvider(provider)) return true;
     if (voiceCloneApiConfigState.isLocalTts) return true;
     return cfgHasCloneProviderKey(voiceCloneApiConfigState.cfg, provider);
 }
@@ -912,6 +917,7 @@ function updateVoiceCloneProviderNoticeText(noticeDiv, provider) {
         'minimax_intl': 'voice.minimaxIntlApiRequired',
         'elevenlabs': 'voice.elevenlabsApiRequired',
         'mimo': 'voice.mimoApiRequired',
+        'qwen3_tts_gguf': 'voice.vllmOmniNotice',
         'vllm_omni': 'voice.vllmOmniNotice',
     };
     const fallbackMap = {
@@ -1294,7 +1300,7 @@ let currentCloneMethod = 'file';
 // MiMo 只支持本地文件克隆：它把参考样本存在本地、不走 /voice_clone_direct（后端
 // valid_providers 不含 mimo，直链会直接 TTS_PROVIDER_INVALID）。选中 MiMo 时禁用直链方式。
 function isDirectLinkUnsupportedProvider(provider) {
-    return provider === 'mimo' || provider === 'vllm_omni';
+    return provider === 'mimo' || isQwen3TtsGgufCloneProvider(provider);
 }
 
 function updateCloneMethodForProvider(provider) {
@@ -1319,7 +1325,7 @@ function updateCloneMethodForProvider(provider) {
 function updateRefTextRowForProvider(provider) {
     const refTextRow = document.getElementById('vllmRefTextRow');
     if (refTextRow) {
-        refTextRow.style.display = (provider === 'vllm_omni') ? '' : 'none';
+        refTextRow.style.display = isQwen3TtsGgufCloneProvider(provider) ? '' : 'none';
     }
 }
 
@@ -1502,7 +1508,7 @@ async function registerVoice() {
             return;
         }
         // vLLM-Omni 必须填写参考音频原文
-        if (provider === 'vllm_omni') {
+        if (isQwen3TtsGgufCloneProvider(provider)) {
             const refTextEl = document.getElementById('vllmRefText');
             const refTextVal = refTextEl ? refTextEl.value.trim() : '';
             if (!refTextVal) {
@@ -1552,7 +1558,7 @@ async function registerVoice() {
         formData.append('ref_language', refLanguage);
         formData.append('prefix', prefix);
         formData.append('provider', provider);
-        if (provider === 'vllm_omni') {
+        if (isQwen3TtsGgufCloneProvider(provider)) {
             const refTextEl = document.getElementById('vllmRefText');
             formData.append('ref_text', refTextEl ? refTextEl.value.trim() : '');
         }
@@ -1720,6 +1726,9 @@ async function playPreview(voiceId, btn) {
     try {
         const storageKey = `voice_preview_${voiceId}`;
         const previewLanguage = getVoicePreviewLanguage();
+        const isQwen3SavedClonePreview = typeof voiceId === 'string'
+            && voiceId.startsWith('qwen3-tts-gguf-clone-');
+        const previewCacheVersion = isQwen3SavedClonePreview ? 4 : 2;
         const cachedPreview = localStorage.getItem(storageKey);
         let audioSrc = '';
         if (cachedPreview) {
@@ -1727,7 +1736,7 @@ async function playPreview(voiceId, btn) {
                 const cachedData = JSON.parse(cachedPreview);
                 if (
                     cachedData
-                    && cachedData.version === 2
+                    && cachedData.version === previewCacheVersion
                     && cachedData.language === previewLanguage
                     && typeof cachedData.audioSrc === 'string'
                     && cachedData.audioSrc
@@ -1787,7 +1796,7 @@ async function playPreview(voiceId, btn) {
                 // 保存到 localStorage
                 try {
                     localStorage.setItem(storageKey, JSON.stringify({
-                        version: 2,
+                        version: previewCacheVersion,
                         language: previewLanguage,
                         audioSrc
                     }));

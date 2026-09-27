@@ -2728,7 +2728,7 @@ class ConfigManager:
         if not isinstance(core_config, dict):
             return False
         return _as_bool(core_config.get('ENABLE_CUSTOM_API'), False) and (
-            str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
+            str(core_config.get('ttsModelProvider') or '').strip() in ('qwen3_tts_gguf', 'vllm_omni')
         )
 
     def _is_local_tts_storage_active(
@@ -2892,24 +2892,22 @@ class ConfigManager:
         return result
 
     def _get_vllm_omni_storage_keys(self) -> list[str]:
-        """Return the list of voice_storage keys for vLLM-Omni cloned voices.
+        """Return voice_storage keys for Qwen3-TTS-GGUF cloned voices.
 
-        Dual to :meth:`_get_mimo_storage_keys`, with one key difference: vLLM-Omni
-        is a self-hosted local service with **no API key**, so cloned voices live
-        in a single fixed ``__VLLM_OMNI__`` bucket (no key suffix) instead of a
-        per-key ``__MIMO__{suffix}`` bucket. A vLLM-Omni clone is selected by
-        ``voice_meta.provider`` at dispatch (the inline reference-audio model, see
-        ``workers/vllm_omni.py``), so the bucket merges into the current-API voice
-        list regardless of which core/TTS provider is otherwise active."""
+        ``__VLLM_OMNI__`` is still read as a legacy bucket so old cloned voices
+        remain visible after the provider was renamed to ``qwen3_tts_gguf``.
+        """
         voice_storage = self.load_voice_storage()
-        bucket = '__VLLM_OMNI__'
-        return [bucket] if bucket in voice_storage else []
+        buckets = ['__QWEN3_TTS_GGUF__', '__VLLM_OMNI__']
+        return [bucket for bucket in buckets if bucket in voice_storage]
 
     @staticmethod
     def _infer_provider_from_storage_key(storage_key: str) -> str:
         """Infer the provider from a voice_storage partition key (only for legacy data compatibility)."""
         if storage_key == '__LOCAL_TTS__':
             return 'local'
+        if storage_key.startswith('__QWEN3_TTS_GGUF__'):
+            return 'qwen3_tts_gguf'
         if storage_key.startswith('__VLLM_OMNI__'):
             return 'vllm_omni'
         if storage_key.startswith('__MIMO__'):
@@ -3045,15 +3043,20 @@ class ConfigManager:
             for vid, vdata in vllm_voices.items():
                 if vid not in result:
                     if isinstance(vdata, dict) and 'provider' not in vdata:
-                        vdata['provider'] = 'vllm_omni'
+                        vdata['provider'] = self._infer_provider_from_storage_key(vllm_key)
                     result[vid] = vdata
 
         if for_listing:
-            # UI 试听列表不需要 MiMo 克隆的参考样本 base64（可达 MB）——剥掉，避免把大 blob
-            # 推给前端。dispatch / preview 走 for_listing=False，仍拿到完整 voice_meta。
+            # UI 试听列表不需要克隆参考样本和固定预览的 base64（可达 MB）——剥掉，
+            # 避免把大 blob 推给前端。dispatch / preview 走 for_listing=False，仍拿到完整 voice_meta。
             result = {
-                vid: ({k: v for k, v in vdata.items() if k != 'clone_sample_b64'}
-                      if isinstance(vdata, dict) and 'clone_sample_b64' in vdata else vdata)
+                vid: ({k: v for k, v in vdata.items()
+                       if k not in {'clone_sample_b64', 'clone_preview_b64', 'clone_previews'}}
+                      if isinstance(vdata, dict) and (
+                          'clone_sample_b64' in vdata
+                          or 'clone_preview_b64' in vdata
+                          or 'clone_previews' in vdata
+                      ) else vdata)
                 for vid, vdata in result.items()
             }
 
@@ -3170,6 +3173,7 @@ class ConfigManager:
                 or storage_key.startswith('__ELEVENLABS__')
                 or storage_key.startswith('__MIMO__')
                 or storage_key.startswith('__COSYVOICE_INTL__')
+                or storage_key.startswith('__QWEN3_TTS_GGUF__')
                 or storage_key.startswith('__VLLM_OMNI__')
             ) and voice_id in voice_storage.get(storage_key, {}):
                 # 克隆身份（含 MiMo 的样本 base64）都在 voice_data 里，删除 entry 随之消失，
@@ -3365,9 +3369,12 @@ class ConfigManager:
                 logger.warning("hosted preset voice 归一化异常，按非预制处理", exc_info=True)
                 return None
 
+        _core_config_for_voice = self.get_core_config()
+        _selected_tts_provider = str((_core_config_for_voice or {}).get('ttsModelProvider') or '').strip()
         return normalize_voice_id(
             voice_id,
-            vllm_selected=self._is_vllm_omni_tts_selected(self.get_core_config()),
+            vllm_selected=self._is_vllm_omni_tts_selected(_core_config_for_voice),
+            vllm_provider=_selected_tts_provider,
             clone_provider_lookup=_clone_lookup,
             is_native=lambda ref: is_saveable_native_voice(self, ref),
             native_provider=get_active_realtime_native_provider(self) or '',

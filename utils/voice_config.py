@@ -154,6 +154,7 @@ def normalize_voice_id(
     voice_id: Any,
     *,
     vllm_selected: bool = False,
+    vllm_provider: str = "vllm_omni",
     clone_provider_lookup: "Any" = None,
     is_native: "Any" = None,
     native_provider: str = "",
@@ -168,9 +169,11 @@ def normalize_voice_id(
 
     1. unambiguous prefix (``eleven:`` / ``gsv:`` / disabled placeholder / empty) —
        handled by :func:`parse_legacy_voice_id`.
-    2. ``vllm_selected`` → ``{preset, vllm_omni, ref}`` (vLLM-Omni uses preset ids).
-    3. ``clone_provider_lookup(ref)`` returns a provider (the ref is a cloned voice
+    2. ``clone_provider_lookup(ref)`` returns a provider (the ref is a cloned voice
        in the current API's voice_storage) → ``{clone, <provider>, ref}``.
+    3. ``vllm_selected`` → ``{preset, vllm_omni, ref}`` (vLLM-Omni uses preset ids).
+       A stored clone wins over this global preset selection because choosing a
+       clone is the more specific user intent.
     4. ``is_native(ref)`` → ``{preset, <native_provider>, ref}``.
     5. ``hosted_preset_provider(ref)`` returns a provider key (the ref is a built-in
        preset of the currently selected hosted/local provider, e.g. MiMo's "Milo")
@@ -195,13 +198,16 @@ def normalize_voice_id(
     if not ref:
         return VoiceConfig()
 
-    if vllm_selected:
-        return VoiceConfig(source=SOURCE_PRESET, provider="vllm_omni", ref=ref)
-
     if clone_provider_lookup is not None:
         provider = clone_provider_lookup(ref)
         if provider is not None:
             return VoiceConfig(source=SOURCE_CLONE, provider=str(provider or ""), ref=ref)
+
+    if vllm_selected:
+        provider = str(vllm_provider or "vllm_omni").strip()
+        if provider not in ("qwen3_tts_gguf", "vllm_omni"):
+            provider = "vllm_omni"
+        return VoiceConfig(source=SOURCE_PRESET, provider=provider, ref=ref)
 
     if is_native is not None and is_native(ref):
         return VoiceConfig(source=SOURCE_PRESET, provider=str(native_provider or ""), ref=ref)

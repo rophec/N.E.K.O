@@ -35,6 +35,17 @@ from main_logic import tts_client
 from utils.config_manager import get_config_manager
 
 
+def test_qwen3_fixed_speaker_query_survives_ws_endpoint_normalization():
+    endpoint = tts_client._qwen3_tts_gguf_normalize_ws_endpoint(
+        "ws://127.0.0.1:8091/v1/audio/speech/stream?clone_mode=fixed_speaker"
+    )
+
+    assert endpoint == (
+        "ws://127.0.0.1:8091/v1/audio/speech/stream"
+        "?clone_mode=fixed_speaker"
+    )
+
+
 class ControlledQueue:
     def __init__(self):
         self._queue = queue.Queue()
@@ -157,8 +168,14 @@ def _config_frame(fake_ws):
 def test_vllm_omni_worker_clone_inlines_ref_audio_and_ref_text(monkeypatch):
     clone_uri = "data:audio/wav;base64,QUJDRA=="
     ref_text = "参考音频对应的原文"
+    clone_id = "qwen3-tts-gguf-clone-ch-abc"
     fake_ws, request_queue, response_queue, thread = _start_worker(
-        monkeypatch, voice_id="default", ref_audio=clone_uri, ref_text=ref_text,
+        monkeypatch,
+        voice_id=clone_id,
+        voice=clone_id,
+        voice_name="我的测试音色",
+        ref_audio=clone_uri,
+        ref_text=ref_text,
     )
 
     _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
@@ -170,6 +187,8 @@ def test_vllm_omni_worker_clone_inlines_ref_audio_and_ref_text(monkeypatch):
     # ⚠ 字段名严格 ref_audio/ref_text，vllm-omni 用旧名 prompt_audio/prompt_text 会 500
     assert cfg["ref_audio"] == clone_uri
     assert cfg["ref_text"] == ref_text
+    assert cfg["voice"] == clone_id
+    assert cfg["voice_name"] == "我的测试音色"
     assert "prompt_audio" not in cfg
     assert "prompt_text" not in cfg
 
@@ -245,6 +264,12 @@ def _vllm_clone_meta(sample: bytes, **extra):
     return meta
 
 
+def _qwen3_gguf_clone_meta(sample: bytes, **extra):
+    meta = _vllm_clone_meta(sample, **extra)
+    meta["provider"] = "qwen3_tts_gguf"
+    return meta
+
+
 class _CMBase:
     """A config_manager stand-in for dispatch tests."""
 
@@ -286,6 +311,38 @@ def test_get_tts_worker_routes_vllm_omni_clone_voice(monkeypatch):
     expected_uri = "data:audio/wav;base64," + base64.b64encode(sample).decode("ascii")
     assert worker.keywords["ref_audio"] == expected_uri
     assert worker.keywords["ref_text"] == "参考音频对应的原文"
+    assert worker.keywords["voice"] == "vllm-omni-clone-ch-abc"
+    assert worker.keywords["voice_name"] == "vllm-omni-clone-ch-abc"
+
+
+@pytest.mark.unit
+def test_get_tts_worker_routes_qwen3_gguf_clone_through_existing_ws_worker(monkeypatch):
+    sample = (np.arange(256, dtype=np.int16)).tobytes()
+    cm = _CMBase({
+        "qwen3-tts-gguf-clone-ch-abc": _qwen3_gguf_clone_meta(
+            sample,
+            qwen3_tts_gguf_base_url="ws://127.0.0.1:8091/v1",
+            prefix="我的 Qwen 音色",
+        ),
+    })
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=True,
+        voice_id="qwen3-tts-gguf-clone-ch-abc",
+    )
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.vllm_omni_tts_worker
+    assert provider_key == "qwen3_tts_gguf"
+    assert api_key == ""
+    assert worker.keywords["base_url"] == "ws://127.0.0.1:8091/v1"
+    assert worker.keywords["provider_key"] == "qwen3_tts_gguf"
+    assert worker.keywords["voice"] == "qwen3-tts-gguf-clone-ch-abc"
+    assert worker.keywords["voice_name"] == "我的 Qwen 音色"
+    assert worker.keywords["ref_audio"].startswith("data:audio/wav;base64,")
+    assert worker.keywords["ref_text"]
 
 
 @pytest.mark.unit
@@ -312,6 +369,28 @@ def test_get_tts_worker_vllm_omni_clone_uses_stored_base_url(monkeypatch):
     )
     assert provider_key == "vllm_omni"
     assert worker.keywords["base_url"] == "ws://10.0.1.92:8091/v1"
+
+
+@pytest.mark.unit
+def test_get_tts_worker_qwen3_clone_uses_stored_base_model(monkeypatch):
+    sample = (np.arange(64, dtype=np.int16)).tobytes()
+    meta = _qwen3_gguf_clone_meta(
+        sample,
+        qwen3_tts_gguf_base_url="ws://127.0.0.1:8091/v1",
+    )
+    meta["qwen3_tts_gguf_model_id"] = "Qwen3-TTS-Base"
+    cm = _CMBase({"qwen3-tts-gguf-clone-ch-base": meta})
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
+
+    worker, _, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=True,
+        voice_id="qwen3-tts-gguf-clone-ch-base",
+    )
+
+    assert provider_key == "qwen3_tts_gguf"
+    assert worker.keywords["base_url"] == "ws://127.0.0.1:8091/v1"
+    assert worker.keywords["model"] == "Qwen3-TTS-Base"
 
 
 # ── registry: vllm_omni advertises both preset + clone capabilities ───────────
@@ -357,6 +436,8 @@ def test_get_voices_strips_vllm_omni_sample_b64_for_listing(monkeypatch):
     monkeypatch.setattr(cm, "load_voice_storage", lambda: {
         "__VLLM_OMNI__": {"vllm-omni-clone-x": {
             "source": "clone", "clone_sample_b64": "QUJDRA==",
+            "clone_preview_b64": "UklGRg==",
+            "clone_previews": {"zh-CN": {"audio_b64": "UklGRg=="}},
             "clone_sample_mime": "audio/wav", "clone_ref_text": "原文",
         }}
     })
@@ -371,9 +452,13 @@ def test_get_voices_strips_vllm_omni_sample_b64_for_listing(monkeypatch):
 
     full = cm.get_voices_for_current_api(for_listing=False)
     assert full["vllm-omni-clone-x"]["clone_sample_b64"] == "QUJDRA=="
+    assert full["vllm-omni-clone-x"]["clone_preview_b64"] == "UklGRg=="
+    assert "clone_previews" in full["vllm-omni-clone-x"]
 
     listing = cm.get_voices_for_current_api(for_listing=True)
     assert "clone_sample_b64" not in listing["vllm-omni-clone-x"]
+    assert "clone_preview_b64" not in listing["vllm-omni-clone-x"]
+    assert "clone_previews" not in listing["vllm-omni-clone-x"]
     assert listing["vllm-omni-clone-x"]["provider"] == "vllm_omni"
     assert listing["vllm-omni-clone-x"]["clone_ref_text"] == "原文"
 
@@ -440,6 +525,9 @@ def _fake_ws_connect(ws):
 def _make_config_manager_for_preview(voice_id, voice_data, core_config=None):
     """Build a mock ConfigManager for preview tests."""
     class _CM:
+        def __init__(self):
+            self.saved_voices = {}
+
         def get_voices_for_current_api(self, for_listing=False):
             return {voice_id: voice_data}
 
@@ -455,7 +543,194 @@ def _make_config_manager_for_preview(voice_id, voice_data, core_config=None):
         def get_tts_api_key(self, provider):
             return ""
 
+        def save_voice_for_api_key(self, storage_key, saved_voice_id, saved_voice_data):
+            self.saved_voices[(storage_key, saved_voice_id)] = saved_voice_data
+
     return _CM()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qwen3_clone_registration_check_requires_real_audio(monkeypatch):
+    import main_routers.characters_router as cr
+
+    fake_ws = _FakePreviewWS()
+    monkeypatch.setattr(cr.websockets, "connect", _fake_ws_connect(fake_ws))
+    voice_data = {
+        "voice_id": "qwen3-tts-gguf-clone-ch-validation",
+        "prefix": "验证音色",
+        "provider": "qwen3_tts_gguf",
+        "source": "clone",
+        "clone_sample_b64": base64.b64encode(b"reference wav").decode("ascii"),
+        "clone_sample_mime": "audio/wav",
+        "clone_ref_text": "参考音频原文",
+        "qwen3_tts_gguf_base_url": "ws://localhost:8091/v1",
+        "qwen3_tts_gguf_model_id": "Qwen3-TTS-Base",
+    }
+
+    result = await cr._check_qwen3_tts_clone_with_server(
+        voice_data,
+        {},
+        operation="test.register",
+        validation_text="这是一段验证语音。",
+        require_audio=True,
+    )
+
+    assert result["audio_bytes"] > 0
+    preview_wav = base64.b64decode(result["preview_audio_b64"])
+    assert preview_wav.startswith(b"RIFF")
+    sent = [json.loads(message) for message in fake_ws.sent]
+    assert sent[0]["type"] == "session.config"
+    assert sent[0]["voice"] == voice_data["voice_id"]
+    assert sent[0]["voice_name"] == "验证音色"
+    assert sent[0]["ref_audio"].startswith("data:audio/wav;base64,")
+    assert sent[0]["ref_text"] == "参考音频原文"
+    assert sent[1] == {"type": "input.text", "text": "这是一段验证语音。"}
+    assert sent[2] == {"type": "input.done"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qwen3_clone_registration_check_rejects_done_without_audio(monkeypatch):
+    import main_routers.characters_router as cr
+
+    fake_ws = _FakePreviewWS(
+        frames=[], events=[{"type": "session.done", "total_sentences": 0}]
+    )
+    monkeypatch.setattr(cr.websockets, "connect", _fake_ws_connect(fake_ws))
+    voice_data = {
+        "clone_sample_b64": base64.b64encode(b"reference wav").decode("ascii"),
+        "clone_sample_mime": "audio/wav",
+        "clone_ref_text": "参考音频原文",
+    }
+
+    with pytest.raises(cr.Qwen3TTSCloneValidationError, match="未返回验证音频"):
+        await cr._check_qwen3_tts_clone_with_server(
+            voice_data,
+            {"ttsModelUrl": "ws://localhost:8091/v1"},
+            operation="test.register",
+            validation_text="验证。",
+            require_audio=True,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qwen3_clone_selection_prepares_anchor_without_synthesis(monkeypatch):
+    import main_routers.characters_router as cr
+
+    fake_ws = _FakePreviewWS(
+        frames=[], events=[{"type": "session.done", "total_sentences": 0}]
+    )
+    monkeypatch.setattr(cr.websockets, "connect", _fake_ws_connect(fake_ws))
+    voice_data = {
+        "clone_sample_b64": base64.b64encode(b"reference wav").decode("ascii"),
+        "clone_sample_mime": "audio/wav",
+        "clone_ref_text": "参考音频原文",
+    }
+
+    result = await cr._check_qwen3_tts_clone_with_server(
+        voice_data,
+        {"ttsModelUrl": "ws://localhost:8091/v1"},
+        operation="test.prepare",
+        validation_text=None,
+        require_audio=False,
+    )
+
+    assert result["audio_bytes"] == 0
+    assert result["preview_audio_b64"] == ""
+    sent = [json.loads(message) for message in fake_ws.sent]
+    assert [message["type"] for message in sent] == ["session.config", "input.done"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qwen3_clone_preview_returns_saved_template_audio_without_synthesis(monkeypatch):
+    import main_routers.characters_router as cr
+
+    voice_id = "qwen3-tts-gguf-clone-ch-fixed"
+    saved_preview = b"RIFF-saved-template-preview"
+    preview_text = cr.VOICE_PREVIEW_TEXTS["zh-CN"]
+    voice_data = {
+        "provider": "qwen3_tts_gguf",
+        "source": "clone",
+        "clone_previews": {
+            "zh-CN": {
+                "audio_b64": base64.b64encode(saved_preview).decode("ascii"),
+                "mime_type": "audio/wav",
+                "text": preview_text,
+            },
+        },
+        "clone_sample_b64": base64.b64encode(b"reference-wav").decode("ascii"),
+        "clone_sample_mime": "audio/wav",
+    }
+    cm = _make_config_manager_for_preview(voice_id, voice_data)
+
+    def fail_if_connected(*args, **kwargs):
+        raise AssertionError("saved Qwen3 preview must not connect to the model server")
+
+    monkeypatch.setattr(cr, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(cr.websockets, "connect", fail_if_connected)
+
+    from starlette.requests import Request
+    request = Request({
+        "type": "http", "method": "GET", "path": "/preview",
+        "query_string": b"", "headers": [], "server": ("testserver", 80),
+    })
+    result = await cr.get_voice_preview(request, voice_id=voice_id)
+
+    assert result["success"] is True
+    assert result["cached"] is True
+    assert base64.b64decode(result["audio"]) == saved_preview
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qwen3_legacy_clone_preview_generates_and_saves_standard_template(monkeypatch):
+    import main_routers.characters_router as cr
+
+    voice_id = "qwen3-tts-gguf-clone-ch-legacy"
+    reference_wav = b"RIFF-saved-reference"
+    voice_data = {
+        "provider": "qwen3_tts_gguf",
+        "source": "clone",
+        "clone_sample_b64": base64.b64encode(reference_wav).decode("ascii"),
+        "clone_sample_mime": "audio/wav",
+    }
+    cm = _make_config_manager_for_preview(voice_id, voice_data)
+    monkeypatch.setattr(cr, "get_config_manager", lambda: cm)
+    generated_wav = b"RIFF-generated-standard-template"
+    calls = []
+
+    async def fake_generate(_voice_data, _core_config, **kwargs):
+        calls.append(kwargs)
+        return {
+            "elapsed": 1.25,
+            "audio_bytes": len(generated_wav),
+            "preview_audio_b64": base64.b64encode(generated_wav).decode("ascii"),
+        }
+
+    monkeypatch.setattr(cr, "_check_qwen3_tts_clone_with_server", fake_generate)
+
+    from starlette.requests import Request
+    request = Request({
+        "type": "http", "method": "GET", "path": "/preview",
+        "query_string": b"", "headers": [], "server": ("testserver", 80),
+    })
+    result = await cr.get_voice_preview(request, voice_id=voice_id)
+
+    assert result["success"] is True
+    assert result["cached"] is False
+    assert base64.b64decode(result["audio"]) == generated_wav
+    assert base64.b64decode(result["audio"]) != reference_wav
+    assert calls == [{
+        "operation": "preview.generate",
+        "validation_text": cr.VOICE_PREVIEW_TEXTS["zh-CN"],
+        "require_audio": True,
+    }]
+    saved = cm.saved_voices[("__QWEN3_TTS_GGUF__", voice_id)]
+    assert saved["clone_previews"]["zh-CN"]["text"] == cr.VOICE_PREVIEW_TEXTS["zh-CN"]
+    assert base64.b64decode(saved["clone_previews"]["zh-CN"]["audio_b64"]) == generated_wav
 
 
 @pytest.mark.unit

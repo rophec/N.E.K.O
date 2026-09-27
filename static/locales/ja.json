@@ -1559,11 +1559,11 @@
         "minimaxIntlApiRequired": "この機能にはMiniMaxモデル（国際版）が必要です。APIキー設定でMiniMax国際版APIキーを保存してください（Assist APIの有効化は不要）",
         "mimoApiRequired": "この機能には MiMo モデルが必要です。API キー設定ページで MiMo API キーを保存してください",
         "mimoDirectLinkUnsupported": "MiMo は直リンククローンに未対応です。ローカルファイルのアップロードをご利用ください",
-        "vllmOmniNotice": "ローカル vLLM-Omni サービス — APIキー不要；ローカルサービスURLが設定されていることを確認してください",
-        "vllmRefTextLabel": "参考音声の書き起こし（vLLM-Omni クローンでは必須、音声内容と厳密に一致させること）",
+        "vllmOmniNotice": "ローカル Qwen3-TTS-GGUF サービス — APIキー不要；ローカルサービスURLが設定されていることを確認してください",
+        "vllmRefTextLabel": "参考音声の書き起こし（Qwen3-TTS-GGUF クローンでは必須、音声内容と厳密に一致させること）",
         "vllmRefTextHint": "参考音声で話されている内容をそのまま入力してください。テキストと音声が合わないとクローン品質が低下します",
         "vllmRefTextPlaceholder": "例：今後私よりさらに上手にできることを願っています",
-        "vllmRefTextRequired": "参考音声の書き起こしを入力してください（vLLM-Omni クローンでは必須）",
+        "vllmRefTextRequired": "参考音声の書き起こしを入力してください（Qwen3-TTS-GGUF クローンでは必須）",
         "vllmRefTextTooLong": "参考音声の書き起こしが長すぎます。100文字以内に収めてください",
         "providerLabel": "音声クローンプロバイダー",
         "provider": {
@@ -1573,6 +1573,7 @@
             "minimax_intl": "MiniMax（国際版）",
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo（小米）",
+            "qwen3_tts_gguf": "Qwen3-TTS-GGUF（ローカルクローン）",
             "vllm_omni": "vLLM-Omni（ローカルクローン）"
         },
         "sourcePreset": "プリセット",

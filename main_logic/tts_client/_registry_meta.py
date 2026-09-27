@@ -177,6 +177,16 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         audio_format="PCM → resample 48kHz",
         notes="连接本地 CosyVoice 服务",
     ),
+    "qwen3_tts_gguf": TTSProviderMeta(
+        name="qwen3_tts_gguf",
+        category="ws_bistream",
+        protocol="WebSocket (ws://host:8091/v1/audio/speech/stream)",
+        input_streaming=True,
+        output_streaming=True,
+        client_sentence_split=False,
+        audio_format="PCM 24kHz -> resample 48kHz",
+        notes="N.E.K.O. Qwen3-TTS sidecar via llama.cpp + ONNX Runtime",
+    ),
     "vllm_omni": TTSProviderMeta(
         name="vllm_omni",
         category="ws_bistream",

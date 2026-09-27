@@ -155,14 +155,14 @@ def test_normalize_unresolved_carries_ref():
     assert vc == VoiceConfig(ref="totally-unknown")
 
 
-def test_normalize_resolution_order_vllm_before_clone():
-    # vllm 选中优先于 clone 查找（与 validate_voice_id 顺序一致）
+def test_normalize_resolution_order_clone_before_vllm_preset():
+    # 角色明确选择的克隆音色优先于全局 vllm preset 配置。
     vc = normalize_voice_id(
         "x",
         vllm_selected=True,
         clone_provider_lookup=lambda r: "cosyvoice",
     )
-    assert vc.provider == "vllm_omni"
+    assert vc == VoiceConfig(source=SOURCE_CLONE, provider="cosyvoice", ref="x")
 
 
 # ── to_legacy_voice_id (reverse shim) ────────────────────────────────────────

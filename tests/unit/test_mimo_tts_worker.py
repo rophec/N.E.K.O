@@ -236,6 +236,7 @@ def test_get_tts_worker_routes_explicit_vllm_before_assist_mimo(monkeypatch):
         "base_url": "http://localhost:8091",
         "model": "Qwen3-TTS",
         "voice": "global-vllm-voice",
+        "provider_key": "vllm_omni",
     }
     assert api_key == ""
     assert provider_key == "vllm_omni"
@@ -306,6 +307,7 @@ def test_get_tts_worker_routes_explicit_vllm_before_cloned_voice(monkeypatch):
         "base_url": "http://localhost:8091",
         "model": "Qwen3-TTS",
         "voice": "global-vllm-voice",
+        "provider_key": "vllm_omni",
     }
     assert api_key == "vllm-key"
     assert provider_key == "vllm_omni"
@@ -371,8 +373,9 @@ def test_get_tts_worker_routes_vllm_clone_when_config_selected(monkeypatch):
 
     assert isinstance(worker, partial)
     assert worker.func is tts_client.vllm_omni_tts_worker
-    # clone 路径：voice='default'（不传克隆 ID），ref_audio 带 data URI，ref_text 有值
-    assert worker.keywords.get("voice") == "default"
+    # clone 路径：voice 传稳定克隆 ID 供本地服务登记/展示，ref_audio 决定实际声音。
+    assert worker.keywords.get("voice") == "vllm-omni-clone-ch-abc123"
+    assert worker.keywords.get("voice_name") == "vllm-omni-clone-ch-abc123"
     assert worker.keywords.get("ref_audio") == f"data:audio/wav;base64,{CLONE_B64}"
     assert worker.keywords.get("ref_text") == "你好"
     # clone 路径读取 ttsModelApiKey 用于 WS 鉴权（与 preset 路径一致，见 _vllm_omni_clone_resolve L688）
@@ -421,6 +424,7 @@ def test_get_tts_worker_routes_vllm_clone_when_config_selected(monkeypatch):
         "base_url": tts_client.VLLM_OMNI_DEFAULT_BASE_URL,
         "model": tts_client.VLLM_OMNI_DEFAULT_MODEL,
         "voice": "default",
+        "provider_key": "vllm_omni",
     }
     assert api_key == ""
     assert provider_key == "vllm_omni"
@@ -575,6 +579,54 @@ def test_vllm_omni_worker_prefers_character_voice_over_provider_fallback(monkeyp
 
     assert sent_messages[0]["type"] == "session.config"
     assert sent_messages[0]["voice"] == "character-voice"
+
+
+@pytest.mark.unit
+def test_qwen3_tts_worker_prefers_sidecar_voice_over_character_voice(monkeypatch):
+    sent_messages = []
+
+    class _FakeWS:
+        async def send(self, payload):
+            sent_messages.append(json.loads(payload))
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(60)
+            raise StopAsyncIteration
+
+    async def _connect(*args, **kwargs):
+        return _FakeWS()
+
+    monkeypatch.setattr(tts_client.websockets, "connect", _connect)
+
+    request_queue = ControlledQueue()
+    response_queue = queue.Queue()
+    thread = threading.Thread(
+        target=tts_client.qwen3_tts_gguf_tts_worker,
+        kwargs={
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "audio_api_key": "",
+            "voice_id": "stale-character-voice",
+            "base_url": "http://localhost:8091",
+            "model": "Qwen3-TTS-Base",
+            "voice": "default",
+        },
+    )
+    thread.start()
+
+    assert response_queue.get(timeout=3.0) == ("__ready__", True)
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert sent_messages[0]["type"] == "session.config"
+    assert sent_messages[0]["voice"] == "default"
 
 
 @pytest.mark.unit

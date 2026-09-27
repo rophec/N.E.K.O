@@ -935,6 +935,42 @@ def test_switching_tts_provider_to_vllm_resets_stale_model(mock_page: Page, runn
 
 
 @pytest.mark.frontend
+def test_switching_tts_provider_to_qwen_sidecar_sets_supported_defaults(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector(
+        "#ttsModelProvider option[value='qwen3_tts_gguf']",
+        state="attached",
+        timeout=10000,
+    )
+
+    values = mock_page.evaluate("""
+        () => {
+            const provider = document.getElementById('ttsModelProvider');
+            const url = document.getElementById('ttsModelUrl');
+            const model = document.getElementById('ttsModelId');
+            const voice = document.getElementById('ttsVoiceId');
+
+            provider.value = 'qwen3_tts_gguf';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+
+            return {
+                url: url.value,
+                model: model.value,
+                voice: voice.value,
+            };
+        }
+    """)
+
+    assert values == {
+        "url": "ws://127.0.0.1:8091/v1",
+        "model": "Qwen3-TTS-Base",
+        "voice": "default",
+    }
+
+
+@pytest.mark.frontend
 def test_switching_tts_provider_to_vllm_replaces_readonly_url(mock_page: Page, running_server: str):
     """Provider-derived readonly URLs must not be carried into vLLM TTS."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")

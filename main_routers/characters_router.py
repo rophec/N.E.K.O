@@ -49,6 +49,7 @@ import wave
 import zlib
 import socket
 import inspect
+import time
 from dataclasses import dataclass
 from urllib.parse import urlparse, urljoin
 from datetime import datetime, timezone
@@ -828,6 +829,197 @@ def _build_wav_payload(pcm_chunks: list[bytes], channels: int, sample_width: int
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(b"".join(pcm_chunks))
     return out.getvalue()
+
+
+class Qwen3TTSCloneValidationError(RuntimeError):
+    """The local Qwen3-TTS server did not accept or synthesize a clone sample."""
+
+
+_QWEN3_TTS_PREVIEW_LOCALE_BY_REF_LANGUAGE = {
+    "ch": "zh-CN",
+    "en": "en",
+    "ja": "ja",
+    "ko": "ko",
+    "ru": "ru",
+    # VOICE_PREVIEW_TEXTS does not currently have French or German entries.
+    "fr": "en",
+    "de": "en",
+}
+
+
+def _qwen3_tts_preview_template(ref_language: str) -> tuple[str, str]:
+    locale = _QWEN3_TTS_PREVIEW_LOCALE_BY_REF_LANGUAGE.get(ref_language, "zh-CN")
+    return locale, _loc(VOICE_PREVIEW_TEXTS, locale)
+
+
+def _store_qwen3_tts_clone_preview(
+    voice_data: dict,
+    *,
+    locale: str,
+    text: str,
+    audio_b64: str,
+) -> dict:
+    updated = dict(voice_data)
+    previews = dict(updated.get('clone_previews') or {})
+    previews[locale] = {
+        'audio_b64': audio_b64,
+        'mime_type': 'audio/wav',
+        'text': text,
+    }
+    updated['clone_previews'] = previews
+    # Keep the flat fields for compatibility with data written by this branch
+    # before previews became language-specific.
+    updated['clone_preview_b64'] = audio_b64
+    updated['clone_preview_mime'] = 'audio/wav'
+    updated['clone_preview_text'] = text
+    updated['clone_preview_language'] = locale
+    return updated
+
+
+async def _check_qwen3_tts_clone_with_server(
+    voice_data: dict,
+    core_config: dict,
+    *,
+    operation: str,
+    validation_text: str | None,
+    require_audio: bool,
+) -> dict:
+    """Prepare a zero-shot voice anchor and optionally verify it by synthesis.
+
+    Registration passes the standard localized preview sentence and requires PCM output. Voice
+    selection passes no text: the server still resolves ``ref_audio`` and runs
+    ``set_voice`` before returning ``session.done``, which validates and prewarms
+    the anchor without playing an unsolicited preview.
+    """
+    from main_logic.tts_client import _qwen3_tts_gguf_normalize_ws_endpoint
+    from main_logic.tts_client.workers.vllm_omni import _build_vllm_omni_clone_data_uri
+
+    clone_data_uri = _build_vllm_omni_clone_data_uri(voice_data)
+    if not clone_data_uri:
+        raise Qwen3TTSCloneValidationError("克隆音色缺少参考音频")
+
+    base_url = str(
+        voice_data.get('qwen3_tts_gguf_base_url')
+        or voice_data.get('vllm_omni_base_url')
+        or core_config.get('ttsModelUrl')
+        or core_config.get('TTS_MODEL_URL')
+        or 'ws://127.0.0.1:8091/v1'
+    ).strip()
+    model = str(
+        voice_data.get('qwen3_tts_gguf_model_id')
+        or core_config.get('ttsModelId')
+        or 'Qwen3-TTS-Base'
+    ).strip()
+    clone_voice_id = str(voice_data.get('voice_id') or 'default').strip()
+    clone_voice_name = str(voice_data.get('prefix') or clone_voice_id).strip()
+    ref_text = str(voice_data.get('clone_ref_text') or '').strip()
+    api_key = str(core_config.get('ttsModelApiKey') or '').strip()
+    ws_endpoint = _qwen3_tts_gguf_normalize_ws_endpoint(base_url)
+    ws_kwargs = {"max_size": None, "open_timeout": 10, "close_timeout": 5}
+    if api_key:
+        try:
+            ws_sig = inspect.signature(websockets.connect)
+            header_key = (
+                "additional_headers"
+                if "additional_headers" in ws_sig.parameters
+                else "extra_headers"
+            )
+        except (ValueError, TypeError):
+            header_key = "additional_headers"
+        ws_kwargs[header_key] = [("Authorization", f"Bearer {api_key}")]
+
+    started_at = time.perf_counter()
+    print(
+        f"[NEKO VoiceClone][{operation}.connect] endpoint={ws_endpoint!r} "
+        f"model={model!r} voice_id={clone_voice_id!r} "
+        f"voice_name={clone_voice_name!r} ref_text_chars={len(ref_text)} "
+        f"require_audio={require_audio}",
+        flush=True,
+    )
+    try:
+        async with asyncio.timeout(90):
+            async with websockets.connect(ws_endpoint, **ws_kwargs) as ws:
+                config_msg = {
+                    "type": "session.config",
+                    "model": model,
+                    "voice": clone_voice_id,
+                    "voice_name": clone_voice_name,
+                    "response_format": "pcm",
+                    "speed": 1.0,
+                    "stream_audio": True,
+                    "split_granularity": "sentence",
+                    "ref_audio": clone_data_uri,
+                }
+                if ref_text:
+                    config_msg["ref_text"] = ref_text
+                if api_key:
+                    config_msg["api_key"] = api_key
+                await ws.send(json.dumps(config_msg))
+                if validation_text:
+                    await ws.send(json.dumps({"type": "input.text", "text": validation_text}))
+                await ws.send(json.dumps({"type": "input.done"}))
+                print(
+                    f"[NEKO VoiceClone][{operation}.sent] "
+                    f"validation_chars={len(validation_text or '')}",
+                    flush=True,
+                )
+
+                pcm_chunks: list[bytes] = []
+                audio_bytes = 0
+                first_audio_at = None
+                session_done = False
+                async for message in ws:
+                    if isinstance(message, bytes):
+                        pcm_chunks.append(message)
+                        audio_bytes += len(message)
+                        if first_audio_at is None:
+                            first_audio_at = time.perf_counter()
+                            print(
+                                f"[NEKO VoiceClone][{operation}.first_audio] "
+                                f"after={first_audio_at - started_at:.3f}s bytes={len(message)}",
+                                flush=True,
+                            )
+                        continue
+                    try:
+                        event = json.loads(message)
+                    except json.JSONDecodeError:
+                        continue
+                    event_type = event.get("type", "")
+                    if event_type == "error":
+                        error_message = event.get("message") or event.get("error") or "未知错误"
+                        raise Qwen3TTSCloneValidationError(str(error_message))
+                    if event_type == "session.done":
+                        session_done = True
+                        break
+
+                if not session_done:
+                    raise Qwen3TTSCloneValidationError("服务端未返回 session.done")
+                if require_audio and audio_bytes <= 0:
+                    raise Qwen3TTSCloneValidationError("服务端未返回验证音频")
+
+                elapsed = time.perf_counter() - started_at
+                print(
+                    f"[NEKO VoiceClone][{operation}.done] elapsed={elapsed:.3f}s "
+                    f"audio_bytes={audio_bytes}",
+                    flush=True,
+                )
+                preview_audio_b64 = ""
+                if pcm_chunks:
+                    preview_wav = _build_wav_payload(pcm_chunks, 1, 2, 24000)
+                    preview_audio_b64 = base64.b64encode(preview_wav).decode("ascii")
+                return {
+                    "elapsed": elapsed,
+                    "audio_bytes": audio_bytes,
+                    "preview_audio_b64": preview_audio_b64,
+                }
+    except Qwen3TTSCloneValidationError:
+        raise
+    except (TimeoutError, asyncio.TimeoutError) as exc:
+        raise Qwen3TTSCloneValidationError("Qwen3-TTS 克隆验证超时") from exc
+    except Exception as exc:
+        raise Qwen3TTSCloneValidationError(
+            f"无法完成 Qwen3-TTS 克隆验证: {exc}"
+        ) from exc
 
 
 async def _synthesize_step_voice_preview(
@@ -1612,7 +1804,7 @@ async def _elevenlabs_create_voice_from_preview(
 
 def _is_local_voice_clone_tts_config(tts_config: dict, core_config: dict | None = None) -> bool:
     provider = str((core_config or {}).get('ttsModelProvider') or '').strip()
-    if provider == 'vllm_omni':
+    if provider in ('qwen3_tts_gguf', 'vllm_omni'):
         return False
     base_url = _local_voice_clone_tts_base_url(tts_config, core_config)
     return bool(tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://')))
@@ -3016,17 +3208,18 @@ async def update_catgirl_voice_id(name: str, request: Request):
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
     voice_id = str(data.get('voice_id') or '').strip()
-    old_voice_id = read_legacy_voice_id(get_reserved(
+    raw_voice_binding = get_reserved(
         characters['猫娘'][name],
         'voice_id',
         default='',
         legacy_keys=('voice_id',)
-    ))
-
-    # 幂等保护：提交同值时直接返回，避免无实际变更触发 reload_page。
-    if old_voice_id == voice_id:
-        logger.info("猫娘 %s 的 voice_id 未变化，跳过刷新流程", name)
-        return {"success": True, "session_restarted": False, "voice_id_changed": False}
+    )
+    old_voice_id = read_legacy_voice_id(raw_voice_binding)
+    print(
+        f"[NEKO VoiceClone][bind.request] character={name!r} "
+        f"old_voice_id={old_voice_id!r} requested_voice_id={voice_id!r}",
+        flush=True,
+    )
 
     if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
         return _voice_session_starting_response()
@@ -3041,8 +3234,68 @@ async def update_catgirl_voice_id(name: str, request: Request):
             'available_voices': available_voices
         }, status_code=400)
 
+    storage_value = _config_manager.voice_id_to_storage_value(voice_id)
+    binding_changed = raw_voice_binding != storage_value
+    if isinstance(storage_value, dict):
+        binding_source = storage_value.get('source', '')
+        binding_provider = storage_value.get('provider', '')
+        binding_ref = storage_value.get('ref', '')
+    else:
+        binding_source = binding_provider = ''
+        binding_ref = str(storage_value or '')
+    print(
+        f"[NEKO VoiceClone][bind.resolved] character={name!r} "
+        f"source={binding_source!r} provider={binding_provider!r} "
+        f"ref={binding_ref!r} storage_repair={binding_changed and old_voice_id == voice_id}",
+        flush=True,
+    )
+
+    # 本地 Qwen clone 没有远端 voice_id；选择音色时主动让服务端解析参考音频并
+    # 准备 voice anchor。这样点击列表项不是只改一条 JSON，8091 也会明确记录
+    # clone.prepare，并且下一句可直接命中 anchor 缓存。
+    selected_voice_data = _config_manager.get_voices_for_current_api().get(voice_id)
+    if (
+        isinstance(selected_voice_data, dict)
+        and selected_voice_data.get('source') == 'clone'
+        and selected_voice_data.get('provider') in ('qwen3_tts_gguf', 'vllm_omni')
+    ):
+        try:
+            raw_core_config = _config_manager.load_json_config('core_config.json', {}) or {}
+            prepare_result = await _check_qwen3_tts_clone_with_server(
+                selected_voice_data,
+                raw_core_config,
+                operation='bind.prepare',
+                validation_text=None,
+                require_audio=False,
+            )
+            print(
+                f"[NEKO VoiceClone][bind.prepared] character={name!r} "
+                f"voice_id={voice_id!r} elapsed={prepare_result['elapsed']:.3f}s",
+                flush=True,
+            )
+        except Qwen3TTSCloneValidationError as exc:
+            print(
+                f"[NEKO VoiceClone][bind.failed] character={name!r} "
+                f"voice_id={voice_id!r} error={exc}",
+                flush=True,
+            )
+            return JSONResponse({
+                'success': False,
+                'error': f'克隆音色预热失败，未切换音色: {exc}',
+                'code': 'QWEN3_TTS_CLONE_PREPARE_FAILED',
+            }, status_code=502)
+
+    # 同一个扁平 ID 也可能在旧版本中被错误标成 preset/vllm_omni。只有 ID 和
+    # 结构化归属都相同才是真正幂等；归属不同时继续保存并刷新 TTS worker。
+    if old_voice_id == voice_id and not binding_changed:
+        print(
+            f"[NEKO VoiceClone][bind.noop] character={name!r} voice_id={voice_id!r}",
+            flush=True,
+        )
+        return {"success": True, "session_restarted": False, "voice_id_changed": False}
+
     # 用户设音色：惰性迁移这一条到结构对象（用到哪条迁哪条，见 voice_id_to_storage_value）。
-    set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(voice_id))
+    set_reserved(characters['猫娘'][name], 'voice_id', storage_value)
     await _config_manager.asave_characters(characters)
 
     # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
@@ -3080,6 +3333,12 @@ async def update_catgirl_voice_id(name: str, request: Request):
         logger.info("配置已重新加载，新的voice_id已生效")
     else:
         logger.info(f"非当前猫娘 {name} 的音色已更新并同步到 session_manager")
+
+    print(
+        f"[NEKO VoiceClone][bind.applied] character={name!r} voice_id={voice_id!r} "
+        f"session_restarted={session_ended}",
+        flush=True,
+    )
 
     return {"success": True, "session_restarted": session_ended, "voice_id_changed": True}
 
@@ -4536,6 +4795,86 @@ async def get_voice_preview(
         voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
         provider = (voice_data or {}).get('provider', '')
         is_free_preset_voice = _is_free_preset_voice_id(voice_id)
+        preview_language = _get_voice_preview_language(request, language, i18n_language)
+        text = _loc(VOICE_PREVIEW_TEXTS, preview_language)
+
+        # A clone reference is conditioning input, not preview content. Generate
+        # the standard localized preview sentence once and persist that result.
+        if provider == 'qwen3_tts_gguf' and (voice_data or {}).get('source') == 'clone':
+            previews = (voice_data or {}).get('clone_previews') or {}
+            preview_entry = previews.get(preview_language) if isinstance(previews, dict) else None
+            if not isinstance(preview_entry, dict):
+                preview_entry = None
+
+            preview_b64 = str((preview_entry or {}).get('audio_b64') or '').strip()
+            preview_mime = str((preview_entry or {}).get('mime_type') or '').strip()
+            preview_text = str((preview_entry or {}).get('text') or '')
+
+            # Migrate a compatible flat preview, but never treat clone_sample_b64
+            # (the uploaded reference recording) as a preview.
+            if not preview_b64 and str((voice_data or {}).get('clone_preview_text') or '') == text:
+                preview_b64 = str((voice_data or {}).get('clone_preview_b64') or '').strip()
+                preview_mime = str((voice_data or {}).get('clone_preview_mime') or '').strip()
+                preview_text = text
+
+            if preview_b64 and preview_text == text:
+                try:
+                    base64.b64decode(preview_b64, validate=True)
+                except ValueError:
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'Qwen3-TTS-GGUF 克隆音色预览损坏: {voice_id}',
+                        'code': 'QWEN3_TTS_GGUF_PREVIEW_CORRUPT',
+                    }, status_code=400)
+                print(
+                    f"[NEKO VoicePreview][qwen3_tts_gguf.saved] voice_id={voice_id!r} "
+                    f"language={preview_language!r} bytes_b64={len(preview_b64)}",
+                    flush=True,
+                )
+                return {
+                    'success': True,
+                    'audio': preview_b64,
+                    'mime_type': preview_mime or 'audio/wav',
+                    'cached': True,
+                }
+
+            try:
+                preview_core_config = await _config_manager.aget_core_config()
+                preview_result = await _check_qwen3_tts_clone_with_server(
+                    voice_data,
+                    preview_core_config,
+                    operation='preview.generate',
+                    validation_text=text,
+                    require_audio=True,
+                )
+                preview_b64 = str(preview_result.get('preview_audio_b64') or '').strip()
+                if not preview_b64:
+                    raise Qwen3TTSCloneValidationError("服务端未返回试听音频")
+                updated_voice_data = _store_qwen3_tts_clone_preview(
+                    voice_data,
+                    locale=preview_language,
+                    text=text,
+                    audio_b64=preview_b64,
+                )
+                _config_manager.save_voice_for_api_key(
+                    '__QWEN3_TTS_GGUF__', voice_id, updated_voice_data)
+                print(
+                    f"[NEKO VoicePreview][qwen3_tts_gguf.generated] voice_id={voice_id!r} "
+                    f"language={preview_language!r} elapsed={preview_result['elapsed']:.3f}s",
+                    flush=True,
+                )
+                return {
+                    'success': True,
+                    'audio': preview_b64,
+                    'mime_type': 'audio/wav',
+                    'cached': False,
+                }
+            except Qwen3TTSCloneValidationError as exc:
+                return JSONResponse({
+                    'success': False,
+                    'error': f'Qwen3-TTS-GGUF 试听生成失败: {exc}',
+                    'code': 'QWEN3_TTS_GGUF_PREVIEW_FAILED',
+                }, status_code=502)
 
         # 优先尝试从 tts_custom 获取 API Key
         try:
@@ -4572,9 +4911,6 @@ async def get_voice_preview(
             )
 
         logger.info(f"正在为音色 {voice_id} 生成预览音频...")
-
-        preview_language = _get_voice_preview_language(request, language, i18n_language)
-        text = _loc(VOICE_PREVIEW_TEXTS, preview_language)
 
         # hosted/local provider 的预制音色（如选中 MiMo 时的预制声线）经 native_voices
         # 通道露给前端会渲染试听按钮，但其试听需走该 provider 自己的合成路径（尚未接）。
@@ -4671,7 +5007,11 @@ async def get_voice_preview(
             # base_url：优先 voice_meta 存的 vllm_omni_base_url，缺省回落
             # preview_core_config 的 ttsModelUrl。无配置 URL 时返回 400 —— 不硬编码
             # 任何内网端点（旧实现 fallback 到固定 IP，推到公共仓库后必失败且泄漏拓扑）。
-            base_url = str((voice_data or {}).get('vllm_omni_base_url') or '').strip()
+            base_url = str(
+                (voice_data or {}).get('qwen3_tts_gguf_base_url')
+                or (voice_data or {}).get('vllm_omni_base_url')
+                or ''
+            ).strip()
             if not base_url:
                 base_url = str(
                     (preview_core_config or {}).get('ttsModelUrl')
@@ -4684,13 +5024,17 @@ async def get_voice_preview(
                     'error': 'vLLM-Omni 服务地址未配置，请先在 TTS 设置中填写端点 URL',
                     'code': 'VLLM_OMNI_URL_MISSING',
                 }, status_code=400)
-            # model：从 preview_core_config 的 ttsModelId 或默认 Qwen3-TTS
-            model = str((preview_core_config or {}).get('ttsModelId') or '').strip() or 'Qwen3-TTS'
+            # 克隆音色优先使用注册时保存的 Base 模型 ID；旧数据回落到全局配置。
+            model = (
+                str((voice_data or {}).get('qwen3_tts_gguf_model_id') or '').strip()
+                or str((preview_core_config or {}).get('ttsModelId') or '').strip()
+                or 'Qwen3-TTS'
+            )
             # URL 规整复用 worker 的 _vllm_omni_normalize_ws_endpoint（http→ws / 补 /v1 /
             # 幂等 endpoint 拼接）——避免 preview 复制粘贴时漏掉协议转换导致用户配 http://
             # 端点必失败（dual to vllm_omni_tts_worker 的 URL 规整）。
-            from main_logic.tts_client import _vllm_omni_normalize_ws_endpoint
-            ws_endpoint = _vllm_omni_normalize_ws_endpoint(base_url)
+            from main_logic.tts_client import _qwen3_tts_gguf_normalize_ws_endpoint
+            ws_endpoint = _qwen3_tts_gguf_normalize_ws_endpoint(base_url)
             # API key 鉴权（对齐 worker 的 _connect_and_config 双路径：WS handshake
             # Authorization header + session.config.api_key）。有认证的 vLLM 端点克隆
             # 预览也需要传 key，否则 401 失败（C6 fix）。
@@ -4722,7 +5066,8 @@ async def get_voice_preview(
                         config_msg = {
                             "type": "session.config",
                             "model": model,
-                            "voice": "default",
+                            "voice": voice_id,
+                            "voice_name": str((voice_data or {}).get('prefix') or voice_id).strip(),
                             "response_format": "pcm",
                             "speed": 1.0,
                             "stream_audio": True,
@@ -5411,8 +5756,8 @@ async def voice_clone(
         prefix: voice prefix name
         ref_language: language of the reference audio; one of: ch, en, fr, de, ja, ko, ru
                       Note: this is the language of the reference audio, not the target voice
-        provider: service provider; one of: cosyvoice (Alibaba Bailian), cosyvoice_intl (Alibaba international), minimax (China), minimax_intl (international), elevenlabs, mimo, vllm_omni
-        ref_text: transcript of the reference audio (vLLM-Omni inline clone only; must
+        provider: service provider; one of: cosyvoice (Alibaba Bailian), cosyvoice_intl (Alibaba international), minimax (China), minimax_intl (international), elevenlabs, mimo, qwen3_tts_gguf, vllm_omni
+        ref_text: transcript of the reference audio (Qwen3-TTS-GGUF inline clone only; must
                   correspond strictly to the audio content)
     """
     # 流式读取上传文件（带大小限制）并增量计算 MD5
@@ -5437,7 +5782,7 @@ async def voice_clone(
     # 缺失 ref_text 会导致合成失败（服务端 ValueError）。前端 voice_clone.js 也做了
     # 同步校验（L1484-1491），后端补上防止绕过前端直接调 API。
     vllm_ref_text = ref_text.strip() if ref_text else ''
-    if provider == 'vllm_omni':
+    if provider in ('qwen3_tts_gguf', 'vllm_omni'):
         if not vllm_ref_text:
             return JSONResponse(
                 {'error': 'vLLM-Omni 克隆必须填写参考音频原文（ref_text）', 'provider': provider},
@@ -5456,8 +5801,18 @@ async def voice_clone(
         core_config = await _config_manager.aget_core_config() or {}
     except Exception:
         core_config = {}
+    try:
+        # aget_core_config 的快照会刻意剔除部分凭证字段；本地服务鉴权需要原始
+        # ttsModelApiKey，因此只在这条服务端调用链中合并读取，不写日志、不回传。
+        raw_core_config = _config_manager.load_json_config('core_config.json', {}) or {}
+    except Exception:
+        raw_core_config = {}
+    clone_server_config = {**core_config, **raw_core_config}
     base_url = _local_voice_clone_tts_base_url(tts_config, core_config)
-    is_local_tts = _is_local_voice_clone_tts_config(tts_config, core_config)
+    is_local_tts = (
+        provider not in ('qwen3_tts_gguf', 'vllm_omni')
+        and _is_local_voice_clone_tts_config(tts_config, core_config)
+    )
 
     if is_local_tts:
         # ==================== 本地 TTS 注册流程 ====================
@@ -5608,18 +5963,23 @@ async def voice_clone(
         storage_key = f'{MIMO_VOICE_STORAGE_KEY}{api_key[-8:]}'
         provider_label = 'MiMo'
 
-    elif provider == 'vllm_omni':
+    elif provider in ('qwen3_tts_gguf', 'vllm_omni'):
         # vLLM-Omni 是本地 self-hosted 服务，没有 API key、也没有远端音色注册接口。克隆走
         # 「内联参考音频」范式（对偶 MiMo）：参考音频 base64 + ref_text 整段落进 voice_storage
-        # 的 voice_meta，每次合成时内联进 session.config 的 ref_audio/ref_text。桶名固定
-        # __VLLM_OMNI__（无 key 后缀，因本地服务无 key 可分桶）。base_url 取当前配置的
-        # ttsModelUrl（与 _vllm_omni_resolve 同源），仅存档备查，dispatch 仍按当前配置重解析。
-        base_url = (core_config.get('ttsModelUrl') or core_config.get('TTS_MODEL_URL') or '').strip()
-        storage_key = '__VLLM_OMNI__'
-        provider_label = 'vLLM-Omni'
+        # 的 voice_meta，每次合成时内联进 session.config 的 ref_audio/ref_text。
+        # Base 是唯一运行模型：克隆注册和后续发声共用全局 Qwen3-TTS-GGUF 端点。
+        base_url = (
+            core_config.get('ttsModelUrl')
+            or core_config.get('TTS_MODEL_URL')
+            or 'ws://127.0.0.1:8091/v1'
+        ).strip()
+        storage_key = '__QWEN3_TTS_GGUF__' if provider == 'qwen3_tts_gguf' else '__VLLM_OMNI__'
+        provider_label = 'Qwen3-TTS-GGUF' if provider == 'qwen3_tts_gguf' else 'vLLM-Omni'
 
     else:
         return JSONResponse({'error': f'不支持的 provider: {provider}'}, status_code=400)
+
+    validation_result = None
 
     # ---------- 公共流程：MD5 去重 ----------
     if provider in ('cosyvoice', 'cosyvoice_intl'):
@@ -5630,7 +5990,7 @@ async def voice_clone(
         voice_id_ex, voice_data_ex = existing
         # vLLM-Omni：同音频 + 同语言但不同 ref_text 视为不同音色（转录修正场景），
         # 不命中去重，允许用户用修正后的 ref_text 重新注册。
-        if provider == 'vllm_omni':
+        if provider in ('qwen3_tts_gguf', 'vllm_omni'):
             existing_ref_text = str((voice_data_ex or {}).get('clone_ref_text') or '').strip()
             if existing_ref_text != vllm_ref_text:
                 # 清理旧条目：否则 find_voice_by_audio_md5 按插入顺序总是先返回
@@ -5646,14 +6006,68 @@ async def voice_clone(
                         "vLLM-Omni 旧条目 %s 删除失败，可能导致下次去重仍命中旧条目",
                         voice_id_ex, exc_info=True)
                 existing = None
+            elif provider == 'qwen3_tts_gguf':
+                # 旧版本把克隆端点跟随全局 TTS，可能把同一音色保存到了 8091 的微调模型。
+                # MD5 命中时就地迁移端点和模型 ID，不要求用户删除后重新上传音频。
+                stored_url = str((voice_data_ex or {}).get('qwen3_tts_gguf_base_url') or '').strip()
+                stored_model = str((voice_data_ex or {}).get('qwen3_tts_gguf_model_id') or '').strip()
+                if stored_url != base_url or stored_model != 'Qwen3-TTS-Base':
+                    migrated_voice_data = dict(voice_data_ex or {})
+                    migrated_voice_data['qwen3_tts_gguf_base_url'] = base_url
+                    migrated_voice_data['vllm_omni_base_url'] = base_url
+                    migrated_voice_data['qwen3_tts_gguf_model_id'] = 'Qwen3-TTS-Base'
+                    _config_manager.save_voice_for_api_key(
+                        storage_key, voice_id_ex, migrated_voice_data)
+                    existing = (voice_id_ex, migrated_voice_data)
+                    logger.info(
+                        "Qwen3-TTS-GGUF 克隆音色 %s 已迁移到 Base 端点 %s",
+                        voice_id_ex,
+                        base_url,
+                    )
     if existing:
         voice_id, voice_data = existing
+        if provider in ('qwen3_tts_gguf', 'vllm_omni'):
+            try:
+                preview_locale, preview_text = _qwen3_tts_preview_template(ref_language)
+                validation_result = await _check_qwen3_tts_clone_with_server(
+                    voice_data,
+                    clone_server_config,
+                    operation='register.reuse_validate',
+                    validation_text=preview_text,
+                    require_audio=True,
+                )
+                if provider == 'qwen3_tts_gguf' and validation_result.get('preview_audio_b64'):
+                    voice_data = _store_qwen3_tts_clone_preview(
+                        voice_data,
+                        locale=preview_locale,
+                        text=preview_text,
+                        audio_b64=validation_result['preview_audio_b64'],
+                    )
+                    _config_manager.save_voice_for_api_key(storage_key, voice_id, voice_data)
+            except Qwen3TTSCloneValidationError as exc:
+                print(
+                    f"[NEKO VoiceClone][register.failed] reused=True "
+                    f"voice_id={voice_id!r} error={exc}",
+                    flush=True,
+                )
+                return JSONResponse({
+                    'error': f'{provider_label}克隆验证失败: {exc}',
+                    'code': 'QWEN3_TTS_CLONE_VALIDATION_FAILED',
+                    'provider': provider,
+                }, status_code=502)
         logger.info(f"{provider_label} 音频 MD5 命中，复用 voice_id: {voice_id}")
         return JSONResponse({
             'voice_id': voice_id,
             'message': f'已复用现有{provider_label}音色，跳过上传',
             'reused': True,
-            'provider': provider
+            'provider': provider,
+            'validated': bool(validation_result),
+            'validation_elapsed': (
+                round(validation_result['elapsed'], 3) if validation_result else None
+            ),
+            'validation_audio_bytes': (
+                validation_result['audio_bytes'] if validation_result else 0
+            ),
         })
 
     # ---------- 公共流程：音频规范化 ----------
@@ -5754,7 +6168,7 @@ async def voice_clone(
                 'created_at': datetime.now().isoformat()
             }
 
-        elif provider == 'vllm_omni':
+        elif provider in ('qwen3_tts_gguf', 'vllm_omni'):
             # vLLM-Omni 内联克隆（对偶 MiMo）：无远端注册接口，参考音频 base64 + ref_text 整段
             # 落进 voice_storage 的 voice_meta，dispatch 时读出来内联进 session.config 的
             # ref_audio/ref_text。vLLM-Omni 无远端校验接口（不像 MiMo 有 validate_sample），
@@ -5764,13 +6178,14 @@ async def voice_clone(
             # ref_text hash 避免同音频不同转录命中旧 voice（转录修正场景）。
             # 无 key 后缀（本地服务无 key），桶 __VLLM_OMNI__ 是全局唯一分区。
             ref_text_hash = hashlib.md5(vllm_ref_text.encode('utf-8')).hexdigest()[:8]
-            voice_id = f'vllm-omni-clone-{ref_language}-{audio_md5[:12]}-{ref_text_hash}'
+            prefix_key = 'qwen3-tts-gguf-clone' if provider == 'qwen3_tts_gguf' else 'vllm-omni-clone'
+            voice_id = f'{prefix_key}-{ref_language}-{audio_md5[:12]}-{ref_text_hash}'
             voice_data = {
                 'voice_id': voice_id,
                 'prefix': prefix,
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
-                'provider': 'vllm_omni',
+                'provider': provider,
                 'source': 'clone',
                 # 克隆身份：参考音频 base64（对偶 MiMo 的 clone_sample_b64），dispatch/preview
                 # 读它内联进 session.config 的 ref_audio。存进 voice_meta 即随 voice_storage 云同步。
@@ -5779,9 +6194,28 @@ async def voice_clone(
                 # 参考音频原文：vLLM-Omni 克隆要求 ref_text 与音频严格对应，作 session.config.ref_text。
                 'clone_ref_text': vllm_ref_text,
                 # base_url 存进 voice_meta（对偶 mimo_base_url）；dispatch 仍按当前配置重解析。
+                'qwen3_tts_gguf_base_url': base_url or '',
                 'vllm_omni_base_url': base_url or '',
+                'qwen3_tts_gguf_model_id': 'Qwen3-TTS-Base',
                 'created_at': datetime.now().isoformat()
             }
+            # “注册成功”必须表示模型真正接受了参考音频，并能用标准试听句生成 PCM。
+            # 该结果同时作为稳定预览保存；失败时不落库、不自动绑定角色。
+            preview_locale, preview_text = _qwen3_tts_preview_template(ref_language)
+            validation_result = await _check_qwen3_tts_clone_with_server(
+                voice_data,
+                clone_server_config,
+                operation='register.validate',
+                validation_text=preview_text,
+                require_audio=True,
+            )
+            if provider == 'qwen3_tts_gguf' and validation_result.get('preview_audio_b64'):
+                voice_data = _store_qwen3_tts_clone_preview(
+                    voice_data,
+                    locale=preview_locale,
+                    text=preview_text,
+                    audio_b64=validation_result['preview_audio_b64'],
+                )
 
         else:  # cosyvoice / cosyvoice_intl
             from utils.api_config_loader import get_cosyvoice_clone_model
@@ -5814,6 +6248,13 @@ async def voice_clone(
 
         logger.info(f"{provider_label} 音色注册成功，voice_id: {voice_id}")
 
+    except Qwen3TTSCloneValidationError as e:
+        print(f"[NEKO VoiceClone][register.failed] error={e}", flush=True)
+        return JSONResponse({
+            'error': f'{provider_label}克隆验证失败: {e}',
+            'code': 'QWEN3_TTS_CLONE_VALIDATION_FAILED',
+            'provider': provider,
+        }, status_code=502)
     except ElevenLabsUpstreamError as e:
         logger.error(f"ElevenLabs 音色注册上游服务错误 ({e.status_code}): {e}")
         return JSONResponse({
@@ -5846,7 +6287,7 @@ async def voice_clone(
         # 会给用户一个根本不存在的 voice_id。而且 MiMo 不存在"重试会重复创建远端资源"的代价
         # （validate 不创建任何东西），重试是安全的——所以这里返回真失败，让客户端知道并可重试
         # （Codex review #1851；与 PR #528「远端已创建→200 partial」规则的前提相反）。
-        if provider in ('mimo', 'vllm_omni'):
+        if provider in ('mimo', 'qwen3_tts_gguf', 'vllm_omni'):
             return JSONResponse({
                 'error': f'{provider_label}音色保存失败: {str(save_error)}',
                 'code': 'TTS_VOICE_SAVE_FAILED',
@@ -5862,11 +6303,18 @@ async def voice_clone(
             'provider': provider,
         }, status_code=200)
 
-    return JSONResponse({
+    response_payload = {
         'voice_id': voice_id,
         'message': f'{provider_label}音色注册成功并已保存到音色库',
         'provider': provider,
-    })
+    }
+    if validation_result:
+        response_payload.update({
+            'validated': True,
+            'validation_elapsed': round(validation_result['elapsed'], 3),
+            'validation_audio_bytes': validation_result['audio_bytes'],
+        })
+    return JSONResponse(response_payload)
 
 
 def _validate_voice_design_description(raw: object) -> tuple[str, JSONResponse | None]:
