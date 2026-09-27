@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .calibration import CalibrationProfile
 from .roi import RoiBox
 
 
@@ -52,6 +53,16 @@ class _LayoutSpec:
     order: str = "row_major"
 
 
+@dataclass(frozen=True)
+class _LayoutScale:
+    screen_width: int
+    screen_height: int
+    content_left: int
+    content_top: int
+    content_width: int
+    content_height: int
+
+
 _BASE_LAYOUTS = {
     "self": _LayoutSpec(762, 542, 58, 70, 64, 70, 6, 3, "bottom"),
     "left_opponent": _LayoutSpec(624, 290, 84, 58, 82, 62, 3, 6, "left", "column_major"),
@@ -63,8 +74,24 @@ _BASE_LAYOUTS = {
 def build_discard_layout(width: int, height: int) -> dict[str, list[DiscardSlot]]:
     screen_width = max(1, int(width))
     screen_height = max(1, int(height))
+    return _build_discard_layout_with_scale(_legacy_layout_scale(screen_width, screen_height))
+
+
+def build_calibrated_discard_layout(
+    width: int,
+    height: int,
+    *,
+    calibration: CalibrationProfile | None = None,
+) -> dict[str, list[DiscardSlot]]:
+    screen_width = max(1, int(width))
+    screen_height = max(1, int(height))
+    scale = _calibrated_layout_scale(screen_width, screen_height, calibration=calibration)
+    return _build_discard_layout_with_scale(scale)
+
+
+def _build_discard_layout_with_scale(scale: _LayoutScale) -> dict[str, list[DiscardSlot]]:
     return {
-        player: _build_player_slots(player, spec, screen_width, screen_height)
+        player: _build_player_slots(player, spec, scale)
         for player, spec in _BASE_LAYOUTS.items()
     }
 
@@ -72,8 +99,7 @@ def build_discard_layout(width: int, height: int) -> dict[str, list[DiscardSlot]
 def _build_player_slots(
     player: str,
     spec: _LayoutSpec,
-    screen_width: int,
-    screen_height: int,
+    scale: _LayoutScale,
 ) -> list[DiscardSlot]:
     coordinates = (
         ((row, column) for column in range(spec.columns) for row in range(spec.rows))
@@ -88,8 +114,7 @@ def _build_player_slots(
             top=spec.origin_top + row * spec.step_y,
             box_width=spec.tile_width,
             box_height=spec.tile_height,
-            screen_width=screen_width,
-            screen_height=screen_height,
+            scale=scale,
             orientation=spec.orientation,
         )
         slots.append(
@@ -98,11 +123,43 @@ def _build_player_slots(
                 player=player,
                 turn_index=turn_index,
                 orientation=spec.orientation,
-                box=_box_from_quad(name, quad, screen_width, screen_height),
+                box=_box_from_quad(name, quad, scale.screen_width, scale.screen_height),
                 quad=quad,
             )
         )
     return slots
+
+
+def _legacy_layout_scale(screen_width: int, screen_height: int) -> _LayoutScale:
+    return _LayoutScale(
+        screen_width=screen_width,
+        screen_height=screen_height,
+        content_left=0,
+        content_top=0,
+        content_width=screen_width,
+        content_height=screen_height,
+    )
+
+
+def _calibrated_layout_scale(
+    screen_width: int,
+    screen_height: int,
+    *,
+    calibration: CalibrationProfile | None,
+) -> _LayoutScale:
+    calibration = calibration or CalibrationProfile(screen_width=screen_width, screen_height=screen_height)
+    content_width = max(1, int(calibration.content_width or screen_width))
+    content_height = max(1, int(calibration.content_height or screen_height))
+    # 中文：新方法把牌河坐标锚定到雀魂内容区。
+    # English: New method anchors discard coordinates to the Mahjong Soul content area.
+    return _LayoutScale(
+        screen_width=screen_width,
+        screen_height=screen_height,
+        content_left=max(0, int(calibration.content_left or 0)),
+        content_top=max(0, int(calibration.content_top or 0)),
+        content_width=content_width,
+        content_height=content_height,
+    )
 
 
 def _scaled_quad(
@@ -111,14 +168,15 @@ def _scaled_quad(
     top: int,
     box_width: int,
     box_height: int,
-    screen_width: int,
-    screen_height: int,
+    scale: _LayoutScale,
     orientation: str,
 ) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]:
-    scale_x = screen_width / BASE_WIDTH
-    scale_y = screen_height / BASE_HEIGHT
-    scaled_left = _clamp_int(round(left * scale_x), 0, screen_width - 1)
-    scaled_top = _clamp_int(round(top * scale_y), 0, screen_height - 1)
+    scale_x = scale.content_width / BASE_WIDTH
+    scale_y = scale.content_height / BASE_HEIGHT
+    screen_width = scale.screen_width
+    screen_height = scale.screen_height
+    scaled_left = _clamp_int(round(scale.content_left + left * scale_x), 0, screen_width - 1)
+    scaled_top = _clamp_int(round(scale.content_top + top * scale_y), 0, screen_height - 1)
     scaled_width = max(1, int(round(box_width * scale_x)))
     scaled_height = max(1, int(round(box_height * scale_y)))
     right = _clamp_int(scaled_left + scaled_width, 1, screen_width)
