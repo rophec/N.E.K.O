@@ -131,6 +131,123 @@ def parse_discards_from_image(
     )
 
 
+def parse_incremental_discards_from_image(
+    image: Image.Image,
+    known_discard_piles: dict[str, list[dict[str, Any]]],
+    template_payload: dict[str, Any] | None = None,
+    *,
+    layout: dict[str, list[DiscardSlot]] | None = None,
+    min_confidence: float = DEFAULT_MIN_DISCARD_CONFIDENCE,
+) -> DiscardParseResult:
+    """Inspect only each player's next expected discard slot.
+
+    A full scan is still used to bootstrap a round. Once a stable snapshot is
+    available, every player can only add the next slot in their own river, so
+    checking those four slots is enough to append a new discard without
+    overwriting historical recognition data.
+    """
+    template_payload = template_payload or {}
+    onnx_available = onnx_discard_available()
+    if not onnx_available and not template_payload:
+        return DiscardParseResult(
+            analysis_hints={
+                "discard_parser_available": False,
+                "discard_parser_reason": "missing_onnx_model_and_templates",
+                "discard_parser_source": "unavailable",
+                "incremental": True,
+            }
+        )
+
+    layout = layout or build_discard_layout(*image.size)
+    plans: list[tuple[str, DiscardSlot, dict[str, Any], Image.Image]] = []
+    raw_detections: list[dict[str, Any]] = []
+    checked_slot_count = 0
+    occupied_count = 0
+    for player, slots in layout.items():
+        next_slot = _next_discard_slot(slots, known_discard_piles.get(player, []))
+        if next_slot is None:
+            continue
+        checked_slot_count += 1
+        metrics = _collect_discard_slot_metrics(image, next_slot)
+        occupied = is_probably_occupied_discard_slot(metrics)
+        detection = _base_detection(next_slot, slot_metrics=metrics, occupied=occupied)
+        if not occupied:
+            raw_detections.append(detection)
+            continue
+        occupied_count += 1
+        plans.append((player, next_slot, detection, crop_discard_slot(image, next_slot)))
+
+    matches = classify_discard_tiles_batch([crop for _, _, _, crop in plans], template_payload)
+    discard_piles: dict[str, list[dict[str, Any]]] = {}
+    visible_tiles: list[str] = []
+    confidences: list[float] = []
+    for (player, slot, detection, _crop), match in zip(plans, matches, strict=True):
+        if match is None:
+            detection["accepted"] = False
+            detection["rejection_reason"] = "classification_failed"
+            raw_detections.append(detection)
+            continue
+        detection.update(
+            {
+                "candidate_tile": match.tile,
+                "confidence": match.confidence,
+                "template_distance": match.distance,
+                "runner_up_tile": match.runner_up_tile,
+                "runner_up_distance": match.runner_up_distance,
+            }
+        )
+        rejection_reason = _discard_match_rejection_reason(match, min_confidence=min_confidence)
+        if rejection_reason:
+            detection["accepted"] = False
+            detection["rejection_reason"] = rejection_reason
+            raw_detections.append(detection)
+            continue
+        detection["accepted"] = True
+        raw_detections.append(detection)
+        item = {
+            "tile": match.tile,
+            "player": player,
+            "turn_index": slot.turn_index,
+            "bbox": slot.bbox,
+            "quad": [[x, y] for x, y in slot.quad],
+            "confidence": match.confidence,
+            "orientation": slot.orientation,
+            "source": "onnx_discard_model" if onnx_available else "discard_template_profile",
+            "slot_id": slot.slot_id,
+        }
+        discard_piles.setdefault(player, []).append(item)
+        visible_tiles.append(match.tile)
+        confidences.append(match.confidence)
+
+    confidence = round(sum(confidences) / len(confidences), 4) if confidences else 0.0
+    return DiscardParseResult(
+        discard_piles=discard_piles,
+        visible_tiles=visible_tiles,
+        raw_detections=raw_detections,
+        analysis_hints={
+            "discard_parser_available": True,
+            "discard_parser_source": "onnx_discard_model" if onnx_available else "discard_template_profile",
+            "incremental": True,
+            "checked_discard_slot_count": checked_slot_count,
+            "occupied_discard_slot_count": occupied_count,
+            "recognized_new_discard_count": len(visible_tiles),
+            "discard_analysis_confidence": confidence,
+        },
+    )
+
+
+def _next_discard_slot(slots: list[DiscardSlot], known_items: list[dict[str, Any]]) -> DiscardSlot | None:
+    known_indices = {
+        int(item.get("turn_index") or 0)
+        for item in known_items
+        if isinstance(item, dict) and int(item.get("turn_index") or 0) > 0
+    }
+    next_index = max(known_indices, default=0) + 1
+    if next_index <= 0 or next_index > len(slots):
+        return None
+    return slots[next_index - 1]
+
+
 def crop_discard_slot(image: Image.Image, slot: DiscardSlot) -> Image.Image:
     return crop_discard_quad(
         image,

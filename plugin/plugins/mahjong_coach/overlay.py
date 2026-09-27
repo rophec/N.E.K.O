@@ -697,6 +697,14 @@ def overlay_text_from_payload(payload: dict[str, Any]) -> str:
     decision_type = str(decision.get("decision_type") or "")
     if decision.get("action_required"):
         return _action_overlay_text(decision_type, decision, display_mode=display_mode)
+    if decision_type == "settlement_candidate":
+        return _format_overlay("检测到结算候选", "正在用下一帧复核", "上一局数据暂不刷新")
+    if decision_type == "round_settlement":
+        settlement = decision.get("perception", {}).get("settlement", {})
+        kind = _settlement_kind_label(str(settlement.get("kind") or "unknown"))
+        return _format_overlay(f"{kind}已确认", "上一局数据已冻结", "等待结算画面结束")
+    if decision_type == "awaiting_next_round":
+        return _format_overlay("等待下一局", "上一局数据仍保留", "新手牌稳定两帧后自动重开")
     if decision_type == "round_idle":
         return _format_overlay("等待下一局", "上一局已结束", "新手牌出现后自动重开")
     has_plan = state.get("local_direction") or state.get("local_plan") or state.get("current_plan") or state.get("opening_plan")
@@ -730,6 +738,7 @@ def overlay_detail_text_from_payload(payload: dict[str, Any]) -> str:
     meld = perception.get("meld") if isinstance(perception.get("meld"), dict) else {}
     action = perception.get("action") if isinstance(perception.get("action"), dict) else {}
     river = perception.get("river") if isinstance(perception.get("river"), dict) else {}
+    settlement = perception.get("settlement") if isinstance(perception.get("settlement"), dict) else {}
     targets = _string_items(state.get("target_shapes"))
     cautions = _string_items(state.get("caution_points"))
     direction = _direction_text(str(state.get("local_direction") or ""), str(state.get("local_plan") or state.get("current_plan") or ""), targets)
@@ -753,6 +762,12 @@ def overlay_detail_text_from_payload(payload: dict[str, Any]) -> str:
         f"窗口：{window_title or '未绑定'}；来源：{capture_source or 'unknown'}",
         f"识别流程：{progress}",
         "识别逻辑：capture.py/capture_frame() → coach.py/analyze_frame()",
+        (
+            "结算逻辑：perception/settlement_detector.py/detect_settlement_path()；"
+            f"阶段={str(settlement.get('phase') or state.get('settlement_phase') or 'playing')}；"
+            f"类型={_settlement_kind_label(str(settlement.get('kind') or state.get('settlement_kind') or 'none'))}；"
+            f"置信度={float(settlement.get('confidence') or state.get('settlement_confidence') or 0.0):.0%}"
+        ),
         f"手牌逻辑：perception/fast_hand_path.py/detect_fast_hand_path()；结果={str(hand.get('reason') or '等待')}",
         f"副露逻辑：perception/meld_state.py/detect_meld_state_path()；结果={str(meld.get('reason') or '等待')}",
         f"按钮逻辑：perception/action_detector.py/detect_action_buttons_fast()；结果={str(action.get('source') or '等待')}",
@@ -778,6 +793,16 @@ def overlay_detail_text_from_payload(payload: dict[str, Any]) -> str:
     if not any((keep, call, discard, efficiency, yaku)):
         parts.append("策略细节：等待稳定手牌后生成。")
     return _format_overlay(*parts)
+
+
+def _settlement_kind_label(kind: str) -> str:
+    return {
+        "win": "和牌结算",
+        "exhaustive_draw": "荒牌流局",
+        "abortive_draw": "途中流局",
+        "unknown": "小局结算",
+        "none": "未检测",
+    }.get(kind, "小局结算")
 
 
 def _overlay_display_mode(payload: dict[str, Any]) -> str:
@@ -934,9 +959,19 @@ def _overlay_progress_text(decision: dict[str, Any], state: dict[str, Any]) -> s
     meld = perception.get("meld") if isinstance(perception.get("meld"), dict) else {}
     action = perception.get("action") if isinstance(perception.get("action"), dict) else {}
     river = perception.get("river") if isinstance(perception.get("river"), dict) else {}
+    settlement = perception.get("settlement") if isinstance(perception.get("settlement"), dict) else {}
     hand_reason = str(hand.get("reason") or "").strip()
 
     capture = "截图✓" if decision.get("engine_meta") or decision.get("decision_type") else "截图待"
+    settlement_phase = str(settlement.get("phase") or state.get("settlement_phase") or "playing")
+    if settlement_phase == "settlement_candidate":
+        settlement_step = "结算复核"
+    elif settlement_phase == "settlement_latched":
+        settlement_step = "结算✓"
+    elif settlement_phase == "awaiting_next_round":
+        settlement_step = "等新局"
+    else:
+        settlement_step = "结算-"
     if hand_reason == "missing_hand_tile_templates":
         calibration = "校准!"
     elif hand_reason in {"image_missing", "image_path_missing"}:
@@ -984,7 +1019,10 @@ def _overlay_progress_text(decision: dict[str, Any], state: dict[str, Any]) -> s
 
     has_plan = state.get("current_plan") or state.get("opening_plan") or state.get("local_plan") or decision.get("suggestion")
     strategy = "策略✓" if has_plan else "策略待"
-    return f"流程：{capture} {calibration} {hand_step} {meld_step} {action_step} {river_step} {strategy}"
+    return (
+        f"流程：{capture} {settlement_step} {calibration} {hand_step} "
+        f"{meld_step} {action_step} {river_step} {strategy}"
+    )
 
 
 def _string_items(value: Any) -> list[str]:

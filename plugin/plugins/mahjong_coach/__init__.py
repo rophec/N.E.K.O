@@ -1,19 +1,31 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+from collections import Counter
 from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
 import threading
 import time
 from typing import Any
 
+from PIL import Image
+
 from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr
 
 from .capture import DefaultCaptureProvider, prune_frames
 from .coach import RoundCoachEngine
-from .models import LiveSessionState, MahjongCoachConfig, _clean_string_list, _valid_play_style, _valid_river_tracking_mode
+from .models import LiveSessionState, MahjongCoachConfig, _clean_string_list, _valid_play_style, _valid_river_tracking_mode, _valid_tile_recognition_mode
 from .overlay import CoachOverlayController, overlay_detail_text_from_payload, overlay_text_from_payload
+from .perception.settlement_detector import (
+    detect_settlement_image,
+    render_settlement_diagnostic_image,
+)
+from .perception.table_surface import detect_table_surface
+from .perception.yolo26_visible_tiles import render_yolo26_region_diagnostic_image
+from .tile_labels import normalize_tile
 from .window_binding import list_window_candidates
 
 
@@ -30,6 +42,9 @@ class MahjongCoachPlugin(NekoPluginBase):
         self._live_task: asyncio.Task | None = None
         self._live_stop_event: asyncio.Event | None = None
         self._live_last_hand_signature = ""
+        self._live_gap_hand_tiles: list[str] = []
+        self._live_gap_candidate_tiles: list[str] = []
+        self._live_gap_candidate_frames = 0
         self._live_last_checkpoint_at = 0.0
         self._live_timing_log: list[dict[str, Any]] = []
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -54,7 +69,9 @@ class MahjongCoachPlugin(NekoPluginBase):
             # 启动时只注册插件能力，不自动弹出 Tk 浮窗，避免浮窗遮挡牌桌截图。
             # Register plugin capabilities on startup without auto-opening the Tk overlay,
             # so the overlay cannot cover the Mahjong Soul frame being captured.
-            self.register_static_ui("static")
+            # 中文：开发中的工作台必须绕过浏览器缓存，避免重载后仍显示旧版 UI。
+            # English: Bypass browser caching so plugin reloads always show the current dashboard.
+            self.register_static_ui("static", cache_control="no-store")
             self.set_list_actions(
                 [
                     {
@@ -174,6 +191,7 @@ class MahjongCoachPlugin(NekoPluginBase):
         if self._engine is None:
             return Err(SdkError("mahjong coach is not initialized"))
         state = self._engine.state.to_dict()
+        round_history = self._engine.round_history
         payload = {"last_decision": dict(self._last_decision), "round_state": state}
         return Ok(
             {
@@ -181,6 +199,8 @@ class MahjongCoachPlugin(NekoPluginBase):
                 "config": self._cfg.to_dict(),
                 "round_state": state,
                 "last_decision": dict(self._last_decision),
+                "round_history": round_history,
+                "last_round_archive": round_history[-1] if round_history else {},
                 "overlay_text": overlay_text_from_payload(payload),
                 "live": self._live_state.to_dict(),
                 "timing_log": list(getattr(self, "_live_timing_log", [])),
@@ -188,6 +208,89 @@ class MahjongCoachPlugin(NekoPluginBase):
                 **state,
             }
         )
+
+    @plugin_entry(
+        id="mahjong_coach_frame_preview",
+        name="Mahjong Coach Frame Preview",
+        description="Return a compact preview of the latest captured Mahjong Soul frame.",
+        input_schema={"type": "object", "properties": {}},
+        llm_result_fields=["status", "image_path", "width", "height"],
+    )
+    async def mahjong_coach_frame_preview(self, **_):
+        if self._engine is None:
+            return Err(SdkError("mahjong coach is not initialized"))
+        raw_path = str(self._live_state.last_frame_path or "").strip()
+        if not raw_path:
+            return Ok({"status": "empty", "image_path": "", "data_url": ""})
+        frame_path = Path(raw_path).resolve()
+        frames_dir = self.data_path("live_frames").resolve()
+        if not frame_path.is_relative_to(frames_dir) or not frame_path.is_file():
+            return Err(SdkError("latest frame is unavailable"))
+        try:
+            preview = await asyncio.to_thread(_build_frame_preview_payload, frame_path)
+        except (OSError, ValueError):
+            return Err(SdkError("failed to build frame preview"))
+        return Ok({"status": "ready", **preview})
+
+    @plugin_entry(
+        id="mahjong_coach_table_region_preview",
+        name="Mahjong Coach Warped Table Region Preview",
+        description="Return the perspective-corrected table with YOLO ownership regions and detections.",
+        input_schema={"type": "object", "properties": {}},
+        llm_result_fields=["status", "image_path", "transformed", "width", "height", "detection_count"],
+    )
+    async def mahjong_coach_table_region_preview(self, **_):
+        if self._engine is None:
+            return Err(SdkError("mahjong coach is not initialized"))
+        raw_path = str(self._live_state.last_frame_path or "").strip()
+        if not raw_path:
+            return Ok({"status": "empty", "image_path": "", "data_url": "", "transformed": False})
+        frame_path = Path(raw_path).resolve()
+        frames_dir = self.data_path("live_frames").resolve()
+        if not frame_path.is_relative_to(frames_dir) or not frame_path.is_file():
+            return Err(SdkError("latest frame is unavailable"))
+
+        raw_detections: list[dict[str, Any]] = []
+        yolo_path = getattr(self._engine, "_last_yolo26_path", None)
+        yolo_result = getattr(self._engine, "_last_yolo26_result", None)
+        if isinstance(yolo_path, Path) and yolo_path.resolve() == frame_path and yolo_result is not None:
+            raw_detections = [dict(item) for item in yolo_result.raw_detections if isinstance(item, dict)]
+        try:
+            preview = await asyncio.to_thread(
+                _build_table_region_preview_payload,
+                frame_path,
+                raw_detections=raw_detections,
+            )
+        except (OSError, ValueError):
+            return Err(SdkError("failed to build warped table region preview"))
+        return Ok({"status": "ready" if preview.get("data_url") else "unavailable", **preview})
+
+    @plugin_entry(
+        id="mahjong_coach_settlement_preview",
+        name="Mahjong Coach Settlement Diagnostic Preview",
+        description="Return an in-memory annotated preview of settlement detection evidence.",
+        input_schema={"type": "object", "properties": {}},
+        llm_result_fields=["status", "image_path", "detected", "kind", "confidence"],
+    )
+    async def mahjong_coach_settlement_preview(self, **_):
+        if self._engine is None:
+            return Err(SdkError("mahjong coach is not initialized"))
+        raw_path = str(self._live_state.last_frame_path or "").strip()
+        if not raw_path:
+            return Ok({"status": "empty", "image_path": "", "data_url": ""})
+        frame_path = Path(raw_path).resolve()
+        frames_dir = self.data_path("live_frames").resolve()
+        if not frame_path.is_relative_to(frames_dir) or not frame_path.is_file():
+            return Err(SdkError("latest frame is unavailable"))
+        try:
+            preview = await asyncio.to_thread(
+                _build_settlement_diagnostic_preview_payload,
+                frame_path,
+                min_confidence=self._cfg.settlement_min_confidence,
+            )
+        except (OSError, ValueError):
+            return Err(SdkError("failed to build settlement diagnostic preview"))
+        return Ok({"status": "ready", **preview})
 
     @plugin_entry(
         id="mahjong_coach_reset_round",
@@ -203,10 +306,19 @@ class MahjongCoachPlugin(NekoPluginBase):
         self._last_decision = {}
         self._live_last_hand_signature = ""
         self._live_state.observed_hand_changes = 0
-        self._live_state.missing_hand_frames = 0
+        self._clear_live_hand_gap()
         self._live_last_checkpoint_at = 0.0
         getattr(self, "_live_timing_log", []).clear()
-        return Ok({"status": "reset", "round_state": state.to_dict(), "round_id": state.round_id})
+        history = self._engine.round_history
+        return Ok(
+            {
+                "status": "reset",
+                "round_state": state.to_dict(),
+                "round_id": state.round_id,
+                "round_history": history,
+                "last_round_archive": history[-1] if history else {},
+            }
+        )
 
     @plugin_entry(
         id="mahjong_coach_analyze_frame",
@@ -228,6 +340,11 @@ class MahjongCoachPlugin(NekoPluginBase):
                 "dora_tiles": {"type": "array", "items": {"type": "string"}, "default": []},
                 "play_style": {"type": "string", "default": ""},
                 "river_tracking_mode": {"type": "string", "default": ""},
+                "tile_recognition_mode": {"type": "string", "default": ""},
+                "settlement_recognition_enabled": {"type": "boolean"},
+                "settlement_min_confidence": {"type": "number"},
+                "settlement_confirm_frames": {"type": "integer"},
+                "settlement_confirm_max_gap_ms": {"type": "integer"},
             },
         },
         timeout=20.0,
@@ -245,12 +362,24 @@ class MahjongCoachPlugin(NekoPluginBase):
         dora_tiles: list[str] | None = None,
         play_style: str = "",
         river_tracking_mode: str = "",
+        tile_recognition_mode: str = "",
+        settlement_recognition_enabled: bool | None = None,
+        settlement_min_confidence: float | None = None,
+        settlement_confirm_frames: int | None = None,
+        settlement_confirm_max_gap_ms: int | None = None,
         **_,
     ):
         if self._engine is None:
             return Err(SdkError("mahjong coach is not initialized"))
         self._apply_runtime_round_context(round_wind=round_wind, seat_wind=seat_wind, dora_tiles=dora_tiles, play_style=play_style)
         self._apply_runtime_river_tracking_mode(river_tracking_mode)
+        self._apply_runtime_tile_recognition_mode(tile_recognition_mode)
+        self._apply_runtime_settlement_config(
+            enabled=settlement_recognition_enabled,
+            min_confidence=settlement_min_confidence,
+            confirm_frames=settlement_confirm_frames,
+            confirm_max_gap_ms=settlement_confirm_max_gap_ms,
+        )
         try:
             decision = await asyncio.to_thread(
                 self._engine.analyze_frame,
@@ -295,6 +424,11 @@ class MahjongCoachPlugin(NekoPluginBase):
                 "dora_tiles": {"type": "array", "items": {"type": "string"}, "default": []},
                 "play_style": {"type": "string", "default": ""},
                 "river_tracking_mode": {"type": "string", "default": ""},
+                "tile_recognition_mode": {"type": "string", "default": ""},
+                "settlement_recognition_enabled": {"type": "boolean"},
+                "settlement_min_confidence": {"type": "number"},
+                "settlement_confirm_frames": {"type": "integer"},
+                "settlement_confirm_max_gap_ms": {"type": "integer"},
             },
         },
         llm_result_fields=["status", "running"],
@@ -309,6 +443,11 @@ class MahjongCoachPlugin(NekoPluginBase):
         dora_tiles: list[str] | None = None,
         play_style: str = "",
         river_tracking_mode: str = "",
+        tile_recognition_mode: str = "",
+        settlement_recognition_enabled: bool | None = None,
+        settlement_min_confidence: float | None = None,
+        settlement_confirm_frames: int | None = None,
+        settlement_confirm_max_gap_ms: int | None = None,
         **_,
     ):
         return await self._overlay_start_live(
@@ -320,6 +459,11 @@ class MahjongCoachPlugin(NekoPluginBase):
             dora_tiles=dora_tiles,
             play_style=play_style,
             river_tracking_mode=river_tracking_mode,
+            tile_recognition_mode=tile_recognition_mode,
+            settlement_recognition_enabled=settlement_recognition_enabled,
+            settlement_min_confidence=settlement_min_confidence,
+            settlement_confirm_frames=settlement_confirm_frames,
+            settlement_confirm_max_gap_ms=settlement_confirm_max_gap_ms,
         )
 
     async def _overlay_start_live(
@@ -332,15 +476,28 @@ class MahjongCoachPlugin(NekoPluginBase):
         dora_tiles: list[str] | None = None,
         play_style: str = "",
         river_tracking_mode: str = "",
+        tile_recognition_mode: str = "",
+        settlement_recognition_enabled: bool | None = None,
+        settlement_min_confidence: float | None = None,
+        settlement_confirm_frames: int | None = None,
+        settlement_confirm_max_gap_ms: int | None = None,
     ):
-        self.logger.info("_overlay_start_live called play_style={} river_tracking_mode={}", play_style, river_tracking_mode)
+        self.logger.info("_overlay_start_live called play_style={} river_tracking_mode={} tile_recognition_mode={}", play_style, river_tracking_mode, tile_recognition_mode)
         if self._engine is None:
             self.logger.warning("_overlay_start_live early return: engine is None")
             return Err(SdkError("mahjong coach is not initialized"))
         style_before = self._cfg.play_style
         river_mode_before = self._cfg.river_tracking_mode
+        tile_mode_before = self._cfg.tile_recognition_mode
         self._apply_runtime_round_context(round_wind=round_wind, seat_wind=seat_wind, dora_tiles=dora_tiles, play_style=play_style)
         self._apply_runtime_river_tracking_mode(river_tracking_mode)
+        self._apply_runtime_tile_recognition_mode(tile_recognition_mode)
+        self._apply_runtime_settlement_config(
+            enabled=settlement_recognition_enabled,
+            min_confidence=settlement_min_confidence,
+            confirm_frames=settlement_confirm_frames,
+            confirm_max_gap_ms=settlement_confirm_max_gap_ms,
+        )
         if self._cfg.river_tracking_mode != river_mode_before:
             self.logger.info(
                 "mahjong coach river tracking mode changed {} -> {}",
@@ -348,6 +505,8 @@ class MahjongCoachPlugin(NekoPluginBase):
                 self._cfg.river_tracking_mode,
             )
         if play_style and self._cfg.play_style != style_before:
+            self._invalidate_live_plan_for_style_change()
+        if tile_recognition_mode and self._cfg.tile_recognition_mode != tile_mode_before:
             self._invalidate_live_plan_for_style_change()
         if self._live_task is not None and not self._live_task.done():
             self.logger.warning("_overlay_start_live early return: live_task already running")
@@ -365,6 +524,7 @@ class MahjongCoachPlugin(NekoPluginBase):
             updated_at=time.time(),
             overlay_enabled=overlay_enabled,
         )
+        self._clear_live_hand_gap()
         if overlay_enabled:
             self.logger.info("_overlay_start_live calling show_strategy")
             self._show_overlay(strategy=True)
@@ -407,6 +567,59 @@ class MahjongCoachPlugin(NekoPluginBase):
         self._cfg = updated
         if self._engine is not None:
             self._engine.config = updated
+
+    def _apply_runtime_tile_recognition_mode(self, tile_recognition_mode: str = "") -> None:
+        if not tile_recognition_mode:
+            return
+        mode = _valid_tile_recognition_mode(tile_recognition_mode)
+        updated = replace(self._cfg, tile_recognition_mode=mode)
+        self._cfg = updated
+        if self._engine is not None:
+            self._engine.config = updated
+
+    def _apply_runtime_settlement_config(
+        self,
+        *,
+        enabled: bool | None = None,
+        min_confidence: float | None = None,
+        confirm_frames: int | None = None,
+        confirm_max_gap_ms: int | None = None,
+    ) -> None:
+        # 中文：网页面板只覆盖明确提交的结算参数，未提交项继续使用插件配置。
+        # English: Override only explicitly submitted settlement settings.
+        updated = replace(
+            self._cfg,
+            settlement_recognition_enabled=(
+                self._cfg.settlement_recognition_enabled if enabled is None else bool(enabled)
+            ),
+            settlement_min_confidence=(
+                self._cfg.settlement_min_confidence
+                if min_confidence is None
+                else max(0.0, min(1.0, float(min_confidence)))
+            ),
+            settlement_confirm_frames=(
+                self._cfg.settlement_confirm_frames
+                if confirm_frames is None
+                else max(1, min(8, int(confirm_frames)))
+            ),
+            settlement_confirm_max_gap_ms=(
+                self._cfg.settlement_confirm_max_gap_ms
+                if confirm_max_gap_ms is None
+                else max(200, min(10_000, int(confirm_max_gap_ms)))
+            ),
+        )
+        if updated == self._cfg:
+            return
+        self._cfg = updated
+        if self._engine is not None:
+            self._engine.config = updated
+        self.logger.info(
+            "mahjong coach settlement config enabled={} confidence={} frames={} max_gap_ms={}",
+            updated.settlement_recognition_enabled,
+            updated.settlement_min_confidence,
+            updated.settlement_confirm_frames,
+            updated.settlement_confirm_max_gap_ms,
+        )
 
     def _invalidate_live_plan_for_style_change(self) -> None:
         if self._engine is None:
@@ -580,6 +793,7 @@ class MahjongCoachPlugin(NekoPluginBase):
                                     "meld_ms": None,
                                     "action_ms": None,
                                     "river_ms": None,
+                                    "settlement_ms": None,
                                     "strategy_ms": None,
                                     "loop_ms": _elapsed_ms(loop_started),
                                 }
@@ -605,17 +819,69 @@ class MahjongCoachPlugin(NekoPluginBase):
                         self_turn_index=self._live_state.observed_hand_changes or None,
                         force_checkpoint=force_checkpoint,
                     )
+                    settlement_decisions = {
+                        "settlement_candidate",
+                        "round_settlement",
+                        "awaiting_next_round",
+                    }
+                    round_transition = self._observe_live_round_transition(decision)
+                    gap_state = (
+                        "none"
+                        if round_transition or decision.decision_type in settlement_decisions
+                        else self._classify_live_hand_gap(decision)
+                    )
+                    if gap_state == "new_round":
+                        previous_round_id = self._engine.state.round_id
+                        self._engine.reset_round(f"auto-gap-round-{self._live_state.frame_index + 1}")
+                        decision = await asyncio.to_thread(
+                            self._engine.analyze_frame,
+                            packet.image_path,
+                            self_turn_index=None,
+                            force_checkpoint=False,
+                        )
+                        self._engine.state.last_update_reason = "auto_new_round_detected"
+                        decision = replace(
+                            decision,
+                            reason_codes=[*decision.reason_codes, "auto_new_round_detected"],
+                            coach_state=self._engine.state.to_dict(),
+                            engine_meta={
+                                **decision.engine_meta,
+                                "round_transition": "hand_gap_replacement",
+                                "previous_round_id": previous_round_id,
+                            },
+                        )
+                        round_transition = self._observe_live_round_transition(decision)
                     analyze_ms = _elapsed_ms(analyze_started)
                     self._last_decision = decision.to_dict()
-                    self._observe_live_hand_change()
-                    round_idle = self._maybe_reset_live_round_idle(decision)
-                    if not round_idle and decision.decision_type in {"opening_plan", "coach_checkpoint", "defense_alert"}:
+                    if not round_transition and decision.decision_type not in settlement_decisions:
+                        self._observe_live_hand_change()
+                    if (
+                        gap_state not in {"view_obstructed", "verifying_new_round"}
+                        and decision.decision_type not in settlement_decisions
+                        and decision.decision_type in {
+                        "opening_plan",
+                        "coach_checkpoint",
+                        "defense_alert",
+                        }
+                    ):
                         self._live_last_checkpoint_at = time.time()
                     self._live_state.running = True
-                    self._live_state.status = "waiting_for_next_round" if round_idle else "observing"
+                    if decision.decision_type in settlement_decisions:
+                        self._live_state.status = decision.decision_type
+                    else:
+                        self._live_state.status = (
+                            gap_state
+                            if gap_state in {"view_obstructed", "verifying_new_round"}
+                            else "observing"
+                        )
                     self._live_state.frame_index += 1
                     self._live_state.updated_at = time.time()
-                    self._live_state.last_error = ""
+                    self._live_state.last_error = {
+                        "view_obstructed": "牌桌被菜单或其他窗口遮挡；已暂停刷新并保留当前对局。",
+                        "settlement_candidate": "检测到结算候选；正在用下一帧复核。",
+                        "round_settlement": "小局结算已确认；上一局状态已冻结。",
+                        "awaiting_next_round": "结算已结束；等待稳定的新手牌。",
+                    }.get(self._live_state.status, "")
                     self._live_state.last_frame_path = packet.image_path
                     self._live_state.last_capture_source = packet.source
                     self._live_state.last_window_title = packet.window_title
@@ -630,7 +896,11 @@ class MahjongCoachPlugin(NekoPluginBase):
                         loop_ms=_elapsed_ms(loop_started),
                     )
                     await asyncio.to_thread(prune_frames, frames_dir, keep=self._cfg.live_keep_frames)
-                    if decision.action_required and not round_idle:
+                    if (
+                        decision.action_required
+                        and decision.decision_type not in settlement_decisions
+                        and gap_state not in {"view_obstructed", "verifying_new_round"}
+                    ):
                         sleep_ms = self._cfg.live_fast_interval_ms
                 except asyncio.CancelledError:
                     raise
@@ -652,6 +922,7 @@ class MahjongCoachPlugin(NekoPluginBase):
                             "meld_ms": None,
                             "action_ms": None,
                             "river_ms": None,
+                            "settlement_ms": None,
                             "strategy_ms": None,
                             "loop_ms": _elapsed_ms(loop_started),
                         }
@@ -686,13 +957,27 @@ class MahjongCoachPlugin(NekoPluginBase):
         entry = self._append_live_timing(timing)
         self.logger.info("mahjong coach timing {}", entry)
         self.logger.info(
-            "mahjong coach river tracking mode={} reason={} ok={} tiles={} elapsed_ms={}",
+            "mahjong coach river tracking mode={} reason={} ok={} tiles={} new={} corrected={} pending={} full_rescan={} elapsed_ms={}",
             entry.get("river_mode"),
             entry.get("river_reason"),
             entry.get("river_ok"),
             entry.get("river_tile_count"),
+            entry.get("river_new_discard_count"),
+            entry.get("river_corrected_count"),
+            entry.get("river_pending_corrections"),
+            entry.get("river_full_rescan"),
             entry.get("river_ms"),
         )
+        if entry.get("settlement_phase") or entry.get("settlement_kind"):
+            self.logger.info(
+                "mahjong coach settlement phase={} kind={} confidence={} archive_id={} evidence={} elapsed_ms={}",
+                entry.get("settlement_phase"),
+                entry.get("settlement_kind"),
+                entry.get("settlement_confidence"),
+                entry.get("round_archive_id"),
+                entry.get("settlement_evidence"),
+                entry.get("settlement_ms"),
+            )
 
     def _append_live_timing(self, timing: dict[str, Any]) -> dict[str, Any]:
         # 保存最近的插件内运行日志，供 Web 面板实时查看。
@@ -743,42 +1028,136 @@ class MahjongCoachPlugin(NekoPluginBase):
         self._live_last_hand_signature = signature
         self._live_state.observed_hand_changes += 1
 
-    def _maybe_reset_live_round_idle(self, decision: Any) -> bool:
-        if self._engine is None:
+    def _observe_live_round_transition(self, decision: Any) -> bool:
+        # 中文：引擎确认新局后同步清空直播层巡目，避免把上一局的手牌变化次数带过去。
+        # English: Reset live turn counters when the engine confirms a new round.
+        reason_codes = {str(item) for item in (getattr(decision, "reason_codes", []) or [])}
+        if "auto_new_round_detected" not in reason_codes or self._engine is None:
             return False
-        if getattr(decision, "action_required", False) or getattr(decision, "hand_tiles", []):
-            self._live_state.missing_hand_frames = 0
-            return False
-        if not self._engine.state.opening_emitted:
-            self._live_state.missing_hand_frames = 0
-            return False
-        reason_codes = [str(item) for item in (getattr(decision, "reason_codes", []) or [])]
-        if not any(code.startswith("hand_") for code in reason_codes):
-            self._live_state.missing_hand_frames = 0
-            return False
-        self._live_state.missing_hand_frames += 1
-        if self._live_state.missing_hand_frames < 4:
-            return False
-
-        state = self._engine.reset_round("auto_waiting_next_round")
-        self._live_last_hand_signature = ""
+        self._live_last_hand_signature = str(self._engine.state.last_hand_signature or "")
         self._live_last_checkpoint_at = 0.0
         self._live_state.observed_hand_changes = 0
-        self._last_decision = {
-            "decision_type": "round_idle",
-            "priority": 1,
-            "action_required": False,
-            "summary": "等待下一局",
-            "detail": "连续几帧没有稳定手牌，上一局大概率已经结束。",
-            "suggestion": "新手牌出现后会自动重新给开局主线。",
-            "buttons": [],
-            "hand_tiles": [],
-            "reason_codes": ["live_round_idle", "hand_missing_streak"],
-            "coach_state": state.to_dict(),
-            "perception": getattr(decision, "perception", {}),
-            "engine_meta": {"source": "live_round_idle", "missing_hand_frames": self._live_state.missing_hand_frames},
-        }
+        self._clear_live_hand_gap()
+        self.logger.info(
+            "mahjong coach auto new round round_id={} river_before={} river_now={}",
+            self._engine.state.round_id,
+            getattr(decision, "engine_meta", {}).get("previous_river_count"),
+            getattr(decision, "engine_meta", {}).get("current_river_count"),
+        )
         return True
+
+    def _clear_live_hand_gap(self) -> None:
+        # 中文：只清除遮挡判定的临时证据，不触碰本局策略、牌河和立直状态。
+        # English: Clear temporary obstruction evidence without touching round state.
+        if hasattr(self, "_live_state"):
+            self._live_state.missing_hand_frames = 0
+        self._live_gap_hand_tiles = []
+        self._live_gap_candidate_tiles = []
+        self._live_gap_candidate_frames = 0
+
+    def _classify_live_hand_gap(self, decision: Any) -> str:
+        """Classify a missing-hand gap without destroying the current round."""
+        if self._engine is None:
+            return "none"
+        if str(getattr(decision, "decision_type", "") or "") in {
+            "settlement_candidate",
+            "round_settlement",
+            "awaiting_next_round",
+        }:
+            return "none"
+
+        perception = getattr(decision, "perception", {}) or {}
+        hand_meta = perception.get("hand", {}) if isinstance(perception, dict) else {}
+        hand_meta = hand_meta if isinstance(hand_meta, dict) else {}
+        hand_reason = str(hand_meta.get("reason") or "").strip()
+        reason_codes = [str(item) for item in (getattr(decision, "reason_codes", []) or [])]
+        current_tiles = _normalized_tiles(getattr(decision, "hand_tiles", []) or hand_meta.get("hand_tiles", []))
+        gap_frames = int(getattr(self._live_state, "missing_hand_frames", 0) or 0)
+
+        if current_tiles:
+            if gap_frames <= 0:
+                self._clear_live_hand_gap()
+                return "none"
+
+            previous_tiles = _normalized_tiles(
+                getattr(self, "_live_gap_hand_tiles", []) or self._engine.state.last_hand_tiles
+            )
+            shared_previous = _shared_live_hand_tiles(previous_tiles, current_tiles)
+            resume_threshold = max(1, min(len(previous_tiles), len(current_tiles)) - 1)
+            if previous_tiles and shared_previous >= resume_threshold:
+                was_obstructed = gap_frames >= 4
+                self._clear_live_hand_gap()
+                if was_obstructed:
+                    self.logger.info(
+                        "mahjong coach view resumed missing_frames={} shared_tiles={}",
+                        gap_frames,
+                        shared_previous,
+                    )
+                return "resumed"
+
+            if 12 <= len(current_tiles) <= 14:
+                if str(getattr(self._engine.config, "tile_recognition_mode", "legacy")) == "yolo26":
+                    # 中文：YOLO 模式必须同时拿到牌河归零证据；只换了手牌不能证明是新局。
+                    # English: YOLO mode requires river-reset evidence; a changed hand alone is insufficient.
+                    if self._engine.has_pending_new_round_confirmation():
+                        return "verifying_new_round"
+                    self._clear_live_hand_gap()
+                    return "resumed"
+
+                candidate_tiles = _normalized_tiles(getattr(self, "_live_gap_candidate_tiles", []))
+                if candidate_tiles and _shared_live_hand_tiles(candidate_tiles, current_tiles) >= 10:
+                    self._live_gap_candidate_frames = int(
+                        getattr(self, "_live_gap_candidate_frames", 0) or 0
+                    ) + 1
+                else:
+                    self._live_gap_candidate_tiles = list(current_tiles)
+                    self._live_gap_candidate_frames = 1
+
+                if self._live_gap_candidate_frames < 2:
+                    # 中文：下一帧必须绕过指纹缓存，再独立确认一次新手牌。
+                    # English: Bypass the fingerprint cache for an independent confirmation frame.
+                    self._engine.request_full_rescan()
+                    return "verifying_new_round"
+
+                self.logger.info(
+                    "mahjong coach new round confirmed after obstruction missing_frames={} shared_tiles={}",
+                    gap_frames,
+                    shared_previous,
+                )
+                self._clear_live_hand_gap()
+                return "new_round"
+
+            return "view_obstructed" if gap_frames >= 4 else "none"
+
+        if getattr(decision, "action_required", False):
+            return "view_obstructed" if gap_frames >= 4 else "none"
+        if not self._engine.state.opening_emitted:
+            self._clear_live_hand_gap()
+            return "none"
+
+        fingerprint_match = hand_reason == "fingerprint_match" or "hand_fingerprint_match" in reason_codes
+        if fingerprint_match and int(getattr(self, "_live_gap_candidate_frames", 0) or 0) > 0:
+            self._engine.request_full_rescan()
+            return "verifying_new_round"
+
+        hand_failed = bool(hand_reason and hand_reason != "fingerprint_match") or any(
+            code.startswith("hand_") and code != "hand_fingerprint_match" for code in reason_codes
+        )
+        if not hand_failed and not (fingerprint_match and gap_frames > 0):
+            return "view_obstructed" if gap_frames >= 4 else "none"
+
+        if gap_frames <= 0:
+            self._live_gap_hand_tiles = _normalized_tiles(self._engine.state.last_hand_tiles)
+        self._live_gap_candidate_tiles = []
+        self._live_gap_candidate_frames = 0
+        self._live_state.missing_hand_frames += 1
+        if self._live_state.missing_hand_frames == 4:
+            self.logger.info(
+                "mahjong coach view obstructed missing_frames={} round_id={}",
+                self._live_state.missing_hand_frames,
+                self._engine.state.round_id,
+            )
+        return "view_obstructed" if self._live_state.missing_hand_frames >= 4 else "none"
 
     def _checkpoint_due_by_time(self) -> bool:
         if self._engine is None or not self._engine.state.last_hand_tiles:
@@ -801,6 +1180,107 @@ class MahjongCoachPlugin(NekoPluginBase):
 
 def _elapsed_ms(started: float) -> float:
     return round((time.perf_counter() - started) * 1000.0, 1)
+
+
+def _normalized_tiles(tiles: Any) -> list[str]:
+    return [normalized for tile in (tiles or []) if (normalized := normalize_tile(tile))]
+
+
+def _shared_live_hand_tiles(left: Any, right: Any) -> int:
+    left_counts = Counter(_normalized_tiles(left))
+    right_counts = Counter(_normalized_tiles(right))
+    return sum((left_counts & right_counts).values())
+
+
+def _build_frame_preview_payload(image_path: Path) -> dict[str, Any]:
+    with Image.open(image_path) as source:
+        image = source.convert("RGB")
+        image.thumbnail((960, 540), Image.Resampling.LANCZOS)
+        output = BytesIO()
+        image.save(output, format="JPEG", quality=74, optimize=True)
+    encoded = base64.b64encode(output.getvalue()).decode("ascii")
+    return {
+        "image_path": str(image_path),
+        "data_url": f"data:image/jpeg;base64,{encoded}",
+        "width": image.width,
+        "height": image.height,
+    }
+
+
+def _build_table_region_preview_payload(
+    image_path: Path,
+    *,
+    raw_detections: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    # 中文：面板分区图严格来自透视变换结果；变换失败时不拿原图冒充。
+    # English: The region panel must use the perspective-corrected table and never masquerade the raw frame as warped.
+    with Image.open(image_path) as source:
+        full_image = source.convert("RGB")
+        table_surface = detect_table_surface(full_image)
+    if not table_surface.ok or table_surface.warped_image is None:
+        return {
+            "image_path": str(image_path),
+            "data_url": "",
+            "transformed": False,
+            "reason": table_surface.reason or "table_surface_unavailable",
+            "width": 0,
+            "height": 0,
+            "detection_count": 0,
+        }
+
+    warped_detections = [
+        dict(item)
+        for item in raw_detections or []
+        if isinstance(item, dict)
+        and str(item.get("coordinate_space") or "warped_table") == "warped_table"
+    ]
+    preview = render_yolo26_region_diagnostic_image(
+        table_surface.warped_image,
+        raw_detections=warped_detections,
+    )
+    output = BytesIO()
+    preview.save(output, format="JPEG", quality=84, optimize=True)
+    encoded = base64.b64encode(output.getvalue()).decode("ascii")
+    return {
+        "image_path": str(image_path),
+        "data_url": f"data:image/jpeg;base64,{encoded}",
+        "transformed": True,
+        "input_space": "warped_table",
+        "reason": table_surface.reason,
+        "width": preview.width,
+        "height": preview.height,
+        "detection_count": len(warped_detections),
+        "table_surface_method": table_surface.method,
+    }
+
+
+def _build_settlement_diagnostic_preview_payload(
+    image_path: Path,
+    *,
+    min_confidence: float = 0.72,
+) -> dict[str, Any]:
+    # 中文：诊断图只在内存中生成，不在 live_frames 旁边写入额外文件。
+    # English: Build the diagnostic preview in memory without creating sidecar files.
+    with Image.open(image_path) as source:
+        full_image = source.convert("RGB")
+        result = detect_settlement_image(full_image, min_confidence=min_confidence)
+        preview = full_image.copy()
+        preview.thumbnail((960, 540), Image.Resampling.LANCZOS)
+        preview = render_settlement_diagnostic_image(
+            preview,
+            result=result,
+            min_confidence=min_confidence,
+        )
+        output = BytesIO()
+        preview.save(output, format="JPEG", quality=82, optimize=True)
+    encoded = base64.b64encode(output.getvalue()).decode("ascii")
+    return {
+        "image_path": str(image_path),
+        "data_url": f"data:image/jpeg;base64,{encoded}",
+        "width": preview.width,
+        "height": preview.height,
+        **result.to_dict(),
+    }
 
 
 def _read_float(payload: Any, key: str) -> float | None:
@@ -827,6 +1307,8 @@ def _mahjong_timing_from_decision(decision: dict[str, Any]) -> dict[str, Any]:
             return None
 
     river = perception.get("river") if isinstance(perception.get("river"), dict) else {}
+    river_hints = river.get("analysis_hints") if isinstance(river.get("analysis_hints"), dict) else {}
+    settlement = perception.get("settlement") if isinstance(perception.get("settlement"), dict) else {}
     river_visible = river.get("visible_tiles") if isinstance(river.get("visible_tiles"), list) else []
     river_piles = river.get("discard_piles") if isinstance(river.get("discard_piles"), dict) else {}
     river_tile_count = len(river_visible) or sum(len(items) for items in river_piles.values() if isinstance(items, list))
@@ -834,14 +1316,36 @@ def _mahjong_timing_from_decision(decision: dict[str, Any]) -> dict[str, Any]:
     return {
         "decision": str(decision.get("decision_type") or ""),
         "source": str(engine_meta.get("source") or ""),
+        "tile_mode": str(engine_meta.get("tile_recognition_mode") or "legacy"),
         "river_mode": str(engine_meta.get("river_tracking_mode") or "checkpoint"),
         "river_reason": str(river.get("reason") or ""),
+        "fallback_reason": _first_fallback_reason(perception),
         "river_ok": bool(river.get("ok")),
         "river_tile_count": int(river_tile_count),
+        "river_new_discard_count": int(river_hints.get("new_discard_count") or 0),
+        "river_corrected_count": int(river_hints.get("river_corrected_count") or 0),
+        "river_pending_corrections": int(river_hints.get("river_pending_corrections") or 0),
+        "river_full_rescan": bool(river_hints.get("river_full_rescan")),
         "engine_total_ms": round(float(engine_meta.get("elapsed_ms") or engine_timings.get("total") or 0.0), 1),
         "hand_ms": _step_ms("hand"),
         "meld_ms": _step_ms("meld"),
         "action_ms": _step_ms("action"),
         "river_ms": _step_ms("river"),
+        "settlement_ms": _step_ms("settlement"),
+        "settlement_phase": str(settlement.get("phase") or engine_meta.get("settlement_phase") or ""),
+        "settlement_kind": str(settlement.get("kind") or engine_meta.get("settlement_kind") or ""),
+        "settlement_confidence": round(float(settlement.get("confidence") or 0.0), 4),
+        "settlement_evidence": list(settlement.get("evidence") or []),
+        "round_archive_id": str(settlement.get("round_archive_id") or ""),
         "strategy_ms": round(float(engine_timings.get("strategy") or 0.0), 1) if "strategy" in engine_timings else None,
     }
+
+
+def _first_fallback_reason(perception: dict[str, Any]) -> str:
+    for name in ("hand", "meld", "river"):
+        payload = perception.get(name) if isinstance(perception.get(name), dict) else {}
+        hints = payload.get("analysis_hints") if isinstance(payload.get("analysis_hints"), dict) else {}
+        reason = str(hints.get("fallback_reason") or "").strip()
+        if reason:
+            return reason
+    return ""

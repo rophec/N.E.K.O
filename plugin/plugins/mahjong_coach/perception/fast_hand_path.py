@@ -27,6 +27,7 @@ class FastHandResult:
     elapsed_ms: float = 0.0
     raw_detections: list[dict[str, Any]] = field(default_factory=list)
     draw_slot_index: int = 14
+    analysis_hints: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)

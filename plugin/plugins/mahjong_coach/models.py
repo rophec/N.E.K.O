@@ -18,7 +18,12 @@ class MahjongCoachConfig:
     river_recognition_enabled: bool = True
     river_tracking_mode: str = "checkpoint"
     river_min_confidence: float = 0.90
+    tile_recognition_mode: str = "legacy"
     opponent_riichi_recognition_enabled: bool = True
+    settlement_recognition_enabled: bool = True
+    settlement_min_confidence: float = 0.72
+    settlement_confirm_frames: int = 2
+    settlement_confirm_max_gap_ms: int = 2500
     live_window_keywords: list[str] = field(default_factory=lambda: ["雀魂", "Mahjong Soul"])
     live_interval_ms: int = 400
     live_fast_interval_ms: int = 300
@@ -50,7 +55,21 @@ class MahjongCoachConfig:
             river_recognition_enabled=bool(perception.get("river_recognition_enabled", True)),
             river_tracking_mode=_valid_river_tracking_mode(perception.get("river_tracking_mode")),
             river_min_confidence=max(0.0, min(1.0, float(perception.get("river_min_confidence") or 0.90))),
+            tile_recognition_mode=_valid_tile_recognition_mode(perception.get("tile_recognition_mode")),
             opponent_riichi_recognition_enabled=bool(perception.get("opponent_riichi_recognition_enabled", True)),
+            settlement_recognition_enabled=bool(perception.get("settlement_recognition_enabled", True)),
+            settlement_min_confidence=max(
+                0.0,
+                min(1.0, float(perception.get("settlement_min_confidence") or 0.72)),
+            ),
+            settlement_confirm_frames=max(
+                1,
+                min(8, int(perception.get("settlement_confirm_frames") or 2)),
+            ),
+            settlement_confirm_max_gap_ms=max(
+                200,
+                min(10_000, int(perception.get("settlement_confirm_max_gap_ms") or 2500)),
+            ),
             live_window_keywords=_string_list(live.get("window_keywords"), ["雀魂", "Mahjong Soul"]),
             live_interval_ms=max(200, int(live.get("interval_ms") or 400)),
             live_fast_interval_ms=max(100, int(live.get("fast_interval_ms") or 300)),
@@ -92,6 +111,7 @@ class RoundCoachState:
     last_discard_piles: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     last_visible_discards: list[str] = field(default_factory=list)
     last_river_confidence: float = 0.0
+    river_tracking_initialized: bool = False
     last_checkpoint_self_turn: int = 0
     prev_direction: str = ""
     prev_discard_priority: list[str] = field(default_factory=list)
@@ -99,6 +119,11 @@ class RoundCoachState:
     riichi_pending: dict[str, int] = field(default_factory=dict)
     riichi_stick_baseline: int | None = None
     last_riichi_stick_count: int | None = None
+    settlement_phase: str = "playing"
+    settlement_kind: str = "none"
+    settlement_confidence: float = 0.0
+    settlement_evidence: list[str] = field(default_factory=list)
+    settlement_confirmation_frames: int = 0
     last_update_reason: str = ""
     update_count: int = 0
 
@@ -186,3 +211,10 @@ def _valid_river_tracking_mode(value: Any) -> str:
     if mode in ("live", "realtime", "real_time", "continuous"):
         return "live"
     return "checkpoint"
+
+
+def _valid_tile_recognition_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower()
+    if mode in ("yolo", "yolo26", "ultralytics_yolo26"):
+        return "yolo26"
+    return "legacy"
