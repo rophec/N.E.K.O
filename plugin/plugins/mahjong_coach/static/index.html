@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mahjong Coach</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="coach-shell">
+      <section class="topbar" aria-label="Mahjong coach status">
+        <div>
+          <h1>Mahjong Coach</h1>
+          <p id="statusLine">启动中</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="startLiveBtn" type="button">开始实战</button>
+          <button id="stopLiveBtn" type="button">停止实战</button>
+          <button id="refreshBtn" type="button">刷新</button>
+          <button id="resetBtn" type="button">新一局</button>
+        </div>
+      </section>
+
+      <section class="strategy-board" aria-label="Strategy board">
+        <div class="plan-panel primary-panel">
+          <div class="panel-heading">
+            <span class="panel-label">本地对照策略</span>
+            <span id="analysisSource" class="source-badge">Heuristic</span>
+          </div>
+          <strong id="mainPlan">等待手牌</strong>
+          <p id="planDetail">-</p>
+        </div>
+        <div class="plan-panel">
+          <span class="panel-label">攻守</span>
+          <strong id="biasValue">neutral</strong>
+          <p id="lastReason">-</p>
+        </div>
+        <div class="plan-panel">
+          <span class="panel-label">置信度</span>
+          <strong id="confidenceValue">0%</strong>
+          <p id="updateCount">0 updates</p>
+        </div>
+      </section>
+
+      <section class="coach-panel wide progress-panel" aria-label="Recognition progress">
+        <div class="section-head">
+          <h2>识别进度</h2>
+          <span id="pipelineSummary">等待启动</span>
+        </div>
+        <div id="pipelineSteps" class="pipeline-steps"></div>
+      </section>
+
+      <section class="coach-panel wide runtime-panel" aria-label="Runtime timing log">
+        <div class="section-head">
+          <h2>运行日志 / 耗时</h2>
+          <span id="timingSummary">等待第一帧</span>
+        </div>
+        <div class="timing-table-wrap">
+          <table class="timing-table">
+            <thead>
+              <tr>
+                <th>帧</th>
+                <th>状态</th>
+                <th>决策</th>
+                <th>来源</th>
+                <th>牌河模式</th>
+                <th>牌河原因</th>
+                <th>定位</th>
+                <th>截图</th>
+                <th>识别</th>
+                <th>手牌</th>
+                <th>副露</th>
+                <th>按钮</th>
+                <th>牌河</th>
+                <th>策略</th>
+                <th>整轮</th>
+              </tr>
+            </thead>
+            <tbody id="timingLogBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="workspace-grid">
+        <section class="coach-panel wide" aria-label="Live observation">
+          <div class="section-head">
+            <h2>实战观察</h2>
+            <span id="liveState">stopped</span>
+          </div>
+          <div class="live-grid">
+            <label>
+              窗口关键词
+              <input id="keywordsInput" type="text" value="雀魂,Mahjong Soul" autocomplete="off" />
+            </label>
+            <label>
+              扫描间隔 ms
+              <input id="intervalInput" type="number" min="200" step="100" value="1200" />
+            </label>
+            <label class="check-row">
+              <input id="overlayInput" type="checkbox" checked />
+              右上角提示
+            </label>
+            <label>
+              牌河后台模式
+              <select id="riverTrackingModeInput">
+                <option value="checkpoint">旧版：检查点/立直时刷新</option>
+                <option value="live">实时：每轮识别刷新</option>
+              </select>
+            </label>
+            <label>
+              场风
+              <input id="roundWindInput" type="text" value="东" autocomplete="off" />
+            </label>
+            <label>
+              自风
+              <input id="seatWindInput" type="text" placeholder="东/南/西/北" autocomplete="off" />
+            </label>
+            <label>
+              宝牌
+              <input id="doraTilesInput" type="text" placeholder="5p, 白" autocomplete="off" />
+            </label>
+          </div>
+          <div class="live-meta">
+            <span id="liveFrame">0 frames</span>
+            <span id="liveWindow">未绑定窗口</span>
+            <span id="liveError">-</span>
+          </div>
+        </section>
+
+        <section class="coach-panel" aria-label="Targets">
+          <div class="section-head">
+            <h2>目标形状</h2>
+          </div>
+          <div id="targetList" class="tag-list"></div>
+        </section>
+
+        <section class="coach-panel" aria-label="Cautions">
+          <div class="section-head">
+            <h2>风险点</h2>
+          </div>
+          <div id="cautionList" class="note-list"></div>
+        </section>
+
+        <section class="coach-panel wide" aria-label="Hand tiles">
+          <div class="section-head">
+            <h2>当前手牌</h2>
+            <span id="handCount">0 张</span>
+          </div>
+          <div id="handTiles" class="tile-rail"></div>
+        </section>
+
+        <section class="coach-panel wide" aria-label="River tiles">
+          <div class="section-head">
+            <h2>牌河</h2>
+            <span id="riverCount">0 张</span>
+          </div>
+          <div id="riverTiles" class="river-grid"></div>
+        </section>
+
+        <section class="coach-panel wide" aria-label="Frame analysis">
+          <div class="section-head">
+            <h2>截图分析</h2>
+            <span id="decisionType">observe</span>
+          </div>
+          <div class="input-grid">
+            <label>
+              截图路径
+              <input id="imagePathInput" type="text" autocomplete="off" />
+            </label>
+            <label>
+              自己第几巡
+              <input id="turnInput" type="number" min="0" step="1" value="0" />
+            </label>
+            <label>
+              已见按钮
+              <input id="buttonsInput" type="text" placeholder="chi,pon,kan" autocomplete="off" />
+            </label>
+            <label>
+              场风
+              <input id="analysisRoundWindInput" type="text" value="东" autocomplete="off" />
+            </label>
+            <label>
+              自风
+              <input id="analysisSeatWindInput" type="text" placeholder="东/南/西/北" autocomplete="off" />
+            </label>
+            <label>
+              宝牌
+              <input id="analysisDoraTilesInput" type="text" placeholder="5p, 白" autocomplete="off" />
+            </label>
+            <label class="check-row">
+              <input id="forceCheckpointInput" type="checkbox" />
+              强制更新
+            </label>
+          </div>
+          <div class="action-row">
+            <button id="analyzeBtn" type="button">分析截图</button>
+          </div>
+          <pre id="decisionOutput"></pre>
+        </section>
+      </section>
+    </main>
+    <script src="./main.js"></script>
+  </body>
+</html>
